@@ -124,6 +124,8 @@ test("deriveFingerprintFlags is deterministic and uses stored identity", () => {
   expect(a).toContain("--fingerprint-screen-width=1680");
   expect(a).toContain("--fingerprint-screen-height=1050");
   expect(a.some((flag) => flag.startsWith("--fingerprint-brand-version="))).toBe(false);
+  const quota = Number(a.find((flag) => flag.startsWith("--fingerprint-storage-quota="))?.split("=")[1]);
+  expect(quota).toBeGreaterThanOrEqual(100_000); // MB; far above the incognito-sized default
 });
 
 test("deriveFingerprintFlags does NOT force --user-agent (UA/UA-CH stay consistent)", () => {

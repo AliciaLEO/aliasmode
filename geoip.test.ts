@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 import { lookupTimezones, attachTimezones } from "./geoip.ts";
 
+const proxy = (host: string) => ({ type: "http" as const, host, port: "8080", user: "", pass: "" });
+
 function fakeFetch(byIp: Record<string, string>) {
   return async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as Array<{ query: string }>;
@@ -32,10 +34,10 @@ test("lookupTimezones returns empty when the lookup throws (offline)", async () 
   expect(tz.size).toBe(0);
 });
 
-test("attachTimezones sets timezone from each profile's proxy host", async () => {
+test("attachTimezones falls back to the proxy host when the exit lookup fails", async () => {
   const profiles = [
-    { proxy: { host: "1.2.3.4" }, timezone: "" },
-    { proxy: { host: "5.6.7.8" }, timezone: "" },
+    { proxy: proxy("1.2.3.4"), timezone: "" },
+    { proxy: proxy("5.6.7.8"), timezone: "" },
     { proxy: null, timezone: "" },
   ];
   const { resolved } = await attachTimezones(profiles, fakeFetch({ "1.2.3.4": "America/New_York", "5.6.7.8": "Europe/London" }));
@@ -43,4 +45,17 @@ test("attachTimezones sets timezone from each profile's proxy host", async () =>
   expect(profiles[0]!.timezone).toBe("America/New_York");
   expect(profiles[1]!.timezone).toBe("Europe/London");
   expect(profiles[2]!.timezone).toBe(""); // no proxy → unchanged
+});
+
+test("attachTimezones prefers the timezone of the proxy's exit IP over its host", async () => {
+  const profiles = [{ proxy: proxy("gate.example.net"), timezone: "" }];
+  const calls: string[] = [];
+  const { resolved } = await attachTimezones(profiles, async (url, init) => {
+    calls.push(`${url} via ${(init as { proxy?: string }).proxy ?? "direct"}`);
+    return { json: async () => ({ status: "success", timezone: "America/Toronto" }) };
+  });
+  expect(resolved).toBe(1);
+  expect(profiles[0]!.timezone).toBe("America/Toronto");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatch(/^http:\/\/ip-api\.com\/json\/.* via http:\/\/127\.0\.0\.1:\d+$/);
 });

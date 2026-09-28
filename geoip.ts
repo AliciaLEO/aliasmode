@@ -1,6 +1,7 @@
 /** Best-effort import-time timezone enrichment and shared SOCKS5 tunneling. */
 
 import { connect as netConnect, type Socket } from "node:net";
+import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
@@ -144,23 +145,59 @@ export async function lookupTimezones(
   return out;
 }
 
+/** Timezone of the proxy's exit IP, asked through the proxy itself. */
+async function lookupExitTimezone(proxy: ProxySpec, fetchFn: FetchLike): Promise<string | null> {
+  let relay: ProxyRelay | undefined;
+  try {
+    relay = await startProxyRelay({
+      type: proxy.type === "socks5" ? "socks5" : "http",
+      host: proxy.host,
+      port: Number(proxy.port),
+      user: proxy.user,
+      pass: proxy.pass,
+    });
+    const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone", {
+      proxy: `http://127.0.0.1:${relay.port}`,
+      signal: AbortSignal.timeout(10_000),
+    } as RequestInit);
+    const row = (await res.json()) as { status?: string; timezone?: string } | null;
+    return row?.status === "success" && row.timezone ? row.timezone : null;
+  } catch {
+    return null;
+  } finally {
+    relay?.close();
+  }
+}
+
 /**
- * Resolve and attach `timezone` to each profile from its proxy host. Mutates
- * and returns the same array. Profiles without a proxy (or unresolved) keep
+ * Resolve and attach `timezone` to each profile from its proxy's exit IP, so
+ * gateway/rotating proxies get the country they actually exit in. Falls back
+ * to the proxy host's location when the exit lookup fails. Mutates and
+ * returns the same array. Profiles without a proxy (or unresolved) keep
  * whatever timezone they already had (default "").
  */
-export async function attachTimezones<T extends { proxy: { host: string } | null; timezone: string }>(
+export async function attachTimezones<T extends { proxy: ProxySpec | null; timezone: string }>(
   profiles: T[],
-  fetchFn?: FetchLike,
+  fetchFn: FetchLike = (url, init) => fetch(url, init),
 ): Promise<{ profiles: T[]; resolved: number }> {
-  const hosts = profiles.map((p) => p.proxy?.host).filter((h): h is string => !!h);
-  if (hosts.length === 0) return { profiles, resolved: 0 };
-  const tz = await lookupTimezones(hosts, fetchFn);
+  const withProxy = profiles.filter((p) => p.proxy?.host);
+  if (withProxy.length === 0) return { profiles, resolved: 0 };
+  const exit = new Map<T, string>();
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(16, withProxy.length) }, async () => {
+    while (next < withProxy.length) {
+      const p = withProxy[next++]!;
+      const tz = await lookupExitTimezone(p.proxy!, fetchFn);
+      if (tz) exit.set(p, tz);
+    }
+  }));
+  const fallback = withProxy.filter((p) => !exit.has(p)).map((p) => p.proxy!.host);
+  const byHost = fallback.length ? await lookupTimezones(fallback, fetchFn) : new Map<string, string>();
   let resolved = 0;
-  for (const p of profiles) {
-    const host = p.proxy?.host;
-    if (host && tz.has(host)) {
-      p.timezone = tz.get(host)!;
+  for (const p of withProxy) {
+    const tz = exit.get(p) ?? byHost.get(p.proxy!.host);
+    if (tz) {
+      p.timezone = tz;
       resolved++;
     }
   }

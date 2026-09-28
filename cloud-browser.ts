@@ -354,11 +354,11 @@ function captureFailureStage(error: unknown): string {
 }
 
 function sessionRestoreDiagnostic(error: SessionRestoreError): CloudDiagnosticType {
-  return `session_restore_${error.operation}_${error.outcome}` as CloudDiagnosticType;
+  return `session_restore_${error.operation}_${error.outcome}`;
 }
 
 function browserLaunchDiagnostic(error: BrowserLaunchError): CloudDiagnosticType {
-  return `browser_launch_${error.failure}_failed` as CloudDiagnosticType;
+  return `browser_launch_${error.failure}_failed`;
 }
 
 function normalizeBrowserLaunchError(error: unknown): BrowserLaunchError {

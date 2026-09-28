@@ -3606,6 +3606,9 @@ test("terminal heartbeat reconciles confirmed browser death before capture", asy
 test("Cloud browser reports fixed safe browser launch operations", async () => {
   const operations = [
     "preflight",
+    "mode_conflict",
+    "binary_verification",
+    "profile_directory",
     "relay_setup",
     "process_spawn",
     "cdp_readiness",

@@ -59,3 +59,16 @@ test("attachTimezones prefers the timezone of the proxy's exit IP over its host"
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatch(/^http:\/\/ip-api\.com\/json\/.* via http:\/\/127\.0\.0\.1:\d+$/);
 });
+
+test("attachTimezones asks an IPv6 service when the IPv4-only exit lookup fails", async () => {
+  const profiles = [{ proxy: proxy("gate.example.net"), timezone: "" }];
+  const calls: string[] = [];
+  const { resolved } = await attachTimezones(profiles, async (url) => {
+    calls.push(url);
+    if (url.includes("ip-api.com")) throw new Error("no IPv4 route");
+    return { json: async () => ({ ip: "2001:db8::1", timezone: "Europe/Berlin" }) };
+  });
+  expect(resolved).toBe(1);
+  expect(profiles[0]!.timezone).toBe("Europe/Berlin");
+  expect(calls[1]).toBe("https://v6.ipinfo.io/json");
+});

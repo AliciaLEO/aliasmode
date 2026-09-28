@@ -156,12 +156,17 @@ async function lookupExitTimezone(proxy: ProxySpec, fetchFn: FetchLike): Promise
       user: proxy.user,
       pass: proxy.pass,
     });
-    const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone", {
-      proxy: `http://127.0.0.1:${relay.port}`,
-      signal: AbortSignal.timeout(10_000),
-    } as RequestInit);
-    const row = (await res.json()) as { status?: string; timezone?: string } | null;
-    return row?.status === "success" && row.timezone ? row.timezone : null;
+    const init = { proxy: `http://127.0.0.1:${relay.port}`, signal: AbortSignal.timeout(10_000) } as RequestInit;
+    try {
+      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone", init);
+      const row = (await res.json()) as { status?: string; timezone?: string } | null;
+      if (row?.status === "success" && row.timezone) return row.timezone;
+    } catch {
+      // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
+    }
+    const res = await fetchFn("https://v6.ipinfo.io/json", init);
+    const row = (await res.json()) as { timezone?: string } | null;
+    return typeof row?.timezone === "string" && row.timezone ? row.timezone : null;
   } catch {
     return null;
   } finally {

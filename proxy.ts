@@ -143,13 +143,21 @@ export function parseProxySpec(type: unknown, value: unknown): ProxySpec | null 
 
   const parts = raw.split(":");
   if (parts.length < 2) throw new Error("proxy must be host:port[:user:password] or a proxy URL");
+  // Unbracketed IPv6 host: the port sits before user:password or at the end.
+  let portIndex = 1;
+  for (const index of [parts.length - 3, parts.length - 1]) {
+    if (index >= 2 && /^\d+$/.test(parts[index]!) && isIP(parts.slice(0, index).join(":")) === 6) {
+      portIndex = index;
+      break;
+    }
+  }
   return normalizeProxySpec({
     type,
-    host: parts[0],
-    port: parts[1],
-    user: parts[2] ?? "",
+    host: parts.slice(0, portIndex).join(":"),
+    port: parts[portIndex],
+    user: parts[portIndex + 1] ?? "",
     // Passwords may contain colons; preserve everything after the user field.
-    pass: parts.slice(3).join(":"),
+    pass: parts.slice(portIndex + 2).join(":"),
   });
 }
 

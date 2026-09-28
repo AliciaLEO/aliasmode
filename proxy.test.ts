@@ -48,6 +48,12 @@ test("supports bracketed IPv6 and renders safe CloakBrowser URLs", () => {
   expect(proxyUrl(parsed)).toBe("socks5://user:p%40ss@[2001:db8::1]:1080");
 });
 
+test("parses unbracketed IPv6 hosts from seller strings", () => {
+  expect(parseProxySpec("http", "2a01:4f8::2:1080:5555:9999")).toMatchObject({ host: "2a01:4f8::2", port: "1080", user: "5555", pass: "9999" });
+  expect(parseProxySpec("http", "2001:db8::1:2:1080")).toMatchObject({ host: "2001:db8::1:2", port: "1080", user: "", pass: "" });
+  expect(parseProxySpec("http", "1.2.3.4:1080:user:pa:ss")).toMatchObject({ host: "1.2.3.4", port: "1080", user: "user", pass: "pa:ss" });
+});
+
 test("object normalization validates incomplete and invalid proxies", () => {
   expect(normalizeProxySpec({ host: "", port: "" })).toBeNull();
   expect(() => normalizeProxySpec({ host: "proxy.example", port: "" })).toThrow("invalid proxy port");

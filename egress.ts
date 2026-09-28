@@ -4,7 +4,8 @@ import { canonicalIp } from "./ip.ts";
 
 export const DEFAULT_EGRESS_ENDPOINTS = [
   "https://ipinfo.io/json",
-  "https://api.ipify.org?format=json",
+  // Dual-stack, so proxies with an IPv6-only exit still resolve.
+  "https://api64.ipify.org?format=json",
 ] as const;
 
 export interface EgressInfo {

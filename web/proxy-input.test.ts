@@ -26,6 +26,13 @@ test("proxy paste supports bracketed IPv6 and rejects malformed input", () => {
     host: "2001:db8::1",
     port: "1080",
   });
+  expect(parsePastedProxy("2a01:4f8::2:1080:user:pass", "http")).toMatchObject({
+    host: "2a01:4f8::2",
+    port: "1080",
+    user: "user",
+    pass: "pass",
+  });
+  expect(parsePastedProxy("2001:db8::1:2:1080", "http")).toMatchObject({ host: "2001:db8::1:2", port: "1080" });
   expect(() => parsePastedProxy("not-a-proxy", "http")).toThrow("host:port");
   expect(() => parsePastedProxy("proxy.example:not-a-port:user:pass", "http")).toThrow("invalid proxy port");
   expect(() => parsePastedProxy("https://u:p@proxy.example:8443", "http")).toThrow("unsupported proxy type");

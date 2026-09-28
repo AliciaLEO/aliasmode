@@ -22,6 +22,14 @@ function decoded(value: string, label: string): string {
   }
 }
 
+function isIpv6(value: string): boolean {
+  try {
+    return new URL(`http://[${value}]/`).hostname.length > 2;
+  } catch {
+    return false;
+  }
+}
+
 function validate(result: ParsedProxyInput): ParsedProxyInput {
   if (!result.host.trim()) throw new Error("proxy host is empty");
   const port = Number(result.port);
@@ -71,12 +79,20 @@ export function parsePastedProxy(
 
   const parts = raw.split(":");
   if (parts.length < 2) throw new Error("proxy must be host:port:username:password or a proxy URL");
+  // Unbracketed IPv6 host: the port sits before user:pass or at the end.
+  let portIndex = 1;
+  for (const index of [parts.length - 3, parts.length - 1]) {
+    if (index >= 2 && /^\d+$/.test(parts[index]!) && isIpv6(parts.slice(0, index).join(":"))) {
+      portIndex = index;
+      break;
+    }
+  }
   return validate({
     type: fallbackType,
-    host: parts[0]!,
-    port: parts[1]!,
-    user: parts[2] ?? "",
+    host: parts.slice(0, portIndex).join(":"),
+    port: parts[portIndex]!,
+    user: parts[portIndex + 1] ?? "",
     // Passwords can contain colons; everything after the username belongs to it.
-    pass: parts.slice(3).join(":"),
+    pass: parts.slice(portIndex + 2).join(":"),
   });
 }

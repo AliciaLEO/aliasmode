@@ -11,6 +11,8 @@ export const AGENT_PROTOCOL = "aliasmode-agent-v1";
 export const AGENT_PATH = "/api/agent/v1/connect";
 const VERSION = process.env.ALIASMODE_APP_VERSION || "0.1.0-beta.32";
 const STARTUP_WAIT_MS = 180_000;
+// Replies can be much larger than requests, e.g. a profile list for a large Cloud workspace.
+const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 
 function validNonce(value) {
@@ -225,7 +227,7 @@ async function connectAgent(descriptor) {
       })
     : new NodeWebSocket(url, AGENT_PROTOCOL, {
         headers: { Authorization: `Bearer ${descriptor.nonce}` },
-        maxPayload: 1024 * 1024,
+        maxPayload: MAX_RESPONSE_BYTES,
         handshakeTimeout: 5_000,
         followRedirects: false,
       });

@@ -49,6 +49,11 @@ import { FIREFOX_RUNTIME_VERSION } from "./firefox-config.ts";
 // uses a loopback HTTP relay for authenticated HTTP and every SOCKS5 proxy. The relay injects HTTP
 // auth or performs SOCKS5 itself, so behavior does not depend on the packaged kernel's native SOCKS
 // patch level and proxy credentials never appear in the browser command line.
+/** Proxied profiles keep WebRTC on the proxy; direct ones stay on the default route (a system VPN). */
+function webRtcPolicy(profile: Profile): string {
+  return profile.proxy ? "disable_non_proxied_udp" : "default_public_interface_only";
+}
+
 function needsProxyRelay(profile: Profile): boolean {
   return !!profile.proxy && (
     profile.proxy.type === "socks5"
@@ -868,7 +873,7 @@ export class Launcher {
       ua: profile.ua,
       platform: profile.platform,
       proxy: profile.proxy,
-      ...(profile.proxy ? { proxyWebRtcPolicy: "disable_non_proxied_udp" } : {}),
+      ...(profile.proxy ? { proxyWebRtcPolicy: webRtcPolicy(profile) } : { webRtcPolicy: webRtcPolicy(profile) }),
       timezone: profile.timezone,
       screen: [profile.screenWidth, profile.screenHeight],
       fingerprintSeed: profile.fingerprintSeed,
@@ -977,9 +982,7 @@ export class Launcher {
       `--disk-cache-size=${20 * 1024 * 1024}`,
       ...deriveFingerprintFlags(profile),
     ];
-    if (profile.proxy) {
-      args.push("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
-    }
+    args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
     // headless ON. So headful = omit the flag entirely; headless = pass it.
@@ -1591,7 +1594,7 @@ export class Launcher {
         log: (msg) => this.log(msg),
         // Mirrors buildArgs exactly: aliasmode forces the policy whenever the
         // profile has a proxy, so the recorded value must use the same test.
-        webrtc: profile.proxy ? "disable_non_proxied_udp" : "",
+        webrtc: webRtcPolicy(profile),
       });
       if (capturedFingerprint) {
         // Our own bookkeeping write makes the identity snapshot stale, and the
@@ -1953,7 +1956,7 @@ export class Launcher {
       const captured = await recordCapture({
         profile, capture: () => this.captureFingerprintFn(launch.ws),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
-        log: (msg) => this.log(msg), webrtc: profile.proxy ? "disable_non_proxied_udp" : "",
+        log: (msg) => this.log(msg), webrtc: webRtcPolicy(profile),
       });
       if (captured) {
         profile = this.store.getProfile(profileId)!;

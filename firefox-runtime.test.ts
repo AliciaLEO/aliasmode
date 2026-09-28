@@ -42,7 +42,9 @@ test("Firefox owner passes native proxy preferences", () => {
     },
   });
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe", proxy })).not.toHaveProperty("firefoxUserPrefs.browser.startup.page");
-  expect(firefoxLaunchOptions({ executablePath: "firefox.exe" })).not.toHaveProperty("firefoxUserPrefs");
+  expect(firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs).toEqual({
+    "media.peerconnection.ice.default_address_only": true,
+  });
 });
 
 test("Firefox owner excludes its temporary fingerprint page from capture history", () => {

@@ -164,7 +164,10 @@ export function firefoxLaunchOptions(input) {
         "media.peerconnection.ice.default_address_only": true,
         "media.peerconnection.ice.no_host": true,
       },
-    } : {}),
+    } : {
+      // No proxy: keep WebRTC on the default route so a system VPN's IP is used, not the real NIC.
+      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true },
+    }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
   };

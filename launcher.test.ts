@@ -1783,6 +1783,9 @@ test("buildArgs never forwards startup URLs to chromium argv", () => {
   expect(args).toContain("--disable-sync");
   expect(args).toContain("--no-first-run");
   expect(args).toContain("--no-default-browser-check");
+  expect(args).toContain("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
+  expect(launcher.buildArgs({ ...profile, proxy: null }, 9333, "/data", []))
+    .toContain("--force-webrtc-ip-handling-policy=default_public_interface_only");
   expect(args).not.toContain("https://x.com/home");
   store.close();
 });

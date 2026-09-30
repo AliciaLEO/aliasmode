@@ -101,6 +101,7 @@ export interface AppModeConfig {
   mode: "unconfigured" | "local" | "cloud";
   cloudUrl?: string;
   localAnalytics: boolean;
+  proxyViaSystemProxy?: boolean;
   restartRequired?: boolean;
   legacyRemote?: boolean;
 }
@@ -147,6 +148,18 @@ export async function selectAppMode(mode: "local" | "cloud"): Promise<any> {
   const body = await apiJson(response, path);
   if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save AliasMode mode");
   return body;
+}
+
+export async function setProxyViaSystemProxy(enabled: boolean): Promise<AppModeConfig> {
+  const path = "/ui/api/app-mode";
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ proxyViaSystemProxy: enabled }),
+  });
+  const body = await apiJson(response, path);
+  if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save system proxy setting");
+  return body.config as AppModeConfig;
 }
 
 export async function fetchCloudEvents(): Promise<CloudDiagnosticEvent[]> {

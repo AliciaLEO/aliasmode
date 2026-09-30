@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { buildNewProfile, generateId } from "./create.ts";
-import { deterministicSeed } from "./fingerprint.ts";
+import { deterministicSeed, deriveFingerprintFlags } from "./fingerprint.ts";
 
 test("buildNewProfile makes a unique id with a seed-derived fingerprint and no forced UA", () => {
   const p = buildNewProfile({ name: "sophia", group: "va1" }, () => false);
@@ -127,4 +127,25 @@ test("a new profile records the host platform explicitly", () => {
   // the browser inherit whatever host it ran on. Pin it at creation instead.
   const p = buildNewProfile({ name: "n", group: "g" }, () => false);
   expect(["windows", "macos", "linux"]).toContain(p.platformOs!);
+});
+
+test("buildNewProfile honors an explicit platformOs choice end-to-end", () => {
+  // Simulates exactly what the UI sends when the operator picks macOS.
+  const p = buildNewProfile({ name: "n", group: "g", platformOs: "macos" }, () => false);
+  expect(p.platformOs).toBe("macos");
+  // ...and the launch flags CloakBrowser actually receives must carry it.
+  const flags = deriveFingerprintFlags(p);
+  expect(flags).toContain("--fingerprint-platform=macos");
+});
+
+test("buildNewProfile rejects an invalid platformOs instead of storing it", () => {
+  const p = buildNewProfile({ name: "n", group: "g", platformOs: "amiga" }, () => false);
+  // Falls back to the host OS — never persists garbage that would break the flag.
+  expect(["windows", "macos", "linux"]).toContain(p.platformOs!);
+  expect(p.platformOs).not.toBe("amiga");
+});
+
+test("buildNewProfile keeps Firefox pinned to windows even with platformOs input", () => {
+  const p = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
+  expect(p.platformOs).toBe("windows");
 });

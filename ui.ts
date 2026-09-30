@@ -37,7 +37,7 @@ import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
-import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictCustomNo, decodeText } from "./parse.ts";
+import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictCustomNo, parsePlatformOs, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
 import { generateTotp } from "./totp.ts";
@@ -397,6 +397,7 @@ function profileEditView(p: Profile) {
     extensions: p.extensions ?? [],
     tags: (p.tags ?? []).join(", "),
     customNo: p.customNo ?? "",
+    platformOs: p.platformOs ?? "",
     timezone: p.timezone,
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
@@ -458,6 +459,10 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
       : String(set.tags ?? "").split(",").map((t) => t.trim()).filter(Boolean);
   }
   if ("customNo" in set) p.customNo = parseStrictCustomNo(set.customNo);
+  if ("platformOs" in set) {
+    // Empty string clears the explicit choice → back to automatic inference.
+    p.platformOs = parsePlatformOs(String(set.platformOs ?? "")) ?? "";
+  }
   return proxyChanged;
 }
 

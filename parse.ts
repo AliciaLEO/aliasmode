@@ -246,7 +246,7 @@ function parseSeed(raw: string | undefined): number | null {
 }
 
 /** Accept only a platform CloakBrowser's --fingerprint-platform understands. */
-function parsePlatformOs(raw: string | undefined): "windows" | "macos" | "linux" | null {
+export function parsePlatformOs(raw: string | undefined): "windows" | "macos" | "linux" | null {
   const s = (raw ?? "").trim().toLowerCase();
   return s === "windows" || s === "macos" || s === "linux" ? s : null;
 }

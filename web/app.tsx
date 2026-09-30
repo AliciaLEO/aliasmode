@@ -702,7 +702,8 @@ function FingerprintSettings({
   screen: string;
   onScreenChange: (value: string) => void;
   platformOs: string;
-  onPlatformOsChange: (value: string) => void;
+  /** Omitted when editing: the OS is part of the identity and is fixed at creation. */
+  onPlatformOsChange?: (value: string) => void;
 }) {
   return (
     <details className="fingerprint-settings">
@@ -724,12 +725,16 @@ function FingerprintSettings({
         {engine === "chromium" && (
           <label className="fld">
             <span>Operating system</span>
-            <select value={platformOs} onChange={(event) => onPlatformOsChange(event.target.value)}>
-              <option value="">Automatic</option>
-              <option value="windows">Windows</option>
-              <option value="macos">macOS</option>
-              <option value="linux">Linux</option>
-            </select>
+            {onPlatformOsChange ? (
+              <select value={platformOs} onChange={(event) => onPlatformOsChange(event.target.value)}>
+                <option value="">Automatic</option>
+                <option value="windows">Windows</option>
+                <option value="macos">macOS</option>
+                <option value="linux">Linux</option>
+              </select>
+            ) : (
+              <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
+            )}
           </label>
         )}
         {AUTOMATIC_FINGERPRINT_FIELDS.map(([label, value]) => (
@@ -740,7 +745,9 @@ function FingerprintSettings({
         ))}
         <div className="hint">{engine === "firefox"
           ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-          : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
+          : onPlatformOsChange
+            ? "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."
+            : "CloakBrowser keeps the locked values coordinated. Screen is the only fingerprint setting you can change after creation."}</div>
       </div>
     </details>
   );
@@ -2508,7 +2515,6 @@ function App() {
         username: editForm.username ?? "", password: editForm.password ?? "",
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
         resolution: editForm.resolution ?? "", tags: editForm.tags ?? "",
-        platformOs: editForm.platformOs ?? "",
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
@@ -4430,7 +4436,7 @@ function App() {
                       </button>
                     </div>
                   )}
-                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} platformOs={editForm.platformOs ?? ""} onPlatformOsChange={(value) => setEF("platformOs", value)} />
+                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} platformOs={editForm.platformOs ?? ""} />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>Extensions</span>

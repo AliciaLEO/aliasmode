@@ -2,7 +2,7 @@ import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type { PortableProfile } from "./contracts/cloud-v1.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
-import { parseStrictProxy, parseStrictResolution } from "./parse.ts";
+import { parseStrictProxy, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { proxyLegacyString } from "./proxy.ts";
@@ -131,6 +131,9 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
     profile.tags = Array.isArray(set.tags)
       ? set.tags.map(String)
       : String(set.tags ?? "").split(",").map((tag) => tag.trim()).filter(Boolean);
+  }
+  if ("platformOs" in set) {
+    profile.platformOs = parsePlatformOs(String(set.platformOs ?? "")) ?? "";
   }
   return proxyChanged;
 }

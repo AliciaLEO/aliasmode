@@ -682,7 +682,6 @@ function CopyField({ label, value, onChange }: { label: string; value: string; o
 const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["User agent", "Automatic"],
   ["Browser version", "Automatic · latest installed"],
-  ["Operating system", "Automatic"],
   ["GPU", "Automatic"],
   ["CPU", "Automatic"],
   ["RAM", "Automatic"],
@@ -696,10 +695,14 @@ function FingerprintSettings({
   engine,
   screen,
   onScreenChange,
+  platformOs,
+  onPlatformOsChange,
 }: {
   engine: "chromium" | "firefox";
   screen: string;
   onScreenChange: (value: string) => void;
+  platformOs: string;
+  onPlatformOsChange: (value: string) => void;
 }) {
   return (
     <details className="fingerprint-settings">
@@ -718,6 +721,17 @@ function FingerprintSettings({
             <input value={screen} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
+        {engine === "chromium" && (
+          <label className="fld">
+            <span>Operating system</span>
+            <select value={platformOs} onChange={(event) => onPlatformOsChange(event.target.value)}>
+              <option value="">Automatic</option>
+              <option value="windows">Windows</option>
+              <option value="macos">macOS</option>
+              <option value="linux">Linux</option>
+            </select>
+          </label>
+        )}
         {AUTOMATIC_FINGERPRINT_FIELDS.map(([label, value]) => (
           <label className="fld" key={label}>
             <span>{label}</span>
@@ -726,7 +740,7 @@ function FingerprintSettings({
         ))}
         <div className="hint">{engine === "firefox"
           ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-          : "CloakBrowser keeps the locked values coordinated. Screen is the only fingerprint setting you can override."}</div>
+          : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
       </div>
     </details>
   );
@@ -915,7 +929,7 @@ async function storeDesktopCloudCredentials(
 
 const BLANK_FORM = {
   name: "", engine: "chromium" as "chromium" | "firefox", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
-  screen: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
+  screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
 const BLANK_COOKIE_FORM = { name: "", value: "", domain: "", path: "/" };
@@ -2346,6 +2360,7 @@ function App() {
         group: form.group,
         platform: form.platform,
         screen: form.screen,
+        ...(form.platformOs ? { platformOs: form.platformOs } : {}),
         ...(isCloudMode ? {} : { customNo: form.customNo }),
         username: form.username,
         password: form.password,
@@ -2405,6 +2420,7 @@ function App() {
           email: p.email, emailPassword: p.emailPassword, twofa: p.twofa,
           resolution: p.resolution, tags: p.tags,
           customNo: p.customNo ?? "",
+          platformOs: p.platformOs ?? "",
           timezone: p.timezone,
         });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
@@ -2492,6 +2508,7 @@ function App() {
         username: editForm.username ?? "", password: editForm.password ?? "",
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
         resolution: editForm.resolution ?? "", tags: editForm.tags ?? "",
+        platformOs: editForm.platformOs ?? "",
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
@@ -4243,7 +4260,7 @@ function App() {
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} />
+              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label="Browser">
                 {([
                   {
@@ -4413,7 +4430,7 @@ function App() {
                       </button>
                     </div>
                   )}
-                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} />
+                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} platformOs={editForm.platformOs ?? ""} onPlatformOsChange={(value) => setEF("platformOs", value)} />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>Extensions</span>

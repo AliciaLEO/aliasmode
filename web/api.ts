@@ -622,6 +622,8 @@ export interface NewProfileInput {
   platform?: string;
   proxy?: ProxyCheckInput | null;
   screen?: string;
+  /** Fingerprint OS override: "windows" | "macos" | "linux". Omitted → host OS. */
+  platformOs?: string;
   /** Operator-chosen serial shown in the roster and the browser window title. */
   customNo?: string;
   username?: string;
@@ -664,6 +666,8 @@ export interface EditProfile {
   twofa: string;
   /** "1920*1080". */
   resolution: string;
+  /** Fingerprint OS: "windows" | "macos" | "linux", or "" for automatic. */
+  platformOs: string;
   /** Ids of extensions assigned to this profile. */
   extensions: string[];
   /** Comma-separated custom tags. */

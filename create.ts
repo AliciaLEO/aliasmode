@@ -14,7 +14,7 @@ import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { createFirefoxProfileConfig } from "./firefox-config.ts";
 import { deterministicSeed, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
-import { parseStrictCustomNo, parseStrictResolution } from "./parse.ts";
+import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 
 export interface NewProfileInput {
   /** Browser identity engine. Defaults to Chromium for compatibility. */
@@ -31,6 +31,8 @@ export interface NewProfileInput {
   proxy?: { type?: string; host?: string; port?: string; user?: string; pass?: string } | null;
   /** "1920x1080" / "1920*1080"; empty → a random realistic resolution. */
   screen?: string;
+  /** Fingerprint OS override: "windows" | "macos" | "linux". Empty/omitted → host OS. */
+  platformOs?: string;
   /** Operator-chosen serial shown in the roster and the browser window title. */
   customNo?: string;
 }
@@ -100,7 +102,8 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     // ...but the platform must be pinned, or a blank UA means no
     // --fingerprint-platform flag and the browser inherits whatever host it
     // happens to run on — a silent identity change on a move between boxes.
-    platformOs: engine === "firefox" ? "windows" : hostPlatformOs(),
+    // An explicit operator choice wins; otherwise fall back to the host OS.
+    platformOs: engine === "firefox" ? "windows" : (parsePlatformOs(input.platformOs) ?? hostPlatformOs()),
     timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : "", // Firefox saves a host timezone in its persisted config
     screenWidth: typeof firefoxScreenWidth === "number" ? firefoxScreenWidth : selected.width,
     screenHeight: typeof firefoxScreenHeight === "number" ? firefoxScreenHeight : selected.height,

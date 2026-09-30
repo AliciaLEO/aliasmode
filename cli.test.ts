@@ -9,6 +9,7 @@ import {
   exerciseCloudLauncherSmoke,
   exerciseWindowsWindowAcceptance,
   lifecycleAdmissionOptionsFromEnv,
+  makeLauncher,
   mapWindowsNativeWindowCandidates,
   OFFICIAL_CLOUD_ANON_KEY,
   OFFICIAL_CLOUD_URL,
@@ -24,6 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import net from "node:net";
 import { statePaths } from "./paths.ts";
+import { ProfileStore } from "./store.ts";
 import { applySourceRuntime, type SourceRuntime } from "./source-runtime.ts";
 import { AppConfigStore } from "./app-config.ts";
 
@@ -1130,4 +1132,26 @@ test("remote shutdown deadline retains failed cleanup instead of retrying foreve
   )).rejects.toThrow("launch records and any unconfirmed hub locks were intentionally retained");
 
   expect(attempts).toBe(2);
+});
+
+test("makeLauncher forwards the system-proxy relay toggle to the Launcher", () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-make-launcher-"));
+  const store = new ProfileStore(":memory:");
+  try {
+    const dataRoot = join(root, "profiles");
+    mkdirSync(dataRoot, { recursive: true });
+    const viaSystemProxy = (launcher: unknown): boolean =>
+      (launcher as { viaSystemProxy?: boolean }).viaSystemProxy ?? false;
+
+    const enabled = makeLauncher(store, [], false, dataRoot, undefined, { viaSystemProxy: true });
+    expect(viaSystemProxy(enabled)).toBe(true);
+    (enabled as unknown as { autofill?: { close(): void } }).autofill?.close();
+
+    const disabled = makeLauncher(store, [], false, dataRoot);
+    expect(viaSystemProxy(disabled)).toBe(false);
+    (disabled as unknown as { autofill?: { close(): void } }).autofill?.close();
+  } finally {
+    store.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -47,6 +47,7 @@ export interface ProxyCheckOptions extends EgressLookupOptions {
   relayFactory?: RelayFactory;
   /** Bulk runs share the direct-IP lookup, including a failed lookup (null). */
   direct?: EgressInfo | null;
+  viaSystemProxy?: boolean;
 }
 
 function safeFailureReason(logs: readonly string[]): ProxyConnectionFailureReason {
@@ -122,7 +123,7 @@ export function classifyProxyAttempts(
 
 async function proxyAttempt(
   proxy: ProxySpec,
-  options: Required<Pick<ProxyCheckOptions, "fetchFn" | "relayFactory">> & EgressLookupOptions,
+  options: Required<Pick<ProxyCheckOptions, "fetchFn" | "relayFactory">> & EgressLookupOptions & Pick<ProxyCheckOptions, "viaSystemProxy">,
 ): Promise<ProxyCheckAttempt> {
   const logs: string[] = [];
   let relay: ProxyRelay | undefined;
@@ -133,7 +134,7 @@ async function proxyAttempt(
       port: Number(proxy.port),
       user: proxy.user,
       pass: proxy.pass,
-    }, { log: (message) => logs.push(message) });
+    }, { log: (message) => logs.push(message), viaSystemProxy: options.viaSystemProxy ?? false });
     const proxyUrl = `http://127.0.0.1:${relay.port}`;
     const proxiedFetch = ((input: RequestInfo | URL, init?: RequestInit) =>
       options.fetchFn(input, { ...init, proxy: proxyUrl })) as typeof fetch;
@@ -179,7 +180,7 @@ export async function checkProxy(
     options.direct === undefined ? fetchDirectEgress(lookupOptions, fetchFn) : options.direct,
     Promise.all(Array.from(
       { length: ATTEMPT_COUNT },
-      () => proxyAttempt(proxy, { ...lookupOptions, fetchFn, relayFactory }),
+      () => proxyAttempt(proxy, { ...lookupOptions, fetchFn, relayFactory, viaSystemProxy: options.viaSystemProxy ?? false }),
     )),
   ]);
   return classifyProxyAttempts(attempts, direct);

@@ -9,6 +9,7 @@ export interface AppConfig {
   mode: AppMode;
   cloudUrl?: string;
   localAnalytics: boolean;
+  proxyViaSystemProxy?: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -43,6 +44,7 @@ export function parseAppConfig(value: unknown): AppConfig {
     mode: raw.mode,
     ...(cloudUrl ? { cloudUrl } : {}),
     localAnalytics: raw.localAnalytics === true,
+    ...(raw.proxyViaSystemProxy === true ? { proxyViaSystemProxy: true } : {}),
   };
 }
 

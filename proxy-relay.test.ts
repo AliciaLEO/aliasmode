@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import net from "node:net";
 import { startProxyRelay } from "./proxy-relay.ts";
+import { getSystemProxy } from "./system-proxy.ts";
 
 const EXPECTED_AUTH = "Basic " + Buffer.from("puser:ppass").toString("base64");
 
@@ -326,4 +327,64 @@ test("relay.close destroys accepted clients and upstream sockets, not only the l
 
   await Promise.all([clientClosed, upstreamClosed]);
   up.close();
+});
+
+test("relay chains through the system proxy and preserves pipelined upstream bytes", async () => {
+  const previous = process.env.HTTPS_PROXY;
+  const previousLower = process.env.https_proxy;
+  let received = "";
+  let connectCount = 0;
+  const systemProxy = net.createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
+      const end = buffer.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const head = buffer.subarray(0, end).toString("latin1");
+      buffer = buffer.subarray(end + 4);
+      if (/^CONNECT\s/i.test(head) && connectCount++ === 0) {
+        received = head;
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        return;
+      }
+      if (/^CONNECT\s/i.test(head)) {
+        socket.write("HTTP/1.1 200 Connection Established\r\n\r\nSYSTEM_PROXY_EXTRA");
+      }
+    });
+    socket.on("error", () => socket.destroy());
+  });
+  const configuredProxy = getSystemProxy();
+  if (configuredProxy) {
+    systemProxy.close();
+    return;
+  }
+  await new Promise<void>((resolve) => systemProxy.listen(0, "127.0.0.1", resolve));
+  const actualSystemPort = (systemProxy.address() as net.AddressInfo).port;
+  process.env.HTTPS_PROXY = `http://127.0.0.1:${actualSystemPort}`;
+  delete process.env.https_proxy;
+
+  const relay = await startProxyRelay({ host: "upstream.test", port: 443, user: "", pass: "" }, { viaSystemProxy: true });
+  const client = net.connect({ host: "127.0.0.1", port: relay.port });
+  await new Promise<void>((resolve, reject) => {
+    client.once("connect", resolve);
+    client.once("error", reject);
+  });
+  const response = new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    client.on("data", (chunk) => {
+      chunks.push(Buffer.from(chunk));
+      const all = Buffer.concat(chunks);
+      if (all.includes("SYSTEM_PROXY_EXTRA")) resolve(all);
+    });
+    client.once("error", reject);
+  });
+  client.write("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n");
+  const all = await response;
+  expect(received).toContain("CONNECT upstream.test:443");
+  expect(all.toString()).toContain("SYSTEM_PROXY_EXTRA");
+  client.destroy();
+  relay.close();
+  systemProxy.close();
+  if (previous === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = previous;
+  if (previousLower === undefined) delete process.env.https_proxy; else process.env.https_proxy = previousLower;
 });

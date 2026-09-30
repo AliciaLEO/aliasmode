@@ -44,6 +44,7 @@ import {
   restoreCloudSession,
   resendCloudSignUp,
   selectAppMode,
+  setProxyViaSystemProxy,
   fetchProfiles,
   fetchHealth,
   fetchLogs,
@@ -3986,6 +3987,23 @@ function App() {
           {settingsTab === "advanced" && (
             <>
               <h2 className="sect-title">Updates and diagnostics</h2>
+              <section className="settings-card">
+                <header><Icon name="settings" className="sm" /><h2>Proxy</h2></header>
+                <div className="card-body">
+                  <label className="checkrow">
+                    <input
+                      type="checkbox"
+                      checked={appMode?.proxyViaSystemProxy === true}
+                      onChange={(event) => {
+                        void setProxyViaSystemProxy(event.target.checked)
+                          .then(setAppMode)
+                          .catch((error) => setModeErr(error instanceof Error ? error.message : String(error)));
+                      }}
+                    />
+                    <span>Use system proxy for relay upstream connections</span>
+                  </label>
+                </div>
+              </section>
 <section className="settings-card update-settings">
             <header><Icon name="import" className="sm" /><h2>Updates</h2></header>
             <div className="card-body">

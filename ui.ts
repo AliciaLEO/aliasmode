@@ -639,7 +639,9 @@ export async function handleUiRequest(
       return noStoreJson({ ok: false, error: "Invalid proxy settings" }, 400);
     }
     try {
-      const result = await (options.proxyCheck ?? runProxyCheck)(proxy);
+      const result = await (options.proxyCheck ?? ((value) => runProxyCheck(value, {
+        viaSystemProxy: options.appConfig?.read().proxyViaSystemProxy ?? false,
+      })))(proxy);
       return noStoreJson({ ok: true, ...proxyCheckView(result) });
     } catch {
       return noStoreJson({ ok: false, error: "Proxy check failed" }, 500);
@@ -651,7 +653,15 @@ export async function handleUiRequest(
     const rejected = rejectUntrustedJsonMutation(req);
     if (rejected) return rejected;
     try {
-      const body = await req.json() as { mode?: unknown };
+      const body = await req.json() as { mode?: unknown; proxyViaSystemProxy?: unknown };
+      if (body.mode === undefined && typeof body.proxyViaSystemProxy === "boolean") {
+        const current = options.appConfig.read();
+        const config = options.appConfig.write({
+          ...current,
+          ...(body.proxyViaSystemProxy ? { proxyViaSystemProxy: true } : { proxyViaSystemProxy: undefined }),
+        });
+        return Response.json({ ok: true, config, restartRequired: true });
+      }
       if (body.mode !== "local" && body.mode !== "cloud") {
         return Response.json({ ok: false, error: "mode must be local or cloud" }, { status: 400 });
       }

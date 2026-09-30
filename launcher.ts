@@ -289,6 +289,7 @@ export function platformHomeUrl(platform: string | undefined, telegramClient: "a
 
 export interface LauncherOptions {
   store: ProfileStore;
+  viaSystemProxy?: boolean;
   autofill?: AutofillBridge;
   /** Path to the CloakBrowser binary. Defaults to $CLOAKBROWSER_BINARY_PATH. */
   binaryPath?: string;
@@ -655,6 +656,7 @@ export class Launcher {
   private gracefulStopMs: number;
   private cdpReadyTimeoutMs: number;
   private resetStorageOnUncleanExit: boolean;
+  private viaSystemProxy: boolean;
   private log: (msg: string) => void;
 
   /** Live process handles keyed by profileId, for authoritative in-process kills. */
@@ -696,6 +698,7 @@ export class Launcher {
 
   constructor(opts: LauncherOptions) {
     this.store = opts.store;
+    this.viaSystemProxy = opts.viaSystemProxy ?? false;
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
     this.unsafeDisableIdentityGates = opts.unsafeDisableIdentityGates ?? false;
@@ -1502,7 +1505,7 @@ export class Launcher {
               user: p.user,
               pass: p.pass,
             },
-            {},
+            { viaSystemProxy: this.viaSystemProxy },
           );
         } catch {
           throw new BrowserLaunchError("relay_setup");
@@ -1911,7 +1914,7 @@ export class Launcher {
         const relay = await startProxyRelay({
           type: proxy.type === "socks5" ? "socks5" : "http",
           host: proxy.host, port: Number(proxy.port), user: proxy.user, pass: proxy.pass,
-        }, {});
+        }, { viaSystemProxy: this.viaSystemProxy });
         this.closeRelay(profileId);
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
@@ -2646,7 +2649,7 @@ export class Launcher {
           user: profile.proxy!.user,
           pass: profile.proxy!.pass,
         },
-        { port: launch.relayPort },
+        { port: launch.relayPort, viaSystemProxy: this.viaSystemProxy },
       );
     } catch {
       throw new BrowserLaunchError("relay_setup");

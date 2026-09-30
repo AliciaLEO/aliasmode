@@ -107,9 +107,9 @@ export class SupabaseAuthClient {
   }
 
   async requestPasswordReset(email: string): Promise<void> {
-    await this.call("/recover", {
+    await this.call(`/recover?redirect_to=${encodeURIComponent(PASSWORD_RESET_REDIRECT)}`, {
       method: "POST",
-      body: JSON.stringify({ email, redirect_to: PASSWORD_RESET_REDIRECT }),
+      body: JSON.stringify({ email }),
     });
   }
 

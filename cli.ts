@@ -370,12 +370,16 @@ function attachDesktopControl(
 
 const UNSAFE_CANARY_TIMEOUT_MS = 600_000;
 
-function makeLauncher(
+// Exported for cli.test.ts: guards the Settings > Advanced "use system proxy"
+// toggle reaching browser launches (regression: the value previously never
+// left the proxy-check path).
+export function makeLauncher(
   store: ProfileStore,
   rest: string[],
   remoteMode = false,
   defaultDataRoot = "profiles",
   ensureSearchProvider = ensureDuckDuckGoDefault,
+  extra: { viaSystemProxy?: boolean } = {},
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
   const autofill = new AutofillBridge(store);
@@ -385,6 +389,9 @@ function makeLauncher(
     autofill,
     dataRoot: defaultDataRoot,
     headless: has(rest, "headless"),
+    // Relay upstream connections optionally chain through the OS system proxy
+    // (Settings > Advanced). Read once here; toggling requires a restart.
+    viaSystemProxy: extra.viaSystemProxy ?? false,
     // Explicit canary-only escape hatch for constrained test hosts where a
     // full browser identity probe cannot complete. Never enable in production.
     unsafeDisableIdentityGates: unsafeCanary,
@@ -2810,7 +2817,9 @@ async function main() {
       // stale crash row rejects startup before it can be proven dead.
       console.log(`${configuredMode.mode} mode: preparing browser recovery`);
       console.log("startup: initializing autofill bridge");
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot);
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, {
+        viaSystemProxy: savedMode.proxyViaSystemProxy === true,
+      });
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
       await launcher.reconcileOrphans();
       if (savedMode.mode !== "cloud") {
@@ -2920,7 +2929,9 @@ async function main() {
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot);
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, {
+        viaSystemProxy: savedMode.proxyViaSystemProxy === true,
+      });
       await launcher.reconcileOrphans();
       if (savedMode.mode !== "cloud") await launcher.certifySurvivors();
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);

@@ -326,6 +326,10 @@ export class CloudClient {
     return this.call(`/workspace/members/${encodeURIComponent(accountId)}`, { method: "DELETE" });
   }
 
+  sendMemberPasswordReset(accountId: string): Promise<{ ok: true }> {
+    return this.call(`/workspace/members/${encodeURIComponent(accountId)}/password-reset`, { method: "POST", body: "{}" });
+  }
+
   listInvitations(): Promise<ListInvitationsResponse> {
     return this.call("/workspace/invitations");
   }

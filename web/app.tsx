@@ -42,6 +42,7 @@ import {
   signOutCloud,
   signUpCloud,
   restoreCloudSession,
+  requestCloudPasswordReset,
   resendCloudSignUp,
   selectAppMode,
   fetchProfiles,
@@ -1749,6 +1750,25 @@ function App() {
     }
   };
 
+  const forgotPassword = async () => {
+    const email = authEmail.trim();
+    setAuthErr(null);
+    setAuthNotice(null);
+    if (!email) {
+      setAuthErr("Enter your email, then select Forgot password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await requestCloudPasswordReset(email);
+      setAuthNotice(`If ${email} has an account, a password reset link is on its way. Check spam too.`);
+    } catch (error) {
+      setAuthErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const acceptInvitation = async () => {
     setAuthBusy(true);
     setAuthErr(null);
@@ -2884,6 +2904,7 @@ function App() {
                   <button type="button" onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView(authView === "signin" ? "signup" : "signin"); }}>
                     {authView === "signin" ? "Create an account" : "Back to sign in"}
                   </button>
+                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>Forgot password?</button>}
                 </div>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
               </>
@@ -3956,6 +3977,9 @@ function App() {
                         <select className="select" aria-label={`Role for ${member.email}`} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
                           <option value="member">member</option><option value="admin">admin</option>
                         </select>
+                      )}
+                      {member.role !== "owner" && (cloudAuth?.workspace?.role === "owner" || (cloudAuth?.workspace?.role === "admin" && member.role === "member")) && (
+                        <button className="btn xs" type="button" aria-label={`Send password reset to ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("reset-password", { accountId: member.accountId }, `Password reset email sent to ${member.email}`)}>Reset password</button>
                       )}
                     </div>
                     {member.role === "member" && (cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (

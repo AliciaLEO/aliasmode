@@ -54,6 +54,7 @@ export interface SupabaseAuthClientOptions {
 
 const DEFAULT_AUTH_TIMEOUT_MS = 30_000;
 const EMAIL_CONFIRMATION_REDIRECT = "https://aliasmode.com/auth/email-confirmation";
+const PASSWORD_RESET_REDIRECT = "https://aliasmode.com/auth/password-reset";
 
 function isRetryableAuthStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || (status >= 500 && status < 600);
@@ -105,10 +106,10 @@ export class SupabaseAuthClient {
     return this.session(body);
   }
 
-  async requestPasswordReset(email: string, redirectTo: string): Promise<void> {
+  async requestPasswordReset(email: string): Promise<void> {
     await this.call("/recover", {
       method: "POST",
-      body: JSON.stringify({ email, redirect_to: redirectTo }),
+      body: JSON.stringify({ email, redirect_to: PASSWORD_RESET_REDIRECT }),
     });
   }
 

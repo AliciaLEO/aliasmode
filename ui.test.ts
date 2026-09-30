@@ -2809,6 +2809,44 @@ test("Cloud workspace API combines team state and forwards grants", async () => 
   expect(calls).toEqual([{ folderName: "Sales", accountId: "account1", permission: "view" }]);
   s.close();
 });
+test("Cloud workspace API forwards member password resets", async () => {
+  const s = store();
+  const resets: string[] = [];
+  const client = {
+    async sendMemberPasswordReset(accountId: string) { resets.push(accountId); return { ok: true }; },
+  };
+  const response = await handleUiRequest(new Request("http://x/ui/api/cloud-workspace", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "reset-password", accountId: "account1" }),
+  }), {} as any, s, null, { cloudConnection: { client } as unknown as CloudConnectionRuntime });
+  expect(response!.status).toBe(200);
+  expect(resets).toEqual(["account1"]);
+  s.close();
+});
+
+test("Cloud forgot password stays neutral when Auth throttles repeat emails", async () => {
+  const s = store();
+  const requested: string[] = [];
+  let failure: Error | null = null;
+  const cloudAuth = {
+    async acquireTransition() { return { generation: 0, release() {} }; },
+    isTransitionCurrent() { return true; },
+    async requestPasswordReset(email: string) { requested.push(email); if (failure) throw failure; },
+  } as unknown as CloudAuthRuntime;
+  const request = () => handleUiRequest(new Request("http://x/ui/api/cloud-auth/forgot-password", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "member@example.com" }),
+  }), {} as any, s, null, { cloudAuth });
+
+  expect((await request())!.status).toBe(200);
+  failure = new SupabaseAuthRequestError("too many", { kind: "http", status: 429, retryable: true });
+  expect(await (await request())!.json()).toEqual({ ok: true });
+  failure = new SupabaseAuthRequestError("down", { kind: "http", status: 500, retryable: true });
+  expect((await request())!.status).not.toBe(200);
+  expect(requested).toEqual(["member@example.com", "member@example.com", "member@example.com"]);
+  s.close();
+});
+
 test("Cloud workspace API forwards folder deletion and preserves Cloud conflicts", async () => {
   const s = store();
   const deleted: string[] = [];

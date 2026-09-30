@@ -140,6 +140,10 @@ export class CloudAuthRuntime {
     return this.auth.resendSignUpConfirmation(email);
   }
 
+  requestPasswordReset(email: string): Promise<void> {
+    return this.auth.requestPasswordReset(email);
+  }
+
   async signIn(email: string, password: string): Promise<CloudAuthResult> {
     if (this.hasSession()) {
       throw new Error("Sign out before signing in to another Cloud account");

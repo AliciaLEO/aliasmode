@@ -256,6 +256,7 @@ async function cloudAuthAction(action: string, input: Record<string, string | bo
 export const signUpCloud = (email: string, password: string) =>
   cloudAuthAction("signup", { email, password });
 export const resendCloudSignUp = (email: string) => cloudAuthAction("resend-signup", { email });
+export const requestCloudPasswordReset = (email: string) => cloudAuthAction("forgot-password", { email });
 export const signInCloud = (email: string, password: string, queueKey?: string) =>
   cloudAuthAction("signin", { email, password, ...(queueKey ? { queueKey } : {}) });
 export const restoreCloudSession = (

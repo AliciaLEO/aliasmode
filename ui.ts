@@ -735,6 +735,18 @@ export async function handleUiRequest(
         await options.cloudAuth.resendSignUpConfirmation(body.email);
         return Response.json({ ok: true });
       }
+      if (pathname === "/ui/api/cloud-auth/forgot-password") {
+        if (typeof body.email !== "string" || !body.email) {
+          return Response.json({ ok: false, error: "email is required" }, { status: 400 });
+        }
+        try {
+          await options.cloudAuth.requestPasswordReset(body.email);
+        } catch (error) {
+          // Auth throttles repeat reset emails per address; keep the reply neutral.
+          if (!(error instanceof SupabaseAuthRequestError && error.failure.kind === "http" && error.failure.status === 429)) throw error;
+        }
+        return Response.json({ ok: true });
+      }
       if (pathname === "/ui/api/cloud-auth/signin") {
         if (typeof body.email !== "string" || typeof body.password !== "string") {
           return Response.json({ ok: false, error: "email and password are required" }, { status: 400 });
@@ -1015,6 +1027,7 @@ export async function handleUiRequest(
       if (action === "resend") return Response.json(await cloud.resendInvitation(String(body.id ?? "")));
       if (action === "revoke") return Response.json(await cloud.revokeInvitation(String(body.id ?? "")));
       if (action === "role") return Response.json(await cloud.changeMemberRole(String(body.accountId ?? ""), body.role === "admin" ? "admin" : "member"));
+      if (action === "reset-password") return Response.json(await cloud.sendMemberPasswordReset(String(body.accountId ?? "")));
       if (action === "remove-member") return Response.json(await cloud.removeMember(String(body.accountId ?? "")));
       if (action === "grant") return Response.json(await cloud.setFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
       if (action === "remove-grant") return Response.json(await cloud.removeFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? "")));

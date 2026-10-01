@@ -55,16 +55,10 @@ function firefoxProfile(s: ProfileStore, id: string): Profile {
 }
 
 function timezoneFetch(timezones: Record<string, string>, calls?: string[][]) {
-  return async (_url: string, init: RequestInit) => {
-    const queries = (JSON.parse(String(init.body)) as Array<{ query: string }>).map((item) => item.query);
-    calls?.push(queries);
-    return {
-      async json() {
-        return queries.map((query) => timezones[query]
-          ? { query, timezone: timezones[query], status: "success" }
-          : { query, status: "fail" });
-      },
-    };
+  return async (url: string, _init: RequestInit) => {
+    calls?.push([url]);
+    const timezone = Object.values(timezones)[0];
+    return { json: async () => timezone ? { status: "success", timezone } : { status: "fail" } };
   };
 }
 
@@ -1351,7 +1345,7 @@ test("an explicit timezone action updates a Local proxy timezone", async () => {
   );
   expect(res!.status).toBe(200);
   expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London" });
-  expect(calls).toEqual([["1.2.3.4"]]);
+  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone"]]);
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
   s.close();
 });
@@ -1376,6 +1370,82 @@ test("an explicit timezone action updates Firefox configuration", async () => {
     firefox: { config: { timezone: "Europe/London" } },
   });
   s.close();
+});
+
+test("explicit connection timezone lookup supports system VPNs in both engines", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const s = store();
+    const profile = engine === "firefox" ? firefoxProfile(s, "vpn-profile") : { ...s.getProfile("k1d0cd11")!, id: "vpn-profile" };
+    profile.proxy = null;
+    profile.timezone = "UTC";
+    s.upsertProfile(profile);
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles/vpn-profile/timezone", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }), {} as any, s, null, { timezoneFetch: async (_url, init) => {
+      expect(init).not.toHaveProperty("proxy");
+      return { json: async () => ({ status: "success", timezone: "America/Toronto" }) };
+    } });
+    expect(response!.status).toBe(200);
+    expect(await response!.json()).toMatchObject({ ok: true, timezone: "America/Toronto" });
+    const saved = s.getProfile(profile.id)!;
+    expect(saved.timezone).toBe("America/Toronto");
+    expect(saved.fingerprintSeed).toBe(profile.fingerprintSeed);
+    expect(saved.cookies).toEqual(profile.cookies);
+    if (engine === "firefox") expect(saved.firefox!.config.timezone).toBe(saved.timezone);
+    s.close();
+  }
+});
+
+test("timezone lookup does not treat a quarantined proxy as a direct connection", async () => {
+  const s = store();
+  const profile = s.getProfile("k1d0cd11")!;
+  profile.proxy = null;
+  profile.proxyError = "Invalid proxy port";
+  s.upsertProfile(profile);
+  let calls = 0;
+  const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: async () => {
+    calls++;
+    return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+  } });
+  expect(response!.status).toBe(400);
+  expect(calls).toBe(0);
+  expect(s.getProfile(profile.id)).toEqual(profile);
+  s.close();
+});
+
+test("failed timezone lookups report failure without changing the saved identity", async () => {
+  const s = store();
+  const before = s.getProfile("k1d0cd11")!;
+  before.timezone = "Europe/Paris";
+  s.upsertProfile(before);
+  const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: async () => { throw new Error("offline"); } });
+  expect(response!.status).toBe(502);
+  expect(await response!.json()).toMatchObject({ ok: false, error: expect.any(String) });
+  expect(s.getProfile(before.id)).toEqual(before);
+  s.close();
+});
+
+test("timezone lookup cannot overwrite a changed connection or unrelated edits", async () => {
+  for (const changeProxy of [false, true]) {
+    const s = store();
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }), {} as any, s, null, { timezoneFetch: async () => {
+      const updated = s.getProfile("k1d0cd11")!;
+      updated.name = "edited while lookup was pending";
+      if (changeProxy) updated.proxy = null;
+      s.upsertProfile(updated);
+      return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+    } });
+    expect(response!.status).toBe(changeProxy ? 409 : 200);
+    expect(s.getProfile("k1d0cd11")!.name).toBe("edited while lookup was pending");
+    expect(s.getProfile("k1d0cd11")!.timezone).toBe(changeProxy ? "" : "Europe/Paris");
+    s.close();
+  }
 });
 
 test("legacy remote proxy edits preserve stored timezone without a lookup", async () => {
@@ -1781,7 +1851,7 @@ test("create (local mode) does not look up a proxy timezone", async () => {
   const body = await res!.json();
   expect(body.ok).toBe(true);
   expect(calls).toEqual([]);
-  expect(s.getProfile(body.id)!.timezone).toBe("");
+  expect(s.getProfile(body.id)!.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   s.close();
 });
 

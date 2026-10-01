@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
+import { ProxyProviderOffer } from "./proxy-offer.tsx";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
@@ -687,7 +688,7 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["CPU", "Automatic"],
   ["RAM", "Automatic"],
   ["Fingerprint seed", "Automatic · unique and stable"],
-  ["Timezone", "Stored · set from proxy on request"],
+  ["Timezone", "Stored · set from connection on request"],
   ["Canvas / WebGL / audio", "Automatic"],
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
@@ -941,7 +942,6 @@ const BLANK_FORM = {
 };
 
 const BLANK_COOKIE_FORM = { name: "", value: "", domain: "", path: "/" };
-const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";
 
 type ProxyCheckUiState = {
   checking: boolean;
@@ -950,24 +950,6 @@ type ProxyCheckUiState = {
 };
 
 const EMPTY_PROXY_CHECK: ProxyCheckUiState = { checking: false, result: null, error: null };
-
-function ProxyProviderOffer({ replacement = false }: { replacement?: boolean }) {
-  return (
-    <div className="proxy-referral">
-      <strong>{replacement
-        ? "This proxy is unstable. View recommended replacements."
-        : "Need a proxy? Get one from our recommended provider."}</strong>
-      <a
-        href={PROXY_PROVIDER_URL}
-        target="_blank"
-        rel="noreferrer"
-        aria-label="View recommended proxies at NobleProxy (opens externally)"
-      >
-        {replacement ? "View replacements" : "View provider"} <span aria-hidden="true">↗</span>
-      </a>
-    </div>
-  );
-}
 
 function proxyFailureMessage(reason: ProxyCheckResult["reason"]): string {
   if (reason === "authentication_failed") return "Proxy authentication failed.";
@@ -1134,6 +1116,10 @@ function App() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editExpectedVersion, setEditExpectedVersion] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editInitialProxy, setEditInitialProxy] = useState({ proxy: "", proxyType: "http" });
+  const [outreachOfferDismissed, setOutreachOfferDismissed] = useState(() => {
+    try { return localStorage.getItem("aliasmode.offers.xreacherDismissed") === "1"; } catch { return false; }
+  });
   const [editProxyCheck, setEditProxyCheck] = useState<ProxyCheckUiState>(EMPTY_PROXY_CHECK);
   const editProxyCheckGeneration = useRef(0);
   const [editErr, setEditErr] = useState<string | null>(null);
@@ -2011,7 +1997,8 @@ function App() {
         if (
           !p.id.toLowerCase().includes(needle) &&
           !p.name.toLowerCase().includes(needle) &&
-          !no.includes(needle)
+          !no.includes(needle) &&
+          !(p.tags ?? []).some((tag) => tag.toLowerCase().includes(needle))
         ) return false;
       }
       return true;
@@ -2037,6 +2024,8 @@ function App() {
   const editRunning = editId ? profiles.find((profile) => profile.id === editId)?.running === true : false;
   const createHasProxy = !!(form.host.trim() || form.port.trim() || form.user.trim() || form.pass);
   const editHasProxy = !!(editForm.proxy ?? "").trim();
+  const editProxyChanged = (editForm.proxy ?? "") !== editInitialProxy.proxy ||
+    (editHasProxy && editForm.proxyType !== editInitialProxy.proxyType);
 
   const pastedRecordCount = bulkText.trim() ? countPastedRecords(bulkText) : null;
 
@@ -2415,7 +2404,10 @@ function App() {
     setEditProxyCheck(EMPTY_PROXY_CHECK);
   };
   const setEF = (k: string, v: string) => {
-    if (k === "proxy" || k === "proxyType") resetEditProxyCheck();
+    if (k === "proxy" || k === "proxyType") {
+      resetEditProxyCheck();
+      setTimezoneBusy(false);
+    }
     setEditForm((f) => ({ ...f, [k]: v }));
   };
   // The dialog opens on the click; the detail fetch fills it in when it lands.
@@ -2450,6 +2442,7 @@ function App() {
           platformOs: p.platformOs ?? "",
           timezone: p.timezone,
         });
+        setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
@@ -2511,16 +2504,20 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || !editHasProxy) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError) return;
+    const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
     setEditErr(null);
     try {
       const { timezone } = await refreshProfileTimezone(editId);
-      setEditForm((form) => ({ ...form, timezone }));
+      if (generation === editProxyCheckGeneration.current) {
+        setEditForm((form) => ({ ...form, timezone }));
+        await load();
+      }
     } catch (error) {
-      setEditErr(error instanceof Error ? error.message : String(error));
+      if (generation === editProxyCheckGeneration.current) setEditErr(error instanceof Error ? error.message : String(error));
     } finally {
-      setTimezoneBusy(false);
+      if (generation === editProxyCheckGeneration.current) setTimezoneBusy(false);
     }
   };
   const saveEdit = async () => {
@@ -3024,11 +3021,12 @@ function App() {
           </button>
           <button
             className="btn importbtn tip"
-            data-tip="Import from file"
+            data-tip="Import profiles"
+            aria-label="Import profiles"
             disabled={!canEditCloud}
-            title="Import profiles from TXT, CSV, JSON, or XLSX"
+            title="Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports"
             onClick={openBulk}
-          ><Icon name="fileImport" /></button>
+          ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
         </div>
 
         <nav className="sidenav" aria-label="Sections">
@@ -3354,7 +3352,7 @@ function App() {
             <Icon name="search" className="sm" />
             <input
               className="input search"
-              placeholder="Search by No., id or name…"
+              placeholder="Search by No., id, name or tag…"
               aria-label="Search profiles"
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -3632,12 +3630,11 @@ function App() {
                       {profiles.length === 0 ? (
                         <>
                           <b>No profiles yet</b>
-                          <p>
-                            {isCloudMode
-                              ? "No Cloud profiles yet — click New Profile to create one."
-                              : "No profiles yet — click New Profile, or drop a TXT, CSV, JSON, or XLSX profile export anywhere in this window."}
-                          </p>
-                          <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />New Profile</button>
+                          <p>Create a profile or import a readable export from another browser.</p>
+                          <div className="empty-actions">
+                            <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />New Profile</button>
+                            <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />Import profiles</button>
+                          </div>
                         </>
                       ) : (
                         <>
@@ -4388,6 +4385,16 @@ function App() {
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
+                  {!outreachOfferDismissed && ["x.com", "linkedin.com", "telegram.org"].includes(editForm.platform ?? "") && (
+                    <div className="outreach-offer hint">
+                      <span>Need outreach campaigns?</span>
+                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">Run outreach with Xreacher ↗</a>
+                      <button type="button" className="btn xs ghost" aria-label="Dismiss Xreacher offer" onClick={() => {
+                        setOutreachOfferDismissed(true);
+                        writeSetting("aliasmode.offers.xreacherDismissed", "1");
+                      }}><Icon name="close" className="sm" /></button>
+                    </div>
+                  )}
                   <label className="fld">
                     <span>Browser</span>
                     <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
@@ -4418,7 +4425,7 @@ function App() {
                     <button
                       type="button"
                       className="btn proxy-check-btn"
-                      disabled={editProxyCheck.checking || !editHasProxy}
+                      disabled={editProxyCheck.checking || timezoneBusy || !editHasProxy}
                       aria-busy={editProxyCheck.checking}
                       onClick={checkEditedProxy}
                     >
@@ -4427,19 +4434,24 @@ function App() {
                     </button>
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
-                  {!isCloudMode && (
-                    <div className="proxy-check-actions">
-                      <span className="hint">Timezone: {editForm.timezone || "not set"}</span>
-                      <button
-                        type="button"
-                        className="btn proxy-check-btn"
-                        disabled={timezoneBusy || !editHasProxy}
-                        onClick={refreshEditedTimezone}
-                      >
-                        <Icon name="activity" className="sm" />
-                        {timezoneBusy ? "Looking up timezone…" : "Set timezone from proxy"}
-                      </button>
-                    </div>
+                  {!isCloudMode && !appMode?.legacyRemote && (
+                    <>
+                      <div className="proxy-check-actions">
+                        <span className="hint">Saved timezone: {editForm.timezone || "not set"}</span>
+                        <button
+                          type="button"
+                          className="btn proxy-check-btn"
+                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError}
+                          onClick={refreshEditedTimezone}
+                        >
+                          <Icon name="activity" className="sm" />
+                          {timezoneBusy ? "Looking up timezone…" : editHasProxy ? "Set timezone from proxy" : "Use current connection timezone"}
+                        </button>
+                      </div>
+                      <p className="hint">{editProxyChanged
+                        ? "Save proxy changes before setting the timezone."
+                        : "This action saves the timezone immediately. It applies the next time this profile opens."}</p>
+                    </>
                   )}
                   <div className="fld-row">
                     <CopyField label="Username" value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
@@ -4483,7 +4495,7 @@ function App() {
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeEdit}>Cancel</button>
-              <button className="btn primary" disabled={editSaving || editLoading} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
+              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
             </div>
           </div>
         </div>
@@ -4495,11 +4507,17 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" />Import accounts
+              <Icon name="fileImport" />Import profiles
               <button type="button" className="modal-close" aria-label="Close" onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {bulkErr && <div className="modal-err"><Icon name="alert" className="sm" />{bulkErr}</div>}
+              <ol className="steps">
+                <li>Export profiles from your previous browser as TXT, CSV, JSON, or XLSX.</li>
+                <li>Add the files below and choose a destination group.</li>
+                <li>Click Import profiles. Only data included in the export can transfer.</li>
+              </ol>
+              <p className="hint">Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.</p>
 
               <div className="segmented" role="tablist" aria-label="Import source">
                 <button
@@ -4609,7 +4627,7 @@ function App() {
               <span className="spacer" />
               <button className="btn ghost" onClick={closeBulk}>Cancel</button>
               <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup)} onClick={submitBulk}>
-                <Icon name="fileImport" className="sm" />{bulkBusy ? "Importing…" : "Import"}
+                <Icon name="fileImport" className="sm" />{bulkBusy ? "Importing…" : "Import profiles"}
               </button>
             </div>
           </div>

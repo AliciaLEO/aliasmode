@@ -118,45 +118,26 @@ export async function openSocks5Tunnel(
   }
 }
 
-/** Map of proxy host/IP → IANA timezone for the ones that resolved. */
-export async function lookupTimezones(
-  hosts: string[],
+/** Timezone of the connection's exit IP, using the profile proxy when present. */
+export async function lookupExitTimezone(
+  proxy: ProxySpec | null,
   fetchFn: FetchLike = (url, init) => fetch(url, init),
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  const unique = [...new Set(hosts.filter((h) => h && h.trim()))];
-  for (let i = 0; i < unique.length; i += 100) {
-    const chunk = unique.slice(i, i + 100);
-    try {
-      const res = await fetchFn("http://ip-api.com/batch?fields=query,timezone,status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(chunk.map((q) => ({ query: q }))),
-        signal: AbortSignal.timeout(10_000),
-      });
-      const data = (await res.json()) as Array<{ query?: string; timezone?: string; status?: string }>;
-      for (const row of Array.isArray(data) ? data : []) {
-        if (row.status === "success" && row.query && row.timezone) out.set(row.query, row.timezone);
-      }
-    } catch {
-      /* offline / blocked / rate-limited → leave this chunk unresolved */
-    }
-  }
-  return out;
-}
-
-/** Timezone of the proxy's exit IP, asked through the proxy itself. */
-async function lookupExitTimezone(proxy: ProxySpec, fetchFn: FetchLike): Promise<string | null> {
+): Promise<string | null> {
   let relay: ProxyRelay | undefined;
   try {
-    relay = await startProxyRelay({
-      type: proxy.type === "socks5" ? "socks5" : "http",
-      host: proxy.host,
-      port: Number(proxy.port),
-      user: proxy.user,
-      pass: proxy.pass,
-    });
-    const init = { proxy: `http://127.0.0.1:${relay.port}`, signal: AbortSignal.timeout(10_000) } as RequestInit;
+    if (proxy) {
+      relay = await startProxyRelay({
+        type: proxy.type === "socks5" ? "socks5" : "http",
+        host: proxy.host,
+        port: Number(proxy.port),
+        user: proxy.user,
+        pass: proxy.pass,
+      });
+    }
+    const init = {
+      ...(relay ? { proxy: `http://127.0.0.1:${relay.port}` } : {}),
+      signal: AbortSignal.timeout(10_000),
+    } as RequestInit;
     try {
       const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone", init);
       const row = (await res.json()) as { status?: string; timezone?: string } | null;
@@ -164,7 +145,7 @@ async function lookupExitTimezone(proxy: ProxySpec, fetchFn: FetchLike): Promise
     } catch {
       // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
     }
-    const res = await fetchFn("https://v6.ipinfo.io/json", init);
+    const res = await fetchFn("https://v6.ipinfo.io/json", { ...init, signal: AbortSignal.timeout(10_000) });
     const row = (await res.json()) as { timezone?: string } | null;
     return typeof row?.timezone === "string" && row.timezone ? row.timezone : null;
   } catch {
@@ -176,10 +157,9 @@ async function lookupExitTimezone(proxy: ProxySpec, fetchFn: FetchLike): Promise
 
 /**
  * Resolve and attach `timezone` to each profile from its proxy's exit IP, so
- * gateway/rotating proxies get the country they actually exit in. Falls back
- * to the proxy host's location when the exit lookup fails. Mutates and
+ * gateway/rotating proxies get the timezone they actually exit in. Mutates and
  * returns the same array. Profiles without a proxy (or unresolved) keep
- * whatever timezone they already had (default "").
+ * whatever timezone they already had. A gateway's location is not its exit.
  */
 export async function attachTimezones<T extends { proxy: ProxySpec | null; timezone: string }>(
   profiles: T[],
@@ -187,24 +167,17 @@ export async function attachTimezones<T extends { proxy: ProxySpec | null; timez
 ): Promise<{ profiles: T[]; resolved: number }> {
   const withProxy = profiles.filter((p) => p.proxy?.host);
   if (withProxy.length === 0) return { profiles, resolved: 0 };
-  const exit = new Map<T, string>();
+  let resolved = 0;
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(16, withProxy.length) }, async () => {
     while (next < withProxy.length) {
       const p = withProxy[next++]!;
       const tz = await lookupExitTimezone(p.proxy!, fetchFn);
-      if (tz) exit.set(p, tz);
+      if (tz) {
+        p.timezone = tz;
+        resolved++;
+      }
     }
   }));
-  const fallback = withProxy.filter((p) => !exit.has(p)).map((p) => p.proxy!.host);
-  const byHost = fallback.length ? await lookupTimezones(fallback, fetchFn) : new Map<string, string>();
-  let resolved = 0;
-  for (const p of withProxy) {
-    const tz = exit.get(p) ?? byHost.get(p.proxy!.host);
-    if (tz) {
-      p.timezone = tz;
-      resolved++;
-    }
-  }
   return { profiles, resolved };
 }

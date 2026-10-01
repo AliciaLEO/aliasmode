@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const app = readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8").replaceAll("\r\n", "\n");
+const proxyOffer = readFileSync(join(import.meta.dir, "web", "proxy-offer.tsx"), "utf8");
 const styles = readFileSync(join(import.meta.dir, "web", "styles.css"), "utf8").replaceAll("\r\n", "\n");
 const logo = readFileSync(join(import.meta.dir, "web", "alias-loop.svg"), "utf8").replaceAll("\r\n", "\n");
 const notice = readFileSync(join(import.meta.dir, "NOTICE"), "utf8");
@@ -199,26 +200,25 @@ test("New and Edit profile dialogs check proxies and show only relevant provider
   const createModal = app.slice(app.indexOf("{showCreate && ("), app.indexOf("{editId && ("));
   const editModal = app.slice(app.indexOf("{editId && ("), app.indexOf("{showBulk && ("));
 
-  expect(app).toContain('const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";');
-  expect(app).toContain("Need a proxy? Get one from our recommended provider.");
-  expect(app).toContain("This proxy is unstable. View recommended replacements.");
+  expect(proxyOffer).toContain('const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";');
+  expect(proxyOffer).toContain("replacement ?");
   expect(app).not.toContain("outreachproxy.com");
   expect(app).not.toContain("OutreachProxy");
   for (const modal of [createModal, editModal]) {
     expect(modal).toContain("Check proxy");
     expect(modal).toContain("<ProxyCheckFeedback");
   }
-  expect(app).toContain('target="_blank"');
-  expect(app).toContain('rel="noreferrer"');
-  expect(app).toContain('aria-label="View recommended proxies at NobleProxy (opens externally)"');
+  expect(proxyOffer).toContain('target="_blank"');
+  expect(proxyOffer).toContain('rel="noreferrer"');
+  expect(proxyOffer).toContain('aria-label="View recommended proxies at NobleProxy (opens externally)"');
   expect(app).toContain('if (k === "proxyType" || k === "host" || k === "port" || k === "user" || k === "pass")');
-  expect(app).toContain('if (k === "proxy" || k === "proxyType") resetEditProxyCheck();');
+  expect(app).toContain('if (k === "proxy" || k === "proxyType") {\n      resetEditProxyCheck();');
   expect(app).toContain("generation === createProxyCheckGeneration.current");
   expect(app).toContain("generation === editProxyCheckGeneration.current");
   expect(app).toContain("createProxyCheckGeneration.current++");
   expect(app).toContain("editProxyCheckGeneration.current++");
   expect(createModal).toContain('className="btn primary" disabled={creating}');
-  expect(editModal).toContain('className="btn primary" disabled={editSaving || editLoading}');
+  expect(editModal).toContain('className="btn primary" disabled={editSaving || editLoading || timezoneBusy}');
   for (const tone of ["working", "unstable", "failed", "unavailable"]) {
     expect(styles).toContain(`.proxy-check-result.${tone}`);
   }
@@ -421,6 +421,48 @@ test("the roster is sortable, pageable and its columns are selectable", () => {
   expect(app).toContain("catch { /* private mode / disabled storage */ }");
 });
 
+test("tag search shares the existing folder, number, name, and ID filter", () => {
+  const source = app.slice(app.indexOf("    const matched = profiles.filter"), app.indexOf("    // Running profiles stay on top"));
+  const filter = new Function("profiles", "group", "q", "numbering", `${source}\nreturn matched;`);
+  const profiles = [
+    { id: "alpha", name: "First", group: "A", tags: ["Warm", "Priority"] },
+    { id: "beta", name: "Second", group: "B", tags: ["warm"] },
+    { id: "gamma", name: "Third", group: "A", tags: [] },
+    { id: "delta", name: "Fourth", group: "A" },
+  ];
+  const numbering = new Map(profiles.map((p, i) => [p.id, { value: String(i + 101) }]));
+  const ids = (q: string, group = "all") => filter(profiles, group, q, numbering).map((p: { id: string }) => p.id);
+  expect(ids("WARM")).toEqual(["alpha", "beta"]);
+  expect(ids("warm", "A")).toEqual(["alpha"]);
+  expect(ids("rior")).toEqual(["alpha"]);
+  expect(ids("GAMMA")).toEqual(["gamma"]);
+  expect(ids("FOURTH")).toEqual(["delta"]);
+  expect(ids("103")).toEqual(["gamma"]);
+  expect(ids("missing")).toEqual([]);
+  expect(ids("", "A")).toEqual(["alpha", "gamma", "delta"]);
+
+  const tagged = Array.from({ length: 60 }, (_, i) => ({ id: `p-${i}`, name: "Profile", group: "A", tags: ["Warm"] }));
+  const matched = filter(tagged, "A", "warm", new Map());
+  const selection = rosterSelection(matched, new Set(["other-folder"]), "A", "warm");
+  selection.selectAllFiltered();
+  expect(selection.selected().size).toBe(60);
+  expect(selection.selected().has("other-folder")).toBe(false);
+  const page = rosterSelection(matched, new Set(), "A", "warm", 1);
+  page.toggleAll();
+  expect(page.selected().size).toBe(10);
+});
+
+test("import entry points keep permission checks and collapsed labels", () => {
+  const sidebar = app.slice(app.indexOf('className="newrow"'), app.indexOf('className="sidenav"'));
+  const empty = app.slice(app.indexOf('className="empty-actions"'), app.indexOf('className="empty-actions"') + 450);
+  for (const entry of [sidebar, empty]) {
+    expect(entry).toContain("onClick={openBulk}");
+    expect(entry).toContain("disabled={!canEditCloud}");
+  }
+  expect(sidebar).toContain('aria-label="Import profiles"');
+  expect(sidebar).toContain('<span className="navlabel">Import profiles</span>');
+});
+
 function rosterSelection(filtered: { id: string }[], selected = new Set<string>(), group = "all", q = "", page = 0) {
   const source = app.slice(app.indexOf("  const allVisibleSelected ="), app.indexOf("  const moveSelected ="));
   const controls = new Function("visibleProfiles", "filtered", "selected", "group", "q", "setSelected", `${source}
@@ -569,7 +611,7 @@ test("New profile and Edit are instant dialogs; Scripts, Settings and Extensions
   expect(app).toContain("editFetchId.current = id;");
   expect(app).toContain("if (editFetchId.current !== id) return;");
   expect(app).toContain('<p className="hint" role="status">Loading profile…</p>');
-  expect(app).toContain("disabled={editSaving || editLoading}");
+  expect(app).toContain("disabled={editSaving || editLoading || timezoneBusy}");
 });
 
 test("running profiles are editable, live-synced in Cloud mode", () => {

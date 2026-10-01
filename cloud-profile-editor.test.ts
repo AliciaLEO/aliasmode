@@ -118,16 +118,10 @@ function readOnlyStore(launch: unknown = null) {
 }
 
 function timezoneFetch(timezones: Record<string, string>, calls?: string[][]) {
-  return async (_url: string, init: RequestInit) => {
-    const queries = (JSON.parse(String(init.body)) as Array<{ query: string }>).map((item) => item.query);
-    calls?.push(queries);
-    return {
-      async json() {
-        return queries.map((query) => timezones[query]
-          ? { query, timezone: timezones[query], status: "success" }
-          : { query, status: "fail" });
-      },
-    };
+  return async (url: string, _init: RequestInit) => {
+    calls?.push([url]);
+    const timezone = Object.values(timezones)[0];
+    return { json: async () => timezone ? { status: "success", timezone } : { status: "fail" } };
   };
 }
 

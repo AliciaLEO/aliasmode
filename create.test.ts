@@ -16,6 +16,16 @@ test("buildNewProfile makes a unique id with a seed-derived fingerprint and no f
   expect(p.screenWidth).toBeGreaterThan(0);
 });
 
+test("new Chromium profiles keep their initial timezone across launches", () => {
+  const profile = buildNewProfile({}, () => false);
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  expect(profile.timezone).toBe(timezone);
+  const flags = deriveFingerprintFlags(profile);
+  expect(flags).toContain(`--fingerprint-timezone=${timezone}`);
+  expect(deriveFingerprintFlags(structuredClone(profile))).toEqual(flags);
+  expect(flags.some((flag) => flag.startsWith("--user-agent="))).toBe(false);
+});
+
 test("buildNewProfile generates and fixes a Windows Camoufox identity for Firefox", () => {
   const p = buildNewProfile({ engine: "firefox", screen: "1440x900" }, () => false);
 

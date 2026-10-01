@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ProxyProviderOffer } from "./proxy-offer.tsx";
 import type {
   ProxyCheckView,
   ProxyPreview,
@@ -342,6 +343,7 @@ export function ProxiesPage({ groups, onChanged, active }: {
             </tr>)}</tbody></table></div>
           {!checkResults.total && <p className="tools-hint tools-result-empty">No problems found in the completed checks.</p>}
           <Pager {...checkResults} onPage={setCheckPage} />
+          {!busy && checks.some((row) => row.status === "failed" || row.status === "unstable") && <ProxyProviderOffer replacement />}
         </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↗</span><h3>{busy === "check" ? "Checking selected folders…" : "Ready when you are"}</h3><p>Choose your folders above, then check which proxies are alive, dead, or need attention.</p></div>}
       </section>
       <p className="tools-footnote">Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.</p>

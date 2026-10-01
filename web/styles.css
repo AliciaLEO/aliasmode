@@ -513,9 +513,9 @@ button:disabled { cursor: default; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-.newrow { display: flex; gap: 6px; padding: 0 2px 14px; }
+.newrow { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 14px; }
 .newrow .newbtn { flex: 1; height: 36px; gap: 7px; font-size: 13px; }
-.newrow .importbtn { width: 36px; height: 36px; padding: 0; }
+.newrow .importbtn { width: 100%; height: 36px; padding: 0; }
 
 /* Primary navigation. */
 .sidenav { display: flex; flex-direction: column; gap: 2px; padding: 0 2px; }
@@ -886,6 +886,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .emptystate b { color: var(--ink); font-size: 14px; font-weight: 600; }
 .emptystate p { max-width: 380px; margin: 0; font-size: 12.5px; line-height: 1.6; }
 .emptystate .btn { margin-top: 8px; }
+.empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 
 /* Table footer / pagination ------------------------------------------------ */
 
@@ -968,7 +969,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .update-settings .update-progress { width: 100%; }
 
 /* Proxy checker and conditional NobleProxy offer in both profile dialogs. */
-.proxy-check-actions { display: flex; justify-content: flex-end; }
+.proxy-check-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .proxy-check-btn { min-width: 118px; }
 .proxy-check-result {
   display: flex; align-items: flex-start; gap: 7px; padding: 9px 11px;
@@ -1140,6 +1141,9 @@ td.col-tags .chip + .chip { margin-left: 4px; }
   font-size: 12px; line-height: 1.6;
 }
 .hint code { padding: 1px 5px; border-radius: var(--r-xs); background: var(--surface-active); font: 11.5px var(--mono); }
+.outreach-offer { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.outreach-offer a { color: var(--accent); }
+.outreach-offer button { margin-left: auto; }
 
 .modal-err, .modal-ok {
   display: flex; align-items: flex-start; gap: 8px;

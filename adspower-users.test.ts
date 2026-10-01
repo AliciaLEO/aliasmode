@@ -29,7 +29,7 @@ function setup() {
 
 // geoip stub so create resolves a deterministic timezone without hitting the network.
 const geoip = async () => ({
-  json: async () => [{ query: "9.9.9.9", timezone: "America/New_York", status: "success" }],
+  json: async () => ({ timezone: "America/New_York", status: "success" }),
 });
 
 const get = (path: string) => new Request(`http://127.0.0.1:50400${path}`);

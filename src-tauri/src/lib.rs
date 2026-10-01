@@ -28,7 +28,7 @@ use tauri_plugin_shell::ShellExt;
 
 const IMPORT_RESTRICTION: &str = "Windows DPAPI protects persisted browser secrets, so this import works only for the same Windows machine and account. Persisted persona fields are preserved, but runtime or browser differences can change the account-visible fingerprint.";
 
-const ALLOWED_EXTERNAL_URLS: [&str; 7] = [
+const ALLOWED_EXTERNAL_URLS: [&str; 8] = [
     "https://aliasmode.com/terms/",
     "https://aliasmode.com/privacy/",
     "https://aliasmode.com/acceptable-use/",
@@ -36,6 +36,7 @@ const ALLOWED_EXTERNAL_URLS: [&str; 7] = [
     "https://t.me/aliasmode",
     "https://github.com/aliasmode/aliasmode",
     "https://xreacher.com/",
+    "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
 ];
 
 const WINDOWS_ACCEPTANCE_BROWSER_ARGS: &str =
@@ -274,6 +275,7 @@ mod tests {
             "https://t.me/aliasmode",
             "https://github.com/aliasmode/aliasmode",
             "https://xreacher.com/",
+            "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
         ] {
             assert!(allowed_external_url(url));
         }
@@ -288,6 +290,7 @@ mod tests {
             "https://nobleproxy.com/t/aliasmode?source=app",
             "https://nobleproxy.com/t/another-campaign",
             "https://example.com/t/aliasmode",
+            "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor&profile=example",
         ] {
             assert!(!allowed_external_url(url));
         }

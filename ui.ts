@@ -36,7 +36,7 @@ import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
-import { attachTimezones, type FetchLike } from "./geoip.ts";
+import { attachTimezones, lookupExitTimezone, type FetchLike } from "./geoip.ts";
 import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictCustomNo, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
@@ -1777,11 +1777,17 @@ export async function handleUiRequest(
       if (!isSafeProfileId(id)) return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
       const profile = store.getProfile(id);
       if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
-      if (!profile.proxy) return Response.json({ ok: false, error: "profile has no proxy" }, { status: 400 });
-      await attachTimezones([profile], options.timezoneFetch);
-      syncFirefoxTimezone(profile);
-      store.upsertProfile(profile);
-      return Response.json({ ok: true, timezone: profile.timezone });
+      if (profile.proxyError) return Response.json({ ok: false, error: "Fix or remove the invalid proxy before setting the timezone." }, { status: 400 });
+      const timezone = await lookupExitTimezone(profile.proxy, options.timezoneFetch);
+      if (!timezone) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
+      const current = store.getProfile(id);
+      if (!current || current.proxyError || JSON.stringify(current.proxy) !== JSON.stringify(profile.proxy)) {
+        return Response.json({ ok: false, error: "Profile connection changed. Reopen Edit and try again." }, { status: 409 });
+      }
+      current.timezone = timezone;
+      syncFirefoxTimezone(current);
+      store.upsertProfile(current);
+      return Response.json({ ok: true, timezone });
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 500 });
     }

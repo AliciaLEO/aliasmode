@@ -5,8 +5,8 @@
  * the fingerprint by hand: a fresh unique id yields a unique deterministic seed,
  * and CloakBrowser derives a coherent, unique fingerprint + UA from that seed at
  * launch (forcing a separate UA would risk UA/UA-CH desync). The operator only
- * supplies name / folder / proxy / (optional) screen; timezone is resolved from
- * the proxy's geoip by the caller. Chromium receives a deterministic launch seed;
+ * supplies name / folder / proxy / (optional) screen; the initial host timezone
+ * is saved without a network lookup. Chromium receives a deterministic launch seed;
  * Firefox receives a complete persisted Camoufox config.
  */
 
@@ -104,7 +104,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     // happens to run on — a silent identity change on a move between boxes.
     // An explicit operator choice wins; otherwise fall back to the host OS.
     platformOs: engine === "firefox" ? "windows" : (parsePlatformOs(input.platformOs) ?? hostPlatformOs()),
-    timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : "", // Firefox saves a host timezone in its persisted config
+    timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : Intl.DateTimeFormat().resolvedOptions().timeZone,
     screenWidth: typeof firefoxScreenWidth === "number" ? firefoxScreenWidth : selected.width,
     screenHeight: typeof firefoxScreenHeight === "number" ? firefoxScreenHeight : selected.height,
     fingerprintSeed: deterministicSeed(id),

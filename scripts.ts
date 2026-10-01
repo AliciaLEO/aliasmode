@@ -156,7 +156,7 @@ export interface ScriptRun {
   profiles: Array<{ id: string; name: string; status: "queued" | "running" | "succeeded" | "failed" | "cancelled"; error?: string; warning?: string }>;
 }
 
-interface RunRequest { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean }
+interface RunRequest { scriptId: string; profileIds: string[]; inputs: Record<string, unknown>; useCredentials: boolean; concurrency?: number }
 interface RunnerInput {
   endpoint: string;
   engine?: "firefox";
@@ -311,6 +311,8 @@ export class ScriptSupervisor {
       || !request.inputs || typeof request.inputs !== "object" || Array.isArray(request.inputs) || typeof request.useCredentials !== "boolean") {
       throw new ScriptError("Choose a script, profiles, and a JSON object for inputs");
     }
+    const concurrency = request.concurrency === undefined ? 10 : request.concurrency;
+    if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new ScriptError("Parallel browsers must be a positive whole number");
     const scope = this.options.library.scope();
     if (this.active) rmSync(this.active.directory, { recursive: true, force: true });
     mkdirSync(this.options.library.directory, { recursive: true });
@@ -321,7 +323,7 @@ export class ScriptSupervisor {
     };
     writeFileSync(run.logPath, "", { mode: 0o600 });
     this.active = run;
-    run.done = this.run(run, request);
+    run.done = this.run(run, { ...request, concurrency });
     return structuredClone(run.view);
   }
 
@@ -362,7 +364,7 @@ export class ScriptSupervisor {
     } finally { closeSync(fd); }
   }
 
-  private async run(run: ActiveRun, request: RunRequest): Promise<void> {
+  private async run(run: ActiveRun, request: RunRequest & { concurrency: number }): Promise<void> {
     const signal = run.abort.signal;
     const fd = openSync(run.logPath, "a");
     try {
@@ -372,9 +374,9 @@ export class ScriptSupervisor {
       run.view.scriptName = script.name;
       const path = join(run.directory, script.language === "python" ? "script.py" : "script.mjs");
       writeFileSync(path, script.source, { mode: 0o600 });
-      for (const item of run.view.profiles) {
-        if (signal.aborted) { item.status = "cancelled"; continue; }
-        const session = new AgentControlSession(this.options);
+      const runProfile = async (item: ScriptRun["profiles"][number]) => {
+        if (signal.aborted) { item.status = "cancelled"; return; }
+        const session = new AgentControlSession(this.options, signal);
         let owned = false;
         let endpoint: string | undefined;
         const call = async (method: string) => {
@@ -442,7 +444,11 @@ export class ScriptSupervisor {
           }
           await session.disconnect();
         }
-      }
+      };
+      const profiles = run.view.profiles.values();
+      await Promise.all(Array.from({ length: Math.min(request.concurrency, run.view.profiles.length) }, async () => {
+        for (const item of profiles) await runProfile(item);
+      }));
     } catch (error) {
       for (const item of run.view.profiles.filter((item) => item.status === "queued")) {
         item.status = signal.aborted ? "cancelled" : "failed";

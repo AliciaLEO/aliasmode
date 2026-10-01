@@ -6,7 +6,46 @@
     <meta http-equiv="Pragma" content="no-cache" />
     <meta http-equiv="Expires" content="0" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
     <title>AliasMode</title>
+    <script>
+      // Pre-paint theme: stamp data-theme before first render so dark mode
+      // doesn't flash white on startup. Mirrors readThemeChoice() in
+      // web/theme.ts (cookie -> localStorage -> light), resolving "system"
+      // via matchMedia like app.tsx does. Never throws: a broken storage
+      // must not break startup.
+      (function () {
+        try {
+          var valid = { system: 1, light: 1, dark: 1 };
+          var key = "aliasmode.shell.theme";
+          var choice = null;
+          try {
+            var parts = document.cookie.split(";");
+            for (var i = 0; i < parts.length; i++) {
+              var c = parts[i].trim();
+              if (c.indexOf(key + "=") === 0) {
+                var v = c.slice(key.length + 1);
+                if (valid[v]) { choice = v; break; }
+              }
+            }
+          } catch (e) {}
+          if (!choice) {
+            try {
+              var s = localStorage.getItem(key);
+              if (valid[s]) choice = s;
+            } catch (e) {}
+          }
+          if (!choice) choice = "light";
+          var resolved = choice;
+          if (choice === "system") {
+            try {
+              resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+            } catch (e) { resolved = "light"; }
+          }
+          document.documentElement.dataset.theme = resolved;
+        } catch (e) {}
+      })();
+    </script>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>

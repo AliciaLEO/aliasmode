@@ -1787,12 +1787,12 @@ try {
     await page.reload({ waitUntil: "domcontentloaded" });
     await waitForText(["Restoring saved session"]);
     await releaseRestore();
-    await waitForText(["No Cloud profiles yet"]);
+    await waitForText(["No profiles yet"]);
     await requireStored("rotatedRefresh");
   } else if (action === "healthy") {
     await waitForText(["Restoring saved session"]);
     await releaseRestore();
-    await waitForText(["No Cloud profiles yet"]);
+    await waitForText(["No profiles yet"]);
     await openMemberSettings();
     await requireStored("rotatedRefresh");
   } else if (action === "offline") {
@@ -1808,7 +1808,7 @@ try {
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await waitForText(["Restoring saved session"]);
     await releaseRestore();
-    await waitForText(["No Cloud profiles yet"]);
+    await waitForText(["No profiles yet"]);
     await openMemberSettings();
     await requireStored("rotatedRefresh");
   } else if (action === "revoked") {

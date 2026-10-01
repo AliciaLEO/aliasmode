@@ -733,21 +733,19 @@ function FingerprintSettings({
             <input value={screen} disabled={disabled} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
-        {engine === "chromium" && (
-          <label className="fld">
-            <span>Operating system</span>
-            {onPlatformOsChange ? (
-              <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
-                <option value="">Automatic</option>
-                <option value="windows">Windows</option>
-                <option value="macos">macOS</option>
-                <option value="linux">Linux</option>
-              </select>
-            ) : (
-              <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
-            )}
-          </label>
-        )}
+        <label className="fld">
+          <span>Operating system</span>
+          {onPlatformOsChange ? (
+            <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
+              <option value="">Automatic — match this computer</option>
+              <option value="windows">Windows</option>
+              <option value="macos">macOS</option>
+              <option value="linux">Linux</option>
+            </select>
+          ) : (
+            <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
+          )}
+        </label>
         {onTimezoneChange && (
           <label className="fld">
             <span>Timezone</span>
@@ -4502,7 +4500,7 @@ function App() {
                   )}
                   <FingerprintSettings
                     engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
-                    platformOs={editForm.platformOs ?? ""} onPlatformOsChange={(value) => setEF("platformOs", value)}
+                    platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}

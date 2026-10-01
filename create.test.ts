@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import { buildNewProfile, generateId } from "./create.ts";
-import { deterministicSeed, deriveFingerprintFlags } from "./fingerprint.ts";
+import { deterministicSeed, deriveFingerprintFlags, hostPlatformOs, platformFromUA } from "./fingerprint.ts";
+import { ProfileStore } from "./store.ts";
 
 test("buildNewProfile makes a unique id with a seed-derived fingerprint and no forced UA", () => {
   const p = buildNewProfile({ name: "sophia", group: "va1" }, () => false);
@@ -26,8 +27,8 @@ test("new Chromium profiles keep their initial timezone across launches", () => 
   expect(flags.some((flag) => flag.startsWith("--user-agent="))).toBe(false);
 });
 
-test("buildNewProfile generates and fixes a Windows Camoufox identity for Firefox", () => {
-  const p = buildNewProfile({ engine: "firefox", screen: "1440x900" }, () => false);
+test("buildNewProfile generates and fixes a selected Windows identity for Firefox", () => {
+  const p = buildNewProfile({ engine: "firefox", platformOs: "windows", screen: "1440x900" }, () => false);
 
   expect(p.engine).toBe("firefox");
   expect(p.firefox!.version).toBe(1);
@@ -155,7 +156,35 @@ test("buildNewProfile rejects an invalid platformOs instead of storing it", () =
   expect(p.platformOs).not.toBe("amiga");
 });
 
-test("buildNewProfile keeps Firefox pinned to windows even with platformOs input", () => {
-  const p = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
-  expect(p.platformOs).toBe("windows");
+test.each(["chromium", "firefox"] as const)("new %s profiles default to the host OS family", (engine) => {
+  const profile = buildNewProfile({ engine }, () => false);
+  expect(profile.platformOs).toBe(hostPlatformOs());
+  if (engine === "firefox") expect(platformFromUA(profile.ua)).toBe(hostPlatformOs());
+  else expect(deriveFingerprintFlags(profile)).toContain(`--fingerprint-platform=${hostPlatformOs()}`);
+});
+
+test.each(["chromium", "firefox"] as const)("new %s profiles preserve every explicit OS choice", (engine) => {
+  const store = new ProfileStore(":memory:");
+  try {
+    for (const platformOs of ["windows", "macos", "linux"] as const) {
+      const profile = buildNewProfile({ engine, platformOs }, () => false);
+      expect(profile.platformOs).toBe(platformOs);
+      if (engine === "firefox") {
+        const config = profile.firefox!.config;
+        expect(config["navigator.userAgent"]).toBe(profile.ua);
+        expect(platformFromUA(profile.ua)).toBe(platformOs);
+        expect(config["navigator.platform"]).toBe({ windows: "Win32", macos: "MacIntel", linux: "Linux x86_64" }[platformOs]);
+      } else {
+        expect(deriveFingerprintFlags(profile)).toContain(`--fingerprint-platform=${platformOs}`);
+        expect(profile.ua).toBe("");
+      }
+      store.upsertProfile(profile);
+      const saved = store.getProfile(profile.id)!;
+      expect(saved.platformOs).toBe(platformOs);
+      expect(saved.firefox).toEqual(profile.firefox);
+      expect(saved.fingerprintSeed).toBe(profile.fingerprintSeed);
+    }
+  } finally {
+    store.close();
+  }
 });

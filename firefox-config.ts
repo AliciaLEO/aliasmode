@@ -20,11 +20,15 @@ const { fromBrowserforge, generateFingerprint } = await import("camoufox-js/dist
 export const FIREFOX_RUNTIME_VERSION = "152.0.4-beta.30";
 const FIREFOX_UA_MAJOR_VERSION = "152";
 
-/** Generate a Windows Camoufox identity once, for durable profile storage. */
-export function createFirefoxProfileConfig(screenWidth: number, screenHeight: number): FirefoxProfileConfig {
+/** Generate an OS-matched identity once, for durable profile storage. */
+export function createFirefoxProfileConfig(
+  screenWidth: number,
+  screenHeight: number,
+  platformOs: "windows" | "macos" | "linux" = "windows",
+): FirefoxProfileConfig {
   const fingerprint = generateFingerprint([screenWidth, screenHeight], {
     browsers: ["firefox"],
-    operatingSystems: ["windows"],
+    operatingSystems: [platformOs],
   });
   const config = fromBrowserforge(fingerprint, FIREFOX_UA_MAJOR_VERSION);
   if (typeof config.timezone !== "string" || !config.timezone.trim()) {

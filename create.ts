@@ -75,8 +75,9 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     })();
   const engine = input.engine === undefined ? "chromium" : input.engine;
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
-    ? createFirefoxProfileConfig(selected.width, selected.height)
+    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs)
     : undefined;
   const firefoxUa = firefox?.config["navigator.userAgent"];
   const firefoxScreenWidth = firefox?.config["screen.width"];
@@ -103,7 +104,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     // --fingerprint-platform flag and the browser inherits whatever host it
     // happens to run on — a silent identity change on a move between boxes.
     // An explicit operator choice wins; otherwise fall back to the host OS.
-    platformOs: engine === "firefox" ? "windows" : (parsePlatformOs(input.platformOs) ?? hostPlatformOs()),
+    platformOs,
     timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : Intl.DateTimeFormat().resolvedOptions().timeZone,
     screenWidth: typeof firefoxScreenWidth === "number" ? firefoxScreenWidth : selected.width,
     screenHeight: typeof firefoxScreenHeight === "number" ? firefoxScreenHeight : selected.height,

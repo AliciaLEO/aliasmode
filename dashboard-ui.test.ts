@@ -252,6 +252,17 @@ test("dashboard selects browser for new profiles", () => {
   expect(app).toContain('selectedProfilesSupportChromeExtensions');
 });
 
+test("both engines offer OS choices at creation and only Chromium allows later OS edits", () => {
+  const settings = app.slice(app.indexOf("function FingerprintSettings("), app.indexOf("function FingerprintSettings(") + 3300);
+  expect(settings).not.toMatch(/\{engine === "chromium" && \(\s*<label className="fld">\s*<span>Operating system/);
+  for (const os of ["windows", "macos", "linux"]) expect(settings).toContain(`<option value="${os}">`);
+  expect(settings).toContain("{onPlatformOsChange ? (");
+  expect(settings).toContain("onPlatformOsChange(event.target.value)");
+  expect(settings).toContain('readOnly tabIndex={-1} className="ro"');
+  expect(app).toContain('platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)}');
+  expect(app).toContain('platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}');
+});
+
 test("Local timezone lookup is explicit", () => {
   expect(app).toContain("refreshProfileTimezone(id)");
   expect(app).toContain("Set timezone from proxy");

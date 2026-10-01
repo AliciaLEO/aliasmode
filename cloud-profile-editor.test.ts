@@ -52,6 +52,33 @@ function firefoxPayload(): PortableProfileV2 {
   };
 }
 
+test("Cloud fingerprint edits round-trip manual timezone and OS without changing the session", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const authoritative = { ...response(), payload: engine === "firefox" ? firefoxPayload() : payload() };
+    const session = structuredClone(authoritative.payload.session);
+    const calls: string[][] = [];
+    const editor = new CloudProfileEditor({
+      getProfile: async () => authoritative,
+      updateProfile: async (_id: string, request: any) => { authoritative.payload = request.payload; },
+    } as any, readOnlyStore(), timezoneFetch({}, calls));
+    for (const timezone of ["Europe/Paris", ""]) {
+      await editor.save("cloud1", 7, {
+        timezone, proxy: "new-proxy.example:8080",
+        ...(engine === "chromium" ? { platformOs: "macos", resolution: "1920x1080" } : {}),
+      });
+      const view = await editor.get("cloud1");
+      expect(view.timezone).toBe(timezone);
+      if (engine === "chromium") expect(view.platformOs).toBe("macos");
+      else expect((authoritative.payload as PortableProfileV2).profile.firefox!.config).toEqual({
+        "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", ...(timezone ? { timezone } : {}),
+      });
+      expect(authoritative.payload.session).toEqual(session);
+      expect(authoritative.payload.profile.fingerprintSeed).toBe(1234);
+    }
+    expect(calls).toEqual([]);
+  }
+});
+
 test("Firefox Cloud edits preserve saved identity and session without automatic lookup", async () => {
   const authoritative = { ...response(), payload: firefoxPayload() };
   let updated: any;
@@ -71,7 +98,7 @@ test("Firefox Cloud edits preserve saved identity and session without automatic 
 });
 
 test("Firefox Cloud edits reject conversion and unsupported identity edits before moving", async () => {
-  for (const set of [{ engine: "chromium" }, { resolution: "1920*1080" }, { extensions: ["chrome-extension"] }]) {
+  for (const set of [{ engine: "chromium" }, { resolution: "1920*1080" }, { platformOs: "macos" }, { extensions: ["chrome-extension"] }]) {
     const writes: string[] = [];
     const editor = new CloudProfileEditor({
       getProfile: async () => ({ ...response(), payload: firefoxPayload() }),

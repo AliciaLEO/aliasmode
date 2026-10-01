@@ -347,6 +347,11 @@ export class ProfileStore {
     if (p.group) this.registerGroup(p.group);
   }
 
+  /** Explicit edits and authoritative restores may clear a saved timezone. */
+  setTimezone(id: string, timezone: string): void {
+    this.db.query("UPDATE profiles SET timezone = ? WHERE id = ?").run(timezone, id);
+  }
+
   /** Apply a prevalidated profile batch atomically (all rows or none). */
   upsertProfiles(profiles: Profile[], sessions: ReadonlyMap<string, string> = new Map()): void {
     const apply = this.db.transaction((items: Profile[]) => {

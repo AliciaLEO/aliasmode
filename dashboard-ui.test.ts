@@ -253,7 +253,7 @@ test("dashboard selects browser for new profiles", () => {
 });
 
 test("Local timezone lookup is explicit", () => {
-  expect(app).toContain("refreshProfileTimezone(editId)");
+  expect(app).toContain("refreshProfileTimezone(id)");
   expect(app).toContain("Set timezone from proxy");
   expect(app).not.toContain("Automatic · from proxy");
 });

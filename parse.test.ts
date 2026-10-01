@@ -6,6 +6,8 @@ import {
   parseProxy,
   parseStrictProxy,
   parseStrictResolution,
+  parseStrictPlatformOs,
+  parseStrictTimezone,
   parseStrictCustomNo,
   rowsToUpdates,
   recordToProfile,
@@ -46,6 +48,16 @@ proxy=37.19.65.146:5432:z0zt7:k9i76bob
 ua=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36
 resolution=1920*1080
 ******************`;
+
+test("fingerprint edit parsers accept automatic and supported values without silently clearing invalid input", () => {
+  expect(parseStrictPlatformOs("")).toBe("");
+  expect(parseStrictPlatformOs(" macOS ")).toBe("macos");
+  expect(parseStrictTimezone("")).toBe("");
+  expect(parseStrictTimezone(" Europe/Paris ")).toBe("Europe/Paris");
+  expect(parseStrictTimezone("UTC")).toBe("UTC");
+  for (const value of ["android", 12, null]) expect(() => parseStrictPlatformOs(value)).toThrow();
+  for (const value of ["not a timezone", "Europe/Not_A_Zone", 12, null]) expect(() => parseStrictTimezone(value)).toThrow();
+});
 
 test("parseBlock splits key=value and keeps '=' in values", () => {
   const m = parseBlock("id=abc\ncookie=[{\"a\":\"b=c\"}]\nempty=");

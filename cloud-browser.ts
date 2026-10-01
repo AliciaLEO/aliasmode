@@ -539,6 +539,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           // A locally open profile's live state owns the cached row.
           if (this.options.store.getLaunch(summary.id)) continue;
           this.options.store.upsertProfile(profile);
+          this.options.store.setTimezone(profile.id, profile.timezone);
           this.proxyCacheVersions.set(summary.id, response.profile.version);
         } catch {
           // Transient Cloud errors: the attempt stamp keeps retries spaced out.
@@ -726,6 +727,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       const { profile, sessionBundle } = decodePortableProfile(opened.payload);
       if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
       this.options.store.upsertProfile(profile);
+      this.options.store.setTimezone(profile.id, profile.timezone);
       this.proxyCacheVersions.set(profileId, opened.baseVersion);
 
       stage = "browser_launch";

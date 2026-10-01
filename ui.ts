@@ -37,7 +37,7 @@ import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones, lookupExitTimezone, type FetchLike } from "./geoip.ts";
-import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictCustomNo, decodeText } from "./parse.ts";
+import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
 import { generateTotp } from "./totp.ts";
@@ -52,6 +52,7 @@ import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { addBrowserCookie } from "./session.ts";
 import { join, resolve } from "node:path";
 import { readdirSync, readFileSync } from "node:fs";
@@ -112,16 +113,6 @@ function profileEngine(profile: unknown): "chromium" | "firefox" {
   return typeof profile === "object" && profile !== null && "engine" in profile && profile.engine === "firefox"
     ? "firefox"
     : "chromium";
-}
-
-function syncFirefoxTimezone(profile: Profile): void {
-  if (profileEngine(profile) !== "firefox") return;
-  if (!profile.firefox) throw new Error("Firefox profile is missing its saved configuration");
-  const { timezone: _timezone, ...config } = profile.firefox.config;
-  profile.firefox = {
-    ...profile.firefox,
-    config: { ...config, ...(profile.timezone ? { timezone: profile.timezone } : {}) },
-  };
 }
 
 function openResponse(
@@ -411,6 +402,13 @@ function profileEditView(p: Profile) {
   };
 }
 
+function fingerprintChanges(p: Profile, set: Record<string, unknown>): boolean {
+  const screen = "resolution" in set ? parseStrictResolution(set.resolution) : null;
+  return !!(screen && (screen.width !== p.screenWidth || screen.height !== p.screenHeight)) ||
+    ("platformOs" in set && parseStrictPlatformOs(set.platformOs) !== (p.platformOs ?? "")) ||
+    ("timezone" in set && parseStrictTimezone(set.timezone) !== p.timezone);
+}
+
 /**
  * Apply a partial field set onto a profile in place. Only keys present in `set`
  * change — everything else (cookies, fingerprint seed, seeded) is preserved.
@@ -433,6 +431,17 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     }
     p.screenWidth = r.width;
     p.screenHeight = r.height;
+  }
+  if ("platformOs" in set) {
+    const platformOs = parseStrictPlatformOs(set.platformOs);
+    if (profileEngine(p) === "firefox" && platformOs !== (p.platformOs ?? "")) {
+      throw new Error("Firefox operating system cannot be changed");
+    }
+    p.platformOs = platformOs;
+  }
+  if ("timezone" in set) {
+    p.timezone = parseStrictTimezone(set.timezone);
+    syncFirefoxTimezone(p);
   }
   if ("proxy" in set) {
     const nextProxy = parseStrictProxy(set.proxyType ?? p.proxy?.type ?? "http", set.proxy);
@@ -1778,11 +1787,17 @@ export async function handleUiRequest(
       const profile = store.getProfile(id);
       if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
       if (profile.proxyError) return Response.json({ ok: false, error: "Fix or remove the invalid proxy before setting the timezone." }, { status: 400 });
+      if (store.getLaunch(id)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+      }
       const timezone = await lookupExitTimezone(profile.proxy, options.timezoneFetch);
       if (!timezone) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
       const current = store.getProfile(id);
       if (!current || current.proxyError || JSON.stringify(current.proxy) !== JSON.stringify(profile.proxy)) {
         return Response.json({ ok: false, error: "Profile connection changed. Reopen Edit and try again." }, { status: 409 });
+      }
+      if (store.getLaunch(id)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
       current.timezone = timezone;
       syncFirefoxTimezone(current);
@@ -1948,11 +1963,14 @@ export async function handleUiRequest(
           // one here would only survive until the next open erased it. Ignore
           // it, like the closed-profile Cloud editor does.
           delete set.customNo;
+          if (fingerprintChanges(live, set)) {
+            return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+          }
           const liveProxyChanged = applyEdits(live, set);
-          if (liveProxyChanged && live.proxy) {
+          if (liveProxyChanged && live.proxy && !("timezone" in set)) {
             await attachTimezones([live], options.timezoneFetch).catch(() => {});
             syncFirefoxTimezone(live);
-          } else if (liveProxyChanged) {
+          } else if (liveProxyChanged && !("timezone" in set)) {
             live.timezone = "";
             syncFirefoxTimezone(live);
           }
@@ -1983,16 +2001,20 @@ export async function handleUiRequest(
       }
       const body = (await req.json()) as { set?: unknown };
       const set = body.set && typeof body.set === "object" ? (body.set as Record<string, unknown>) : {};
-      // Remote: fetch the live profile from the hub, apply the edits, save it
-      // back. Local: the store — a running profile may be edited too; the
-      // stored fields simply apply the next time its browser launches.
+      // Account details can be edited live; fingerprint changes require a closed browser.
       const p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
       if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+      if (!remote && store.getLaunch(id) && fingerprintChanges(p, set)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+      }
       const previousGroup = p.group;
       applyEdits(p, set);
       if (!remote) store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
       if (remote) await remote.saveProfile(p);
-      else store.upsertProfile(p);
+      else {
+        store.upsertProfile(p);
+        if ("timezone" in set) store.setTimezone(id, p.timezone);
+      }
       return Response.json({ ok: true });
     } catch (e) {
       return Response.json(

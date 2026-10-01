@@ -2,7 +2,8 @@ import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type { PortableProfile } from "./contracts/cloud-v1.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
-import { parseStrictProxy, parseStrictResolution } from "./parse.ts";
+import { parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone } from "./parse.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { proxyLegacyString } from "./proxy.ts";
@@ -27,6 +28,8 @@ export interface CloudProfileEditView {
   emailPassword: string;
   twofa: string;
   resolution: string;
+  platformOs: string;
+  timezone: string;
   extensions: string[];
   tags: string;
   cookieCount: number;
@@ -70,6 +73,8 @@ function editView(profile: Profile, expectedVersion: number): CloudProfileEditVi
     emailPassword: profile.emailPassword ?? "",
     twofa: profile.twofa,
     resolution: `${profile.screenWidth}*${profile.screenHeight}`,
+    platformOs: profile.platformOs ?? "",
+    timezone: profile.timezone,
     extensions: profile.extensions ?? [],
     tags: (profile.tags ?? []).join(", "),
     cookieCount: profile.cookies.length,
@@ -107,6 +112,17 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
     profile.screenWidth = resolution.width;
     profile.screenHeight = resolution.height;
   }
+  if ("platformOs" in set) {
+    const platformOs = parseStrictPlatformOs(set.platformOs);
+    if (profile.engine === "firefox" && platformOs !== (profile.platformOs ?? "")) {
+      throw new CloudProfileEditorError("Firefox operating system cannot be changed", 400);
+    }
+    profile.platformOs = platformOs;
+  }
+  if ("timezone" in set) {
+    profile.timezone = parseStrictTimezone(set.timezone);
+    syncFirefoxTimezone(profile);
+  }
   if ("proxy" in set) {
     const nextProxy = parseStrictProxy(set.proxyType ?? profile.proxy?.type ?? "http", set.proxy);
     const previousProxy = profile.proxy;
@@ -118,7 +134,7 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
       previousProxy?.pass !== nextProxy?.pass;
     profile.proxy = nextProxy;
     delete profile.proxyError;
-    if (proxyChanged && profile.engine !== "firefox") profile.timezone = "";
+    if (proxyChanged && profile.engine !== "firefox" && !("timezone" in set)) profile.timezone = "";
   }
   if ("extensions" in set) {
     const extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
@@ -193,7 +209,7 @@ export class CloudProfileEditor {
       if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
     }
     const proxyChanged = applyEdits(profile, set);
-    if (proxyChanged && profile.proxy && profile.engine !== "firefox") {
+    if (proxyChanged && profile.proxy && profile.engine !== "firefox" && !("timezone" in set)) {
       await attachTimezones([profile], this.timezoneFetch).catch(() => {});
     }
 

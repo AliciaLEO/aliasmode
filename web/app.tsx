@@ -693,25 +693,34 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
 
+const FINGERPRINT_EDIT_WARNING = "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?";
+
 function FingerprintSettings({
   engine,
   screen,
   onScreenChange,
   platformOs,
   onPlatformOsChange,
+  timezone,
+  onTimezoneChange,
+  disabled = false,
+  onUndo,
 }: {
   engine: "chromium" | "firefox";
   screen: string;
   onScreenChange: (value: string) => void;
   platformOs: string;
-  /** Omitted when editing: the OS is part of the identity and is fixed at creation. */
   onPlatformOsChange?: (value: string) => void;
+  timezone?: string;
+  onTimezoneChange?: (value: string) => void;
+  disabled?: boolean;
+  onUndo?: () => void;
 }) {
   return (
     <details className="fingerprint-settings">
       <summary>
         <span>Fingerprint settings</span>
-        <span className="automatic-badge">Automatic</span>
+        <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
@@ -721,14 +730,14 @@ function FingerprintSettings({
         {engine === "chromium" && (
           <label className="fld">
             <span>Screen</span>
-            <input value={screen} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
+            <input value={screen} disabled={disabled} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
         {engine === "chromium" && (
           <label className="fld">
             <span>Operating system</span>
             {onPlatformOsChange ? (
-              <select value={platformOs} onChange={(event) => onPlatformOsChange(event.target.value)}>
+              <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
                 <option value="">Automatic</option>
                 <option value="windows">Windows</option>
                 <option value="macos">macOS</option>
@@ -739,17 +748,28 @@ function FingerprintSettings({
             )}
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.map(([label, value]) => (
+        {onTimezoneChange && (
+          <label className="fld">
+            <span>Timezone</span>
+            <input value={timezone ?? ""} disabled={disabled} placeholder="Automatic · e.g. Europe/Paris" onChange={(event) => onTimezoneChange(event.target.value)} />
+          </label>
+        )}
+        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
           <label className="fld" key={label}>
             <span>{label}</span>
             <input value={value} readOnly tabIndex={-1} className="ro" />
           </label>
         ))}
-        <div className="hint">{engine === "firefox"
-          ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-          : onPlatformOsChange
-            ? "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."
-            : "CloakBrowser keeps the locked values coordinated. Screen is the only fingerprint setting you can change after creation."}</div>
+        <div className="hint">{disabled
+          ? "Close the browser before changing fingerprint settings."
+          : onTimezoneChange
+            ? engine === "firefox"
+              ? "Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated."
+              : "Screen, operating system, and timezone can be changed. CloakBrowser controls the other values."
+            : engine === "firefox"
+              ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
+              : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
+        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>Undo fingerprint edits</button>}
       </div>
     </details>
   );
@@ -1116,6 +1136,7 @@ function App() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editExpectedVersion, setEditExpectedVersion] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editInitialFingerprint, setEditInitialFingerprint] = useState<Record<string, string>>({});
   const [editInitialProxy, setEditInitialProxy] = useState({ proxy: "", proxyType: "http" });
   const [outreachOfferDismissed, setOutreachOfferDismissed] = useState(() => {
     try { return localStorage.getItem("aliasmode.offers.xreacherDismissed") === "1"; } catch { return false; }
@@ -2418,6 +2439,7 @@ function App() {
     editFetchId.current = id;
     setEditId(id);
     setEditForm({});
+    setEditInitialFingerprint({});
     setEditExts([]);
     setEditInitialExts([]);
     setEditMobile(null);
@@ -2443,6 +2465,7 @@ function App() {
           timezone: p.timezone,
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
+        setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
@@ -2466,6 +2489,7 @@ function App() {
     setTimezoneBusy(false);
     setEditLoading(false);
     setEditForm({});
+    setEditInitialFingerprint({});
     setEditExts([]);
     setEditInitialExts([]);
     setEditErr(null);
@@ -2504,24 +2528,29 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    const id = editId;
     const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
     setEditErr(null);
     try {
-      const { timezone } = await refreshProfileTimezone(editId);
-      if (generation === editProxyCheckGeneration.current) {
-        setEditForm((form) => ({ ...form, timezone }));
-        await load();
-      }
+      const { timezone } = await refreshProfileTimezone(id);
+      if (editFetchId.current !== id || generation !== editProxyCheckGeneration.current) return;
+      setEditForm((form) => ({ ...form, timezone }));
+      setEditInitialFingerprint((initial) => ({ ...initial, timezone }));
+      await load();
     } catch (error) {
-      if (generation === editProxyCheckGeneration.current) setEditErr(error instanceof Error ? error.message : String(error));
+      if (editFetchId.current === id && generation === editProxyCheckGeneration.current) setEditErr(error instanceof Error ? error.message : String(error));
     } finally {
-      if (generation === editProxyCheckGeneration.current) setTimezoneBusy(false);
+      if (editFetchId.current === id && generation === editProxyCheckGeneration.current) setTimezoneBusy(false);
     }
   };
   const saveEdit = async () => {
     if (!editId) return;
+    const fingerprintEdits = Object.fromEntries(Object.entries(editInitialFingerprint)
+      .filter(([key, value]) => editForm[key] !== value)
+      .map(([key]) => [key, editForm[key] ?? ""]));
+    if (Object.keys(fingerprintEdits).length && !confirm(FINGERPRINT_EDIT_WARNING)) return;
     setEditSaving(true);
     setEditErr(null);
     try {
@@ -2531,7 +2560,7 @@ function App() {
         proxy: editForm.proxy ?? "", proxyType: editForm.proxyType ?? "http",
         username: editForm.username ?? "", password: editForm.password ?? "",
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
-        resolution: editForm.resolution ?? "", tags: editForm.tags ?? "",
+        tags: editForm.tags ?? "", ...fingerprintEdits,
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
@@ -4437,11 +4466,10 @@ function App() {
                   {!isCloudMode && !appMode?.legacyRemote && (
                     <>
                       <div className="proxy-check-actions">
-                        <span className="hint">Saved timezone: {editForm.timezone || "not set"}</span>
                         <button
                           type="button"
                           className="btn proxy-check-btn"
-                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError}
+                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError || editRunning || editLive}
                           onClick={refreshEditedTimezone}
                         >
                           <Icon name="activity" className="sm" />
@@ -4472,7 +4500,13 @@ function App() {
                       </button>
                     </div>
                   )}
-                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} platformOs={editForm.platformOs ?? ""} />
+                  <FingerprintSettings
+                    engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
+                    platformOs={editForm.platformOs ?? ""} onPlatformOsChange={(value) => setEF("platformOs", value)}
+                    timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
+                    disabled={editRunning || editLive || editSaving || timezoneBusy}
+                    onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
+                  />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>Extensions</span>

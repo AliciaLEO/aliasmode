@@ -175,6 +175,27 @@ export function parseStrictResolution(value: unknown): { width: number; height: 
   return { width, height };
 }
 
+export function parseStrictPlatformOs(value: unknown): string {
+  if (typeof value !== "string") throw new Error("invalid operating system");
+  if (!value.trim()) return "";
+  const platform = parsePlatformOs(value);
+  if (!platform) throw new Error("invalid operating system: expected Windows, macOS, or Linux");
+  return platform;
+}
+
+export function parseStrictTimezone(value: unknown): string {
+  if (typeof value !== "string") throw new Error("invalid timezone");
+  if (!value.trim()) return "";
+  const timezone = parseTimezone(value);
+  if (!timezone) throw new Error("invalid timezone: expected an IANA timezone such as Europe/Paris");
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timezone });
+  } catch {
+    throw new Error("invalid timezone: expected an IANA timezone such as Europe/Paris");
+  }
+  return timezone;
+}
+
 /** Longest operator-chosen serial we accept. Wide enough for AdsPower-style ids. */
 export const MAX_CUSTOM_NO_LENGTH = 12;
 

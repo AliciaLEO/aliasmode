@@ -4,7 +4,7 @@ import fingerprintNetworkDefinitionPath from "./node_modules/fingerprint-generat
 import inputNetworkDefinitionPath from "./node_modules/header-generator/data_files/input-network-definition.zip" with { type: "file" };
 // @ts-expect-error Bun embeds this package data in compiled sidecars.
 import headerNetworkDefinitionPath from "./node_modules/header-generator/data_files/header-network-definition.zip" with { type: "file" };
-import type { FirefoxProfileConfig, JsonValue, ProfileEngine } from "./types.ts";
+import type { FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 
 const generatorAssetInputs = [
   ["fingerprint-network-definition.zip", fingerprintNetworkDefinitionPath],
@@ -35,6 +35,16 @@ export function createFirefoxProfileConfig(screenWidth: number, screenHeight: nu
     runtimeVersion: FIREFOX_RUNTIME_VERSION,
     config,
   });
+}
+
+export function syncFirefoxTimezone(profile: Profile): void {
+  if (profile.engine !== "firefox") return;
+  if (!profile.firefox) throw new Error("Firefox profile is missing its saved configuration");
+  const { timezone: _timezone, ...config } = profile.firefox.config;
+  profile.firefox = {
+    ...profile.firefox,
+    config: { ...config, ...(profile.timezone ? { timezone: profile.timezone } : {}) },
+  };
 }
 
 /** Normalize and validate the persisted Camoufox identity at every boundary. */

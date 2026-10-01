@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
 import { Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
+import { deriveFingerprintFlags } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest } from "./ui.ts";
 import { readXlsx, writeXlsx } from "./xlsx.ts";
 import { AppConfigStore } from "./app-config.ts";
@@ -1686,21 +1687,89 @@ test("extension deletion cannot mutate the persona of an open profile", async ()
   s.close();
 });
 
-test("local edits are stored while the profile browser is open and apply next launch", async () => {
+test("open Local and Cloud profiles allow account edits but reject fingerprint changes", async () => {
+  for (const cloud of [false, true]) {
+    const s = store();
+    s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
+    const options = cloud ? { cloudBrowser: {
+      canEditLive: () => true,
+      commitLiveEdit: async (profile: Profile) => { s.upsertProfile(profile); return true; },
+    } as any } : {};
+    for (const set of [{ resolution: "1366x768" }, { platformOs: "macos" }, { timezone: "Europe/Paris" }]) {
+      const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ set }),
+      }), {} as any, s, null, options);
+      expect(res!.status).toBe(409);
+    }
+    const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set: { name: "Renamed", resolution: "1680x1050", platformOs: "windows", timezone: "" } }),
+    }), {} as any, s, null, options);
+    expect(res!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")).toMatchObject({ name: "Renamed", screenWidth: 1680, screenHeight: 1050 });
+    expect(s.getLaunch("k1d0cd11")).not.toBeNull();
+    s.close();
+  }
+});
+
+test("closed fingerprint edits persist and preserve the rest of the identity", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const s = store();
+    const id = engine === "firefox" ? "firefox-edit" : "k1d0cd11";
+    if (engine === "firefox") s.upsertProfile(firefoxProfile(s, id));
+    const before = s.getProfile(id)!;
+    const calls: string[][] = [];
+    for (const timezone of ["Europe/Paris", ""]) {
+      const set = { timezone, proxy: "next-proxy.example:8080", ...(engine === "chromium" ? { platformOs: "macos", resolution: "1920x1080" } : {}) };
+      const res = await handleUiRequest(new Request(`http://x/ui/api/profiles/${id}/update`, {
+        method: "POST", body: JSON.stringify({ set }),
+      }), {} as any, s, null, { timezoneFetch: timezoneFetch({}, calls) });
+      expect(res!.status).toBe(200);
+      const saved = s.getProfile(id)!;
+      expect(saved.timezone).toBe(timezone);
+      expect(saved.cookies).toEqual(before.cookies);
+      expect(saved.fingerprintSeed).toBe(before.fingerprintSeed);
+      expect(saved.ua).toBe(before.ua);
+      if (engine === "firefox") {
+        expect(saved.firefox!.config).toEqual(timezone ? { timezone } : {});
+      } else {
+        expect(saved).toMatchObject({ platformOs: "macos", screenWidth: 1920, screenHeight: 1080 });
+        const flags = deriveFingerprintFlags(saved);
+        expect(flags).toContain("--fingerprint-platform=macos");
+        expect(flags).toContain("--fingerprint-screen-width=1920");
+        expect(flags.filter((flag) => flag.startsWith("--fingerprint-timezone="))).toEqual(timezone ? [`--fingerprint-timezone=${timezone}`] : []);
+      }
+      const detail = await handleUiRequest(new Request(`http://x/ui/api/profiles/${id}`), {} as any, s);
+      expect((await detail!.json()).profile.timezone).toBe(timezone);
+    }
+    expect(calls).toEqual([]);
+    s.close();
+  }
+});
+
+test("Firefox rejects OS edits and invalid timezone edits leave the profile unchanged", async () => {
+  const s = store();
+  s.upsertProfile(firefoxProfile(s, "firefox-edit"));
+  const before = s.getProfile("firefox-edit");
+  for (const set of [{ platformOs: "macos" }, { timezone: "Europe/Not_A_Zone" }]) {
+    const res = await handleUiRequest(new Request("http://x/ui/api/profiles/firefox-edit/update", {
+      method: "POST", body: JSON.stringify({ set }),
+    }), {} as any, s);
+    expect((await res!.json()).ok).toBe(false);
+    expect(s.getProfile("firefox-edit")).toEqual(before);
+  }
+  s.close();
+});
+
+test("timezone lookup refuses an open profile before making a request", async () => {
   const s = store();
   s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
-  const res = await handleUiRequest(
-    new Request("http://x/ui/api/profiles/k1d0cd11/update", {
-      method: "POST",
-      body: JSON.stringify({ set: { resolution: "1366x768" } }),
-    }),
-    {} as any,
-    s,
-  );
-  expect(res!.status).toBe(200);
-  // The running browser is untouched; the stored fields drive the NEXT launch.
-  expect([s.getProfile("k1d0cd11")!.screenWidth, s.getProfile("k1d0cd11")!.screenHeight]).toEqual([1366, 768]);
-  expect(s.getLaunch("k1d0cd11")).not.toBeNull();
+  const calls: string[][] = [];
+  const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: timezoneFetch({}, calls) });
+  expect(res!.status).toBe(409);
+  expect(calls).toEqual([]);
   s.close();
 });
 

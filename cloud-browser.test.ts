@@ -754,6 +754,24 @@ test("Cloud waits for an in-flight startup renewal before reporting success", as
   }
 });
 
+test("Cloud open replaces a cached timezone with an explicitly cleared value", async () => {
+  const state = setup();
+  state.store.upsertProfile(decodePortableProfile(payload()).profile);
+  const cloud = (state.coordinator as any).options.cloud;
+  const openProfile = cloud.openProfile.bind(cloud);
+  cloud.openProfile = async (...args: unknown[]) => {
+    const opened = await openProfile(...args);
+    opened.payload.profile.timezone = "";
+    opened.payload.profile.platformOs = "macos";
+    return opened;
+  };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  expect(state.store.getProfile("profile1")).toMatchObject({ timezone: "", platformOs: "macos" });
+  await state.coordinator.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
+
 test("Cloud browser restores the session and navigates in one attach", async () => {
   const state = setup();
   const result = await state.coordinator.open("profile1", [

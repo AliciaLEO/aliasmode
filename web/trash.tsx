@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { TrashMutationResult, TrashProfileView } from "../proxy-tools-types.ts";
 import { proxyResultPage } from "./proxies.tsx";
+import { useTranslation } from "./i18n.tsx";
 
 export function filterTrash(profiles: TrashProfileView[], groups: string[] | null, search: string): TrashProfileView[] {
   const query = search.trim().toLowerCase();
@@ -16,6 +17,7 @@ async function trashJson(response: Response): Promise<any> {
 }
 
 export function TrashPage({ active, onChanged }: { active: boolean; onChanged: () => Promise<void> }) {
+  const { t } = useTranslation();
   const [profiles, setProfiles] = useState<TrashProfileView[]>([]);
   const [folders, setFolders] = useState<string[]>([]);
   const [search, setSearch] = useState("");
@@ -92,57 +94,57 @@ export function TrashPage({ active, onChanged }: { active: boolean; onChanged: (
 
   return <div className="workspace proxy-page trash-page" hidden={!active}>
     <div className="tools-intro">
-      <div><span className="tools-eyebrow">PROFILE RECOVERY</span><h2>Pick up where you left off.</h2>
-        <p>Restore profiles with their saved identity and session, right back to their original folders.</p></div>
-      <span className="tools-count"><strong>{profiles.length.toLocaleString()}</strong> profiles in Trash</span>
+      <div><span className="tools-eyebrow">{t("PROFILE RECOVERY")}</span><h2>{t("Pick up where you left off.")}</h2>
+        <p>{t("Restore profiles with their saved identity and session, right back to their original folders.")}</p></div>
+      <span className="tools-count"><strong>{profiles.length.toLocaleString()}</strong> {t("profiles in Trash")}</span>
     </div>
     {error && <div className="tools-alert" role="alert">{error}</div>}
     {notice && <div className="tools-notice" role="status">{notice}</div>}
     <div className="trash-layout">
-      <aside className="tools-panel trash-folders" aria-label="Trash folders">
-        <div className="tools-panel-head"><h3>Restore by folder</h3><span>{groups.length}</span></div>
-        <p className="tools-hint">Choose folders to restore all their profiles at once.</p>
+      <aside className="tools-panel trash-folders" aria-label={t("Trash folders")}>
+        <div className="tools-panel-head"><h3>{t("Restore by folder")}</h3><span>{groups.length}</span></div>
+        <p className="tools-hint">{t("Choose folders to restore all their profiles at once.")}</p>
         <button className={`folder-all${!folders.length ? " selected" : ""}`} disabled={!!busy} onClick={() => changeFolders([])}>
-          All deleted profiles <span>{profiles.length.toLocaleString()}</span>
+          {t("All deleted profiles")} <span>{profiles.length.toLocaleString()}</span>
         </button>
         <div className="trash-folder-list">
           {groups.map((name) => <label className={`folder-choice${folders.includes(name) ? " selected" : ""}`} key={name}>
             <input type="checkbox" aria-label={`Folder ${name || "Ungrouped"}`} disabled={!!busy} checked={folders.includes(name)} onChange={(event) => changeFolders(event.target.checked ? [...folders, name] : folders.filter((group) => group !== name))} />
             <span>{name || "Ungrouped"}</span><small>{profiles.filter((profile) => profile.group === name).length.toLocaleString()}</small>
           </label>)}
-          {!groups.length && <p className="tools-hint">Deleted folders appear here.</p>}
+          {!groups.length && <p className="tools-hint">{t("Deleted folders appear here.")}</p>}
         </div>
         <div className="trash-folder-action">
           <button className="btn primary" disabled={!!busy || !folderProfiles.length || folderProfiles.some((profile) => !profile.canRestore)} onClick={() => void mutate("restore", folderProfiles)}>
             {folders.length ? `Restore all ${folderProfiles.length.toLocaleString()} profiles` : "Restore selected folders"}
           </button>
           <p className="tools-hint">{folders.length ? `Includes every profile in ${folders.length} selected ${folders.length === 1 ? "folder" : "folders"}, even outside the search results.` : "Select one or more folders above."}</p>
-          {folderProfiles.some((profile) => !profile.canRestore) && <p className="tools-hint">You need edit access to all selected folders.</p>}
+          {folderProfiles.some((profile) => !profile.canRestore) && <p className="tools-hint">{t("You need edit access to all selected folders.")}</p>}
         </div>
       </aside>
-      <section className="tools-panel trash-results" aria-label="Deleted profiles">
+      <section className="tools-panel trash-results" aria-label={t("Deleted profiles")}>
         <div className="tools-panel-head"><div><h3>{folders.length ? "Selected folders" : "All deleted profiles"}</h3><p>{filtered.length.toLocaleString()} {search ? "matching " : ""}profiles</p></div>
           <button className="btn ghost" disabled={!!busy} onClick={() => void refresh()}>{busy === "load" ? "Loading…" : "Refresh"}</button></div>
         <div className="trash-search">
-          <input className="input" aria-label="Search Trash" type="search" placeholder="Search by name, ID, or folder…" value={search} disabled={!!busy} onChange={(event) => { setSearch(event.target.value); setPage(0); setSelected(new Set()); }} />
+          <input className="input" aria-label={t("Search Trash")} type="search" placeholder={t("Search by name, ID, or folder…")} value={search} disabled={!!busy} onChange={(event) => { setSearch(event.target.value); setPage(0); setSelected(new Set()); }} />
           <button className="btn" disabled={!!busy || !filtered.length || allResultsSelected} onClick={() => setSelected(new Set(filtered.map((profile) => profile.id)))}>
             {allResultsSelected ? `All ${filtered.length.toLocaleString()} selected` : `Select all ${filtered.length.toLocaleString()} results`}
           </button>
         </div>
         {!!chosen.length && <div className="trash-selection">
-          <div className="proxy-actions"><strong>{chosen.length.toLocaleString()} selected</strong><button className="tlink" disabled={!!busy} onClick={() => setSelected(new Set())}>Clear</button></div>
+          <div className="proxy-actions"><strong>{chosen.length.toLocaleString()} selected</strong><button className="tlink" disabled={!!busy} onClick={() => setSelected(new Set())}>{t("Clear")}</button></div>
           <div className="proxy-actions">
             <button className="btn primary" disabled={!!busy || restoreDenied} onClick={() => void mutate("restore")}>{busy === "restore" ? "Restoring…" : `Restore ${chosen.length.toLocaleString()} profiles`}</button>
-            <button className="btn ghost trash-purge" disabled={!!busy || purgeDenied} onClick={() => void mutate("purge")}>Delete permanently</button>
+            <button className="btn ghost trash-purge" disabled={!!busy || purgeDenied} onClick={() => void mutate("purge")}>{t("Delete permanently")}</button>
           </div>
           {(restoreDenied || purgeDenied) && <p className="tools-hint">{restoreDenied ? "Restore requires edit access to every selected folder. " : ""}{purgeDenied ? "Only the workspace owner can permanently delete profiles." : ""}</p>}
         </div>}
         {filtered.length > 0 ? <>
           <div className="proxy-table-wrap"><table className="profile-table proxy-table trash-table"><thead><tr>
-            <th className="tools-checkbox"><input type="checkbox" aria-label="Select this page" disabled={!!busy} checked={pageSelected === paged.items.length} ref={(input) => { if (input) input.indeterminate = pageSelected > 0 && pageSelected < paged.items.length; }} onChange={(event) => {
+            <th className="tools-checkbox"><input type="checkbox" aria-label={t("Select this page")} disabled={!!busy} checked={pageSelected === paged.items.length} ref={(input) => { if (input) input.indeterminate = pageSelected > 0 && pageSelected < paged.items.length; }} onChange={(event) => {
               const checked = event.target.checked;
               setSelected((previous) => { const next = new Set(previous); for (const profile of paged.items) checked ? next.add(profile.id) : next.delete(profile.id); return next; });
-            }} /></th><th>Profile</th><th>Original folder</th><th>Deleted</th></tr></thead>
+            }} /></th><th>{t("Profile")}</th><th>{t("Original folder")}</th><th>{t("Deleted")}</th></tr></thead>
             <tbody>{paged.items.map((profile) => <tr key={profile.id} className={selected.has(profile.id) ? "is-selected" : ""}>
               <td className="tools-checkbox"><input type="checkbox" aria-label={`Select ${profile.name || profile.id}`} disabled={!!busy} checked={selected.has(profile.id)} onChange={(event) => { const checked = event.target.checked; setSelected((previous) => { const next = new Set(previous); checked ? next.add(profile.id) : next.delete(profile.id); return next; }); }} /></td>
               <td><strong>{profile.name || profile.id}</strong><small className="tools-mono">{profile.id}</small></td>
@@ -150,13 +152,13 @@ export function TrashPage({ active, onChanged }: { active: boolean; onChanged: (
               <td><time dateTime={new Date(profile.trashedAt).toISOString()} title={new Date(profile.trashedAt).toLocaleString()}>{new Date(profile.trashedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</time><small>{new Date(profile.trashedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</small></td>
             </tr>)}</tbody></table></div>
           <div className="proxy-pager"><span>{(paged.page * 50 + 1).toLocaleString()}–{Math.min((paged.page + 1) * 50, filtered.length).toLocaleString()} of {filtered.length.toLocaleString()}</span>
-            <button className="btn" disabled={paged.page === 0} onClick={() => setPage(paged.page - 1)}>Previous</button>
+            <button className="btn" disabled={paged.page === 0} onClick={() => setPage(paged.page - 1)}>{t("Previous")}</button>
             <span>{paged.page + 1} / {paged.pages}</span>
-            <button className="btn" disabled={paged.page + 1 >= paged.pages} onClick={() => setPage(paged.page + 1)}>Next</button>
+            <button className="btn" disabled={paged.page + 1 >= paged.pages} onClick={() => setPage(paged.page + 1)}>{t("Next")}</button>
           </div>
         </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↶</span><h3>{busy === "load" ? "Loading Trash…" : profiles.length ? "No matching profiles" : "Trash is empty"}</h3><p>{profiles.length ? "Try another folder or search term." : "Profiles you move to Trash will appear here. You can restore them at any time."}</p></div>}
       </section>
     </div>
-    <p className="tools-footnote">Restoring keeps saved profile data. Permanent deletion removes it and cannot be undone.</p>
+    <p className="tools-footnote">{t("Restoring keeps saved profile data. Permanent deletion removes it and cannot be undone.")}</p>
   </div>;
 }

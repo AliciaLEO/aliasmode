@@ -5,6 +5,7 @@ import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
 import { ProxyProviderOffer } from "./proxy-offer.tsx";
+import { I18nProvider, useTranslation } from "./i18n.tsx";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
@@ -441,6 +442,7 @@ function displayNo(profile: UiProfile, fallbackIndex: number): { value: string; 
  * against — "unknown" must not look like "verified".
  */
 function FingerprintBadge({ p }: { p: UiProfile }) {
+  const { t } = useTranslation();
   const v = p.fpVerdict;
   if (!v) return null;
   if (v.verdict === "match") {
@@ -454,9 +456,7 @@ function FingerprintBadge({ p }: { p: UiProfile }) {
     .map((d) => `${d.field}: ${d.expected || "(none)"} → ${d.observed || "(none)"}`)
     .join("; ");
   return (
-    <span className="fpbadge warn" title={`This browser no longer matches the imported fingerprint — ${detail}`}>
-      identity changed
-    </span>
+    <span className="fpbadge warn" title={`This browser no longer matches the imported fingerprint — ${detail}`}>{t("identity changed")}</span>
   );
 }
 
@@ -465,9 +465,10 @@ function StatusDot({ running }: { running: boolean }) {
 }
 
 function HealthSources({ sources }: { sources: HealthSource[] }) {
-  if (sources.length === 0) return <div className="health-sources none">No health nodes</div>;
+  const { t } = useTranslation();
+  if (sources.length === 0) return <div className="health-sources none">{t("No health nodes")}</div>;
   return (
-    <div className="health-sources" aria-label="Automation node freshness">
+    <div className="health-sources" aria-label={t("Automation node freshness")}>
       {sources.map((source) => (
         <span
           key={source.sourceId}
@@ -552,12 +553,13 @@ function PlatformPill({ platform }: { platform: string }) {
  * group on the fly. Consistent with the other modal selects (no native datalist).
  */
 function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: string; onChange: (v: string) => void; groups: string[]; allowCreate?: boolean }) {
+  const { t } = useTranslation();
   const [creating, setCreating] = useState(false);
   if (creating) {
     return (
       <div className="grouppick">
-        <input autoFocus placeholder="new group name" value={value} onChange={(e) => onChange(e.target.value)} />
-        <button type="button" className="btn gp-back tip" data-tip="Pick an existing group" title="Pick an existing group" onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
+        <input autoFocus placeholder={t("new group name")} value={value} onChange={(e) => onChange(e.target.value)} />
+        <button type="button" className="btn gp-back tip" data-tip={t("Pick an existing group")} title={t("Pick an existing group")} onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
       </div>
     );
   }
@@ -569,28 +571,29 @@ function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: s
         else onChange(e.target.value);
       }}
     >
-      <option value="">(ungrouped)</option>
+      <option value="">{t("(ungrouped)")}</option>
       {groups.map((g) => <option key={g} value={g}>{g}</option>)}
-      {allowCreate && <option value="__new__">➕ New group…</option>}
+      {allowCreate && <option value="__new__">{t("➕ New group…")}</option>}
     </select>
   );
 }
 
 function PlatformPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
   const known = KNOWN_PLATFORMS.some((p) => p.value === value);
   const [creating, setCreating] = useState(false);
   if (creating || (!!value && !known)) {
     return (
       <div className="grouppick">
-        <input autoFocus placeholder="new platform (e.g. linkedin.com)" value={value} onChange={(e) => onChange(e.target.value)} />
-        <button type="button" className="btn gp-back tip" data-tip="Pick a known platform" title="Pick a known platform" onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
+        <input autoFocus placeholder={t("new platform (e.g. linkedin.com)")} value={value} onChange={(e) => onChange(e.target.value)} />
+        <button type="button" className="btn gp-back tip" data-tip={t("Pick a known platform")} title={t("Pick a known platform")} onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
       </div>
     );
   }
   return (
     <select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
       {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-      <option value="__new__">➕ New platform…</option>
+      <option value="__new__">{t("➕ New platform…")}</option>
     </select>
   );
 }
@@ -608,6 +611,7 @@ function ModeSwitchConfirmation({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const toLocal = mode === "local";
   return (
     <div className="modal-backdrop" onClick={onCancel}>
@@ -619,11 +623,11 @@ function ModeSwitchConfirmation({
               ? "Cloud profiles will not appear until you switch back. Local mode does not contact AliasMode Cloud."
               : "Your Local profiles stay on this computer. AliasMode does not upload them to Cloud automatically."}
           </p>
-          <p className="hint">AliasMode saves and closes active browsers, then restarts automatically.</p>
+          <p className="hint">{t("AliasMode saves and closes active browsers, then restarts automatically.")}</p>
           {error && <div className="modal-err" role="alert">{error}</div>}
         </div>
         <div className="modal-foot">
-          <button className="btn ghost" type="button" disabled={busy} onClick={onCancel}>Cancel</button>
+          <button className="btn ghost" type="button" disabled={busy} onClick={onCancel}>{t("Cancel")}</button>
           <button className="btn primary" type="button" disabled={busy} onClick={onConfirm}>
             {busy ? "Switching…" : `Switch to ${toLocal ? "Local" : "Cloud"}`}
           </button>
@@ -716,21 +720,22 @@ function FingerprintSettings({
   disabled?: boolean;
   onUndo?: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <details className="fingerprint-settings">
       <summary>
-        <span>Fingerprint settings</span>
+        <span>{t("Fingerprint settings")}</span>
         <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
-          <span>Browser</span>
+          <span>{t("Browser")}</span>
           <input value={engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly tabIndex={-1} className="ro" />
         </label>
         {engine === "chromium" && (
           <label className="fld">
-            <span>Screen</span>
-            <input value={screen} disabled={disabled} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
+            <span>{t("Screen")}</span>
+            <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
         <label className="fld">
@@ -892,16 +897,18 @@ function desktopInvoke(): DesktopInvoke | undefined {
 }
 
 function UpdateHighlights({ version, highlights }: { version: string; highlights: string[] }) {
+  const { t } = useTranslation();
   if (highlights.length === 0) return null;
   return (
     <details className="update-highlights">
-      <summary>What’s new in {version}</summary>
+      <summary>{t("What’s new in {version}")}</summary>
       <ul>{highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
     </details>
   );
 }
 
 function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgress }) {
+  const { t } = useTranslation();
   const percent = progress.phase === "downloading" ? progress.percent : null;
   const label = progress.phase === "preparing"
     ? "Preparing update…"
@@ -915,7 +922,7 @@ function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgre
   return (
     <div className="update-progress" role="status">
       <span>{label}</span>
-      <progress max={100} value={percent ?? undefined} aria-label="Update progress" />
+      <progress max={100} value={percent ?? undefined} aria-label={t("Update progress")} />
     </div>
   );
 }
@@ -979,6 +986,7 @@ function proxyFailureMessage(reason: ProxyCheckResult["reason"]): string {
 }
 
 function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: ProxyCheckUiState }) {
+  const { t } = useTranslation();
   if (!hasProxy) return <ProxyProviderOffer />;
   if (state.error) {
     const invalid = state.error === "invalid";
@@ -1002,7 +1010,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
     return (
       <div className="proxy-check-result working" role="status">
         <Icon name="check" className="sm" />
-        <span><strong>Proxy is working.</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
+        <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <>{t("Rotating exit IPs detected.")}</>}</span>
       </div>
     );
   }
@@ -1011,7 +1019,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
       <>
         <div className="proxy-check-result unstable" role="status">
           <Icon name="warning" className="sm" />
-          <span><strong>Proxy checks were mixed.</strong> {result.successes} of {result.attempts} succeeded.</span>
+          <span><strong>{t("Proxy checks were mixed.")}</strong> {result.successes} of {result.attempts} succeeded.</span>
         </div>
         <ProxyProviderOffer replacement />
       </>
@@ -1031,12 +1039,13 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   return (
     <div className="proxy-check-result unavailable" role="status">
       <Icon name="activity" className="sm" />
-      <span>Proxy check is unavailable. Try again later.</span>
+      <span>{t("Proxy check is unavailable. Try again later.")}</span>
     </div>
   );
 }
 
 function App() {
+  const { t } = useTranslation();
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
   const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);
   const [appMode, setAppMode] = useState<AppModeConfig | null>(null);
@@ -2864,23 +2873,23 @@ function App() {
       <>
         <main className="onboarding">
         <section className="onboarding-card" aria-labelledby="onboarding-title">
-          <div className="onboarding-brand"><AliasLoop />AliasMode <span>by Xreacher</span></div>
+          <div className="onboarding-brand"><AliasLoop />{t("AliasMode")}<span>{t("by Xreacher")}</span></div>
           {restartRequired ? (
             <>
-              <h1 id="onboarding-title">Your mode is ready</h1>
+              <h1 id="onboarding-title">{t("Your mode is ready")}</h1>
               <p>Quit and reopen AliasMode to start in {appMode?.mode === "cloud" ? "Cloud" : "Local"} mode.</p>
               {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-              <button className="mode-primary" type="button" onClick={() => window.close()}>Quit AliasMode</button>
+              <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit AliasMode")}</button>
             </>
           ) : appMode?.mode === "cloud" ? (
             cloudAuth?.authenticated ? (
               <>
-                <h1 id="onboarding-title">Review the Cloud terms</h1>
-                <p>Accept the current policies before synchronizing this workspace.</p>
+                <h1 id="onboarding-title">{t("Review the Cloud terms")}</h1>
+                <p>{t("Accept the current policies before synchronizing this workspace.")}</p>
                 <div className="auth-actions">
-                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">Terms</a>
-                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">Privacy</a>
-                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">Acceptable Use</a>
+                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">{t("Terms")}</a>
+                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">{t("Privacy")}</a>
+                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">{t("Acceptable Use")}</a>
                 </div>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <button
@@ -2895,32 +2904,30 @@ function App() {
               </>
             ) : savedSessionPhase === "restoring" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p role="status">Checking the saved Cloud session on this device…</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p role="status">{t("Checking the saved Cloud session on this device…")}</p>
               </>
             ) : savedSessionPhase === "retryable-failure" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p>The saved session is still on this device. Reconnect and try again.</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p>{t("The saved session is still on this device. Reconnect and try again.")}</p>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <div className="auth-actions">
-                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>Try again</button>
-                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>Sign in instead</button>
+                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>{t("Try again")}</button>
+                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>{t("Sign in instead")}</button>
                 </div>
               </>
             ) : (
               <>
                 <h1 id="onboarding-title">{authView === "signin" ? "Sign in to AliasMode Cloud" : "Create your Cloud account"}</h1>
-                <p>Verified accounts can synchronize portable profiles across authorized devices.</p>
+                <p>{t("Verified accounts can synchronize portable profiles across authorized devices.")}</p>
                 <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
-                  <label>Email<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
-                  <label>Password<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
+                  <label>{t("Email")}<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
+                  <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
                   {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                   {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
                   {confirmationEmail && (
-                    <button type="button" className="mode-secondary" disabled={authBusy} onClick={() => void resendConfirmation()}>
-                      Resend confirmation
-                    </button>
+                    <button type="button" className="mode-secondary" disabled={authBusy} onClick={() => void resendConfirmation()}>{t("Resend confirmation")}</button>
                   )}
                   <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? "Working…" : authView === "signin" ? "Sign in" : "Create account"}</button>
                 </form>
@@ -2935,27 +2942,27 @@ function App() {
             )
           ) : appMode ? (
             <>
-              <h1 id="onboarding-title">How do you want to use AliasMode?</h1>
-              <p>Choose where browser profiles live for this installation.</p>
+              <h1 id="onboarding-title">{t("How do you want to use AliasMode?")}</h1>
+              <p>{t("Choose where browser profiles live for this installation.")}</p>
               <div className="mode-options">
                 <button className="mode-option primary" type="button" disabled={modeBusy} onClick={() => chooseMode("cloud")}>
                   <span className="badge"><Icon name="cloud" className="lg" /></span>
-                  <strong>AliasMode Cloud</strong>
-                  <span>Sync profiles across authorized devices and work with your team.</span>
+                  <strong>{t("AliasMode Cloud")}</strong>
+                  <span>{t("Sync profiles across authorized devices and work with your team.")}</span>
                 </button>
                 <button className="mode-option" type="button" disabled={modeBusy} onClick={() => chooseMode("local")}>
                   <span className="badge"><Icon name="laptop" className="lg" /></span>
-                  <strong>AliasMode Local</strong>
-                  <span>No account. Profile data stays on this computer and analytics is off.</span>
+                  <strong>{t("AliasMode Local")}</strong>
+                  <span>{t("No account. Profile data stays on this computer and analytics is off.")}</span>
                 </button>
               </div>
               {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
             </>
           ) : (
             <>
-              <h1 id="onboarding-title">Starting AliasMode</h1>
+              <h1 id="onboarding-title">{t("Starting AliasMode")}</h1>
               <p>{connErr ?? "Loading your configuration…"}</p>
-              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>Try again</button>}
+              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button>}
             </>
           )}
           </section>
@@ -3020,7 +3027,7 @@ function App() {
       {!isCloudMode && dragging && (
         <div className="dropzone">
           <Icon name="fileImport" />
-          <span>Drop TXT, CSV, JSON, or XLSX profile exports to import</span>
+          <span>{t("Drop TXT, CSV, JSON, or XLSX profile exports to import")}</span>
         </div>
       )}
 
@@ -3039,12 +3046,12 @@ function App() {
           </button>
         )}
         <div className="brandrow">
-          <div className="brand"><AliasLoop />AliasMode</div>
+          <div className="brand"><AliasLoop />{t("AliasMode")}</div>
           {appVersion && <span className="appversion" title={appVersion}>{appVersion}</span>}
         </div>
         <div className="newrow">
-          <button className="btn primary newbtn" data-tip="New profile" title="New profile" disabled={!canEditCloud} onClick={openCreate}>
-            <Icon name="plus" /><span className="navlabel">New Profile</span>
+          <button className="btn primary newbtn" data-tip={t("New profile")} title={t("New profile")} disabled={!canEditCloud} onClick={openCreate}>
+            <Icon name="plus" /><span className="navlabel">{t("New Profile")}</span>
           </button>
           <button
             className="btn importbtn tip"
@@ -3056,54 +3063,54 @@ function App() {
           ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
         </div>
 
-        <nav className="sidenav" aria-label="Sections">
+        <nav className="sidenav" aria-label={t("Sections")}>
           <button
             type="button"
             className={`navitem${view === "profiles" && group === "all" ? " active" : ""}`}
-            data-tip="All profiles"
-            title="All profiles"
+            data-tip={t("All profiles")}
+            title={t("All profiles")}
             onClick={() => { setView("profiles"); setGroup("all"); }}
           >
-            <Icon name="profiles" /><span className="navlabel">All profiles</span>
+            <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
           {!appMode?.legacyRemote && <>
-            <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip="Proxies" title="Proxies" onClick={() => setView("proxies")}>
-              <Icon name="activity" /><span className="navlabel">Proxies</span>
+            <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => setView("proxies")}>
+              <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
             </button>
-            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip="Trash" title="Trash" onClick={() => setView("trash")}>
-              <Icon name="trash" /><span className="navlabel">Trash</span>
+            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
+              <Icon name="trash" /><span className="navlabel">{t("Trash")}</span>
             </button>
           </>}
           <button
             type="button"
             className={`navitem${view === "scripts" ? " active" : ""}`}
-            data-tip="Scripts"
-            title="Scripts"
+            data-tip={t("Scripts")}
+            title={t("Scripts")}
             onClick={() => setView("scripts")}
           >
-            <Icon name="file" /><span className="navlabel">Scripts</span>
+            <Icon name="file" /><span className="navlabel">{t("Scripts")}</span>
           </button>
           <button
             type="button"
             className={`navitem${view === "extensions" ? " active" : ""}`}
-            data-tip="Manage extensions"
-            title="Manage extensions"
+            data-tip={t("Manage extensions")}
+            title={t("Manage extensions")}
             onClick={() => { setExtErr(null); setView("extensions"); }}
           >
-            <Icon name="puzzle" /><span className="navlabel">Manage extensions</span>
+            <Icon name="puzzle" /><span className="navlabel">{t("Manage extensions")}</span>
             {extensions.length > 0 && <span className="cnt">{extensions.length}</span>}
           </button>
           <button
             type="button"
             className="navitem"
-            title="View detailed logs"
+            title={t("View detailed logs")}
             onClick={() => {
               setLogErr(null);
               setLogView(null);
               fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
             }}
-          ><Icon name="logs" /><span className="navlabel">Logs</span></button>
+          ><Icon name="logs" /><span className="navlabel">{t("Logs")}</span></button>
         </nav>
 
         <div className="sidesection">
@@ -3168,8 +3175,8 @@ function App() {
                     else if (event.key === "Escape") { setAddingGroup(false); setSidebarGroupName(""); }
                   }}
                 />
-                <button type="button" title="Create" onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
-                <button type="button" title="Cancel" onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
+                <button type="button" title={t("Create")} onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
+                <button type="button" title={t("Cancel")} onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
               <button className="newgroup" type="button" disabled={!canEditCloud} onClick={() => setAddingGroup(true)}>
@@ -3185,21 +3192,19 @@ function App() {
             href="https://t.me/aliasmode"
             target="_blank"
             rel="noreferrer"
-            data-tip="Support"
-            title="Support — AliasMode Telegram group"
+            data-tip={t("Support")}
+            title={t("Support — AliasMode Telegram group")}
           >
-            <Icon name="help" /><span className="navlabel">Support</span>
+            <Icon name="help" /><span className="navlabel">{t("Support")}</span>
           </a>
-          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip="Settings" title="Settings" onClick={openAccountSettings}>
-            <Icon name="settings" /><span className="navlabel">Settings</span>
+          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip={t("Settings")} title={t("Settings")} onClick={openAccountSettings}>
+            <Icon name="settings" /><span className="navlabel">{t("Settings")}</span>
           </button>
           <div className="sidecredit">
             {/* Only the name is a link, and it points at its owner: "Developed by
                 Xreacher" goes to Xreacher, not to AliasMode. The project's own
                 links are the GitHub and Telegram marks beside it. */}
-            <span className="watermark">
-              Developed by
-              <a href="https://xreacher.com/" target="_blank" rel="noreferrer" title="xreacher.com">Xreacher</a>
+            <span className="watermark">{t("Developed by")}<a href="https://xreacher.com/" target="_blank" rel="noreferrer" title={t("xreacher.com")}>{t("Xreacher")}</a>
             </span>
             <div className="projectlinks">
               {PROJECT_LINKS.map((link) => (
@@ -3216,7 +3221,7 @@ function App() {
                 </a>
               ))}
             </div>
-            <p className="footer-mark" aria-hidden="true">AliasMode</p>
+            <p className="footer-mark" aria-hidden="true">{t("AliasMode")}</p>
           </div>
         </div>
         {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
@@ -3242,13 +3247,13 @@ function App() {
             <button
               type="button"
               className={`iconbtn tip${nodesOpen ? " on" : ""}`}
-              data-tip="Automation nodes"
-              aria-label="Automation node freshness"
+              data-tip={t("Automation nodes")}
+              aria-label={t("Automation node freshness")}
               onClick={() => setNodesOpen((o) => !o)}
             ><Icon name="activity" /></button>
             {nodesOpen && (
               <div className="popover below-right">
-                <div className="pop-head">Automation nodes</div>
+                <div className="pop-head">{t("Automation nodes")}</div>
                 <HealthSources sources={healthSources} />
               </div>
             )}
@@ -3257,8 +3262,8 @@ function App() {
           <button
             type="button"
             className="iconbtn tip"
-            data-tip="Refresh"
-            aria-label="Refresh profiles"
+            data-tip={t("Refresh")}
+            aria-label={t("Refresh profiles")}
             disabled={refreshing}
             onClick={() => void refreshRoster()}
           ><Icon name="refresh" /></button>
@@ -3266,13 +3271,13 @@ function App() {
             <button
               type="button"
               className={`iconbtn tip${colsOpen ? " on" : ""}`}
-              data-tip="Columns"
-              aria-label="Choose visible columns"
+              data-tip={t("Columns")}
+              aria-label={t("Choose visible columns")}
               onClick={() => setColsOpen((o) => !o)}
             ><Icon name="columns" /></button>
             {colsOpen && (
               <div className="popover below-right">
-                <div className="pop-head">Visible columns</div>
+                <div className="pop-head">{t("Visible columns")}</div>
                 {COLUMNS.map((column) => (
                   <label className="pop-item" key={column.key}>
                     <input type="checkbox" checked={columnVisible(column.key)} onChange={() => toggleColumn(column.key)} />
@@ -3286,8 +3291,8 @@ function App() {
           <button
             className="account-button"
             type="button"
-            aria-label="Open Account and Settings"
-            title="Account & Settings"
+            aria-label={t("Open Account and Settings")}
+            title={t("Account & Settings")}
             onClick={openAccountSettings}
           >
             <span className="avatar"><Icon name="user" /></span>
@@ -3304,7 +3309,7 @@ function App() {
         <div className="error">
           <Icon name="alert" />
           <span>{actionErr ?? connErr}</span>
-          <button className="dismiss" aria-label="Dismiss error" onClick={() => { setActionErr(null); setConnErr(null); }}>
+          <button className="dismiss" aria-label={t("Dismiss error")} onClick={() => { setActionErr(null); setConnErr(null); }}>
             <Icon name="close" className="sm" />
           </button>
         </div>
@@ -3335,7 +3340,7 @@ function App() {
           <button
             className="update-result-dismiss"
             type="button"
-            aria-label="Dismiss last update result"
+            aria-label={t("Dismiss last update result")}
             onClick={() => setDesktopUpdateResultDismissed(true)}
           >
             <Icon name="close" className="sm" />
@@ -3346,7 +3351,7 @@ function App() {
         <div className="update-banner">
           <Icon name="import" />
           <div className="update-copy">
-            <span role="status"><strong>AliasMode {desktopUpdate.version} is available.</strong> The update will save active browsers and restart the app.</span>
+            <span role="status"><strong>AliasMode {desktopUpdate.version} is available.</strong>{t("The update will save active browsers and restart the app.")}</span>
             <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
             {desktopUpdateErr && <span className="modal-err" role="alert">{desktopUpdateErr}</span>}
@@ -3380,11 +3385,11 @@ function App() {
             <input
               className="input search"
               placeholder="Search by No., id, name or tag…"
-              aria-label="Search profiles"
+              aria-label={t("Search profiles")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
-            {q && <button type="button" className="clear" aria-label="Clear search" onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
+            {q && <button type="button" className="clear" aria-label={t("Clear search")} onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
           </div>
         </div>
 
@@ -3406,13 +3411,12 @@ function App() {
             <Icon name="check" className="sm" />
             {selected.size} selected
           </span>
-          <button type="button" className="btn ghost" aria-label="Clear selection" onClick={() => setSelected(new Set())}>Clear selection</button>
-          <button className="btn primary tip" data-tip="Open selected browsers" disabled={!selected.size} onClick={openSelected}>
+          <button type="button" className="btn ghost" aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button>
+          <button className="btn primary tip" data-tip={t("Open selected browsers")} disabled={!selected.size} onClick={openSelected}>
             <Icon name="play" className="sm" />Open
           </button>
-          <button className="btn solid-danger tip" data-tip="Close selected browsers" disabled={!selected.size} onClick={closeSelected}>
-            <Icon name="power" className="sm" />Close
-          </button>
+          <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
+            <Icon name="power" className="sm" />{t("Close")}</button>
           {(!isCloudMode || selectedEditable) && <>
           <button
             className="btn"
@@ -3421,7 +3425,7 @@ function App() {
               setScriptRunProfiles(profiles.filter((profile) => selected.has(profile.id)));
               setScriptRunOpen(true);
             }}
-          ><Icon name="play" className="sm" />Run script</button>
+          ><Icon name="play" className="sm" />{t("Run script")}</button>
           <span className="vsep" />
           {!isCloudMode && selectedMobileCount > 0 && (
             <button className="btn warn" onClick={convertSelectedMobile}>
@@ -3430,42 +3434,41 @@ function App() {
           )}
           {/* Export and file edits work in Cloud; mobile conversion remains Local-only. */}
           <div className="menuwrap" ref={exportRef}>
-            <button className="btn tip" data-tip="Export selected profiles" disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
-              <Icon name="export" className="sm" />Export<Icon name="chevronDown" className="sm" />
+            <button className="btn tip" data-tip={t("Export selected profiles")} disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
+              <Icon name="export" className="sm" />{t("Export")}<Icon name="chevronDown" className="sm" />
             </button>
             {exportOpen && selected.size > 0 && !exportProgress && (
               <div className="exportmenu popover below-left" onMouseLeave={() => setExportOpen(false)}>
-                <button className="pop-item" onClick={() => exportSelected("csv")}><Icon name="file" className="sm" />Export as CSV (credentials)</button>
-                <button className="pop-item" onClick={() => exportSelected("txt")}><Icon name="file" className="sm" />Export as .txt (full profile)</button>
-                <button className="pop-item" onClick={() => exportSelected("xlsx")}><Icon name="file" className="sm" />Export as Excel (full profile)</button>
+                <button className="pop-item" onClick={() => exportSelected("csv")}><Icon name="file" className="sm" />{t("Export as CSV (credentials)")}</button>
+                <button className="pop-item" onClick={() => exportSelected("txt")}><Icon name="file" className="sm" />{t("Export as .txt (full profile)")}</button>
+                <button className="pop-item" onClick={() => exportSelected("xlsx")}><Icon name="file" className="sm" />{t("Export as Excel (full profile)")}</button>
               </div>
             )}
           </div>
-          <button className="btn tip" data-tip="Export → edit → re-upload" disabled={!selected.size || !!exportProgress} onClick={openUpdate} title="Export → edit → re-upload to change credentials in bulk">
-            <Icon name="edit" className="sm" />Edit from file
-          </button>
+          <button className="btn tip" data-tip={t("Export → edit → re-upload")} disabled={!selected.size || !!exportProgress} onClick={openUpdate} title={t("Export → edit → re-upload to change credentials in bulk")}>
+            <Icon name="edit" className="sm" />{t("Edit from file")}</button>
           <span className="vsep" />
           <div className="movewrap">
             {newMode ? (
-              <input className="input" autoFocus placeholder="new group name" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} />
+              <input className="input" autoFocus placeholder={t("new group name")} value={newGroup} onChange={(e) => setNewGroup(e.target.value)} />
             ) : (
               <select
                 className="select move-group"
-                aria-label="Move to group"
+                aria-label={t("Move to group")}
                 title={moveTarget || "Choose group"}
                 disabled={!selected.size}
                 value={moveTarget}
                 onChange={(e) => (e.target.value === "__new__" ? setNewMode(true) : setMoveTarget(e.target.value))}
               >
-                <option value="">Move to…</option>
+                <option value="">{t("Move to…")}</option>
                 {editableGroups.map((g) => (
                   <option key={g} value={g}>{g}</option>
                 ))}
-                <option value="__new__">+ new group…</option>
+                <option value="__new__">{t("+ new group…")}</option>
               </select>
             )}
             {newMode && (
-              <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>cancel</button>
+              <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>{t("cancel")}</button>
             )}
             <button className="btn accent" disabled={!selected.size || (newMode ? !newGroup.trim() : !moveTarget)} onClick={moveSelected}>
               <Icon name="move" className="sm" />Move
@@ -3475,13 +3478,13 @@ function App() {
             <>
               <span className="vsep" />
               <div className="extctl">
-                <span className="extctl-lbl"><Icon name="puzzle" className="sm" />Extension</span>
-                <select className="select extctl-sel" aria-label="Extension for bulk assignment" disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
-                  <option value="">choose…</option>
+                <span className="extctl-lbl"><Icon name="puzzle" className="sm" />{t("Extension")}</span>
+                <select className="select extctl-sel" aria-label={t("Extension for bulk assignment")} disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
+                  <option value="">{t("choose…")}</option>
                   {extensions.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
                 </select>
-                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>Add</button>
-                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>Remove</button>
+                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>{t("Add")}</button>
+                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>{t("Remove")}</button>
               </div>
             </>
           )}
@@ -3503,7 +3506,7 @@ function App() {
             <thead>
               <tr>
                 <th className="chk" style={{ width: CHECKBOX_COLUMN_WIDTH }}>
-                  <input type="checkbox" aria-label="Select all visible profiles" checked={allVisibleSelected} onChange={toggleAll} />
+                  <input type="checkbox" aria-label={t("Select all visible profiles")} checked={allVisibleSelected} onChange={toggleAll} />
                 </th>
                 {shownColumns.map(columnHead)}
               </tr>
@@ -3537,7 +3540,7 @@ function App() {
                           <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : "CloakBrowser · CDP, PDF, and Chrome extensions"}>
                             {p.engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"}
                           </span>
-                          {p.running && <span className="live"><StatusDot running />running</span>}
+                          {p.running && <span className="live"><StatusDot running />{t("running")}</span>}
                           {p.lockedBy && (
                             <span className="lockedby" title={`in use by ${p.lockedBy}`}>
                               <Icon name="lock" className="sm" />{p.lockedBy}
@@ -3561,7 +3564,7 @@ function App() {
                   {columnVisible("proxy") && (
                     <td className="col-proxy" title={p.proxyError || p.proxy || "no proxy"}>
                       {p.proxyError
-                        ? <span className="proxy-cell bad"><Icon name="warning" className="sm" />invalid — edit</span>
+                        ? <span className="proxy-cell bad"><Icon name="warning" className="sm" />{t("invalid — edit")}</span>
                         : p.proxy
                           ? <span className="proxy-cell">{p.proxy}</span>
                           : <span className="muted">—</span>}
@@ -3574,14 +3577,14 @@ function App() {
                           <button
                             className={`iconbtn twofa tip${twoFaFlash?.id === p.id ? " flash" : ""}`}
                             data-tip={twoFaFlash?.id === p.id ? `Copied ${twoFaFlash.code}` : "Copy current 2FA code"}
-                            aria-label="Copy current 2FA code"
+                            aria-label={t("Copy current 2FA code")}
                             onClick={() => copy2fa(p.id)}
                           >
                             <Icon name={twoFaFlash?.id === p.id ? "check" : "key"} className="sm" />
                           </button>
                         )}
                         {canEditRow && (
-                          <button className="iconbtn tip" data-tip="Edit profile" aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
+                          <button className="iconbtn tip" data-tip={t("Edit profile")} aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
                             <Icon name="edit" className="sm" />
                           </button>
                         )}
@@ -3590,25 +3593,24 @@ function App() {
                             {p.engine === "chromium" && <>
                               <button
                                 className="iconbtn tip"
-                                data-tip="Add cookie"
+                                data-tip={t("Add cookie")}
                                 aria-label={`Add a cookie to ${p.name}`}
                                 onClick={() => openCookie(p)}
                               ><Icon name="cookie" className="sm" /></button>
                               <button
                                 className="iconbtn tip"
-                                data-tip="Bring to front"
-                                aria-label="Bring this browser window to the front"
+                                data-tip={t("Bring to front")}
+                                aria-label={t("Bring this browser window to the front")}
                                 disabled={busy[p.id]}
                                 onClick={() => act(p.id, raiseProfile)}
                               ><Icon name="raise" className="sm" /></button>
                             </>}
                             <button className="btn sm solid-danger" aria-label={`Close ${p.name}`} disabled={busy[p.id]} onClick={() => act(p.id, closeProfile)}>
-                              <Icon name="power" className="sm" />Close
-                            </button>
+                              <Icon name="power" className="sm" />{t("Close")}</button>
                           </>
                         ) : p.mobilePersona ? (
                           !p.lockedBy && (!isCloudMode || p.permission === "edit") ? (
-                            <button className="btn sm warn" disabled={busy[p.id]} title="Convert this mobile persona to a desktop device" onClick={() => openEdit(p.id)}>
+                            <button className="btn sm warn" disabled={busy[p.id]} title={t("Convert this mobile persona to a desktop device")} onClick={() => openEdit(p.id)}>
                               <Icon name="laptop" className="sm" />Convert
                             </button>
                           ) : null
@@ -3621,8 +3623,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => restoreSession(p)}
                             >
-                              <Icon name="refresh" className="sm" />Restore session
-                            </button>
+                              <Icon name="refresh" className="sm" />{t("Restore session")}</button>
                             <button
                               className="btn sm primary"
                               aria-label={`Open ${p.name}`}
@@ -3656,18 +3657,18 @@ function App() {
                       <span className="glyph"><Icon name="profiles" /></span>
                       {profiles.length === 0 ? (
                         <>
-                          <b>No profiles yet</b>
+                          <b>{t("No profiles yet")}</b>
                           <p>Create a profile or import a readable export from another browser.</p>
                           <div className="empty-actions">
-                            <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />New Profile</button>
+                            <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />{t("New Profile")}</button>
                             <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />Import profiles</button>
                           </div>
                         </>
                       ) : (
                         <>
-                          <b>No matches</b>
-                          <p>No profiles match the current filters.</p>
-                          <button className="btn" onClick={() => { setQ(""); setGroup("all"); }}>Clear filters</button>
+                          <b>{t("No matches")}</b>
+                          <p>{t("No profiles match the current filters.")}</p>
+                          <button className="btn" onClick={() => { setQ(""); setGroup("all"); }}>{t("Clear filters")}</button>
                         </>
                       )}
                     </div>
@@ -3688,8 +3689,8 @@ function App() {
         )}
 
         <footer className="statusbar">
-          <span className="stat"><b>{profiles.length}</b> profiles</span>
-          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b> running</span>
+          <span className="stat"><b>{profiles.length}</b>{t("profiles")}</span>
+          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b>{t("running")}</span>
           {diag && (
             <span className="diag" onClick={() => setShowDiag((s) => !s)}>
               Diagnose · last {diagWhen}
@@ -3700,20 +3701,20 @@ function App() {
             <button
               type="button"
               className="iconbtn"
-              aria-label="Previous page"
+              aria-label={t("Previous page")}
               disabled={visibleProfilePage === 0}
               onClick={() => setProfilePage(visibleProfilePage - 1)}
             ><Icon name="chevronLeft" className="sm" /></button>
-            <span className="page-of">Page <b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
+            <span className="page-of">{t("Page")}<b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
             <button
               type="button"
               className="iconbtn"
-              aria-label="Next page"
+              aria-label={t("Next page")}
               disabled={visibleProfilePage + 1 >= profilePageCount}
               onClick={() => setProfilePage(visibleProfilePage + 1)}
             ><Icon name="chevronRight" className="sm" /></button>
-            <select className="select" aria-label="Rows per page" value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
-              {PAGE_SIZES.map((size) => <option key={size} value={size}>{size} / page</option>)}
+            <select className="select" aria-label={t("Rows per page")} value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
+              {PAGE_SIZES.map((size) => <option key={size} value={size}>{t("{size} / page")}</option>)}
             </select>
           </span>
         </footer>
@@ -3723,17 +3724,17 @@ function App() {
       ) : view === "extensions" ? (
       <div className="workspace">
         <div className="settingspage">
-          <h2 className="sect-title">Extensions</h2>
+          <h2 className="sect-title">{t("Extensions")}</h2>
           {extErr && <div className="modal-err"><Icon name="alert" className="sm" />{extErr}</div>}
           <section className="settings-card">
-            <header><Icon name="puzzle" className="sm" /><h2>Install from Chrome Web Store</h2></header>
+            <header><Icon name="puzzle" className="sm" /><h2>{t("Install from Chrome Web Store")}</h2></header>
             <div className="card-body">
-              <p>Paste a Chrome Web Store extension link or its 32-character ID.</p>
+              <p>{t("Paste a Chrome Web Store extension link or its 32-character ID.")}</p>
               <form className="fld-row" onSubmit={(event) => { event.preventDefault(); void doInstallWebStoreExtension(); }}>
                 <input
                   className="input"
                   style={{ flex: 1 }}
-                  aria-label="Chrome Web Store URL or extension ID"
+                  aria-label={t("Chrome Web Store URL or extension ID")}
                   placeholder="https://chromewebstore.google.com/detail/…"
                   value={extSource}
                   onChange={(event) => setExtSource(event.target.value)}
@@ -3744,24 +3745,24 @@ function App() {
               </form>
             </div>
           </section>
-          <p className="formnote">The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.</p>
+          <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
           <ol className="steps">
-            <li>Install the extension here. New installs stay unassigned.</li>
-            <li>Use <b>Edit &gt; Extensions</b> to assign it to a profile{!isCloudMode && ", or assign many at once from the roster toolbar"}.</li>
-            <li>Reopen the profile. AliasMode loads the extension when the browser starts.</li>
+            <li>{t("Install the extension here. New installs stay unassigned.")}</li>
+            <li>{t("Use")}<b>{t("Edit &gt; Extensions")}</b> to assign it to a profile{!isCloudMode && ", or assign many at once from the roster toolbar"}.</li>
+            <li>{t("Reopen the profile. AliasMode loads the extension when the browser starts.")}</li>
           </ol>
           <section className="settings-card">
-            <header><Icon name="folder" className="sm" /><h2>Group defaults</h2></header>
+            <header><Icon name="folder" className="sm" /><h2>{t("Group defaults")}</h2></header>
             <div className="card-body">
-              <p>Choose the exact extensions assigned to this group.</p>
+              <p>{t("Choose the exact extensions assigned to this group.")}</p>
               {editableDefaultGroups.length === 0 ? (
-                <p className="formnote">Create an editable group before setting its extension defaults.</p>
+                <p className="formnote">{t("Create an editable group before setting its extension defaults.")}</p>
               ) : (
                 <>
                   <label className="fld">
-                    <span>Group</span>
+                    <span>{t("Group")}</span>
                     <select
-                      aria-label="Extension default group"
+                      aria-label={t("Extension default group")}
                       value={groupDefaultName}
                       onChange={(event) => {
                         const name = event.target.value;
@@ -3781,12 +3782,12 @@ function App() {
                             checked={groupDefaultExts.includes(item.id)}
                             onChange={() => toggleGroupDefaultExt(item.id)}
                           />
-                          <span>{item.name}{item.missing && <span className="muted"> · Not installed on this device</span>}</span>
+                          <span>{item.name}{item.missing && <span className="muted">{t("· Not installed on this device")}</span>}</span>
                         </label>
                       ))}
                     </div>
                   ) : (
-                    <p className="formnote">No extensions are installed. Apply an empty selection to clear this default.</p>
+                    <p className="formnote">{t("No extensions are installed. Apply an empty selection to clear this default.")}</p>
                   )}
                   <p className="formnote">
                     Applying replaces assignments on {groupDefaultProfileCount} current profile(s). New and moved profiles inherit it.
@@ -3807,8 +3808,8 @@ function App() {
           {extensions.length === 0 ? (
             <div className="emptystate">
               <span className="glyph"><Icon name="puzzle" /></span>
-              <b>No extensions yet</b>
-              <p>Uploaded extensions appear here, ready to assign to any profile.</p>
+              <b>{t("No extensions yet")}</b>
+              <p>{t("Uploaded extensions appear here, ready to assign to any profile.")}</p>
               <button className="btn primary" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
                 <Icon name="plus" className="sm" />{extBusy ? "Uploading…" : "Upload ZIP/CRX"}
               </button>
@@ -3820,7 +3821,7 @@ function App() {
                   <Icon name="puzzle" className="sm" />
                   <span className="extname">{x.name}</span>
                   <span className="spacer" />
-                  <button className="btn xs danger" onClick={() => doRemoveExtension(x.id, x.name)}>Remove</button>
+                  <button className="btn xs danger" onClick={() => doRemoveExtension(x.id, x.name)}>{t("Remove")}</button>
                 </div>
               ))}
             </div>
@@ -3845,7 +3846,7 @@ function App() {
       </div>
       ) : view === "settings" ? (
       <div className="workspace">
-        <div className="tabs" role="tablist" aria-label="Settings sections">
+        <div className="tabs" role="tablist" aria-label={t("Settings sections")}>
           {SETTINGS_TABS.map((tab) => (
             <button
               key={tab.key}
@@ -3862,7 +3863,7 @@ function App() {
         <div className="settingspage">
           {settingsTab === "account" && (
             <>
-              <h2 className="sect-title">Account information</h2>
+              <h2 className="sect-title">{t("Account information")}</h2>
               <div className="identity-card">
                 <span className="identity-avatar"><Icon name="user" className="lg" /></span>
                 <span className="identity-lines">
@@ -3876,10 +3877,10 @@ function App() {
                 <span className="chip">{isCloudMode ? "Cloud" : "Local"}</span>
               </div>
 <section className="settings-card">
-            <header><Icon name="user" className="sm" /><h2>Account</h2></header>
+            <header><Icon name="user" className="sm" /><h2>{t("Account")}</h2></header>
             <div className="card-body">
-            <div className="settings-row"><span>Signed in as</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local · no account"}</strong></div>
-            <div className="settings-row"><span>Profiles stored</span><strong>{profiles.length}</strong></div>
+            <div className="settings-row"><span>{t("Signed in as")}</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local · no account"}</strong></div>
+            <div className="settings-row"><span>{t("Profiles stored")}</span><strong>{profiles.length}</strong></div>
             {isCloudMode && cloudAuth?.authenticated && (
               <button className="btn danger" type="button" disabled={authBusy} onClick={() => void signOut()}>
                 <Icon name="power" className="sm" />{authBusy ? "Signing out…" : "Sign out / Switch account"}
@@ -3892,67 +3893,67 @@ function App() {
           {isCloudMode && cloudAuth?.authenticated && (
             <section className="settings-card remote-mcp-settings">
               <header>
-                <Icon name="cloud" className="sm" /><h2>Remote MCP</h2>
+                <Icon name="cloud" className="sm" /><h2>{t("Remote MCP")}</h2>
                 <span className={`remote-mcp-status ${remoteMcp.state}`}>
                   {remoteMcp.state === "active" ? "Ready" : remoteMcp.state === "disabled" ? "Disabled" : remoteMcp.state === "loading" ? "Preparing" : remoteMcp.state === "error" ? "Unavailable" : "Not ready"}
                 </span>
               </header>
               <div className="card-body">
-                <p>Connect an AI client on another computer. Browser windows open on this Windows PC, so keep AliasMode running.</p>
-                {remoteMcp.state === "loading" && <p className="hint" role="status">Preparing your secure connection…</p>}
+                <p>{t("Connect an AI client on another computer. Browser windows open on this Windows PC, so keep AliasMode running.")}</p>
+                {remoteMcp.state === "loading" && <p className="hint" role="status">{t("Preparing your secure connection…")}</p>}
                 {remoteMcp.state === "active" && remoteMcp.url && remoteMcp.token && (
                   <>
                     <label className="fld remote-mcp-field">
-                      <span>MCP server URL</span>
+                      <span>{t("MCP server URL")}</span>
                       <span className="remote-mcp-value">
                         <input className="mono" value={remoteMcp.url} readOnly />
                         <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? "Copied" : "Copy"}</button>
                       </span>
                     </label>
                     <label className="fld remote-mcp-field">
-                      <span>Access key</span>
+                      <span>{t("Access key")}</span>
                       <span className="remote-mcp-value">
-                        <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label="Remote MCP access key" />
+                        <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label={t("Remote MCP access key")} />
                         <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? "Hide" : "Reveal"}</button>
                         <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? "Copied" : "Copy"}</button>
                       </span>
                     </label>
                     <div className="hint remote-mcp-guide">
-                      <strong>Connect Claude.ai or ChatGPT</strong>
+                      <strong>{t("Connect Claude.ai or ChatGPT")}</strong>
                       <ol>
-                        <li>Add a custom MCP connector or app.</li>
-                        <li>Paste the MCP server URL and select Connect.</li>
-                        <li>Sign into AliasMode and select Allow.</li>
+                        <li>{t("Add a custom MCP connector or app.")}</li>
+                        <li>{t("Paste the MCP server URL and select Connect.")}</li>
+                        <li>{t("Sign into AliasMode and select Allow.")}</li>
                       </ol>
                       <details>
-                        <summary>Claude Code and other clients</summary>
-                        <p>Claude Code uses an HTTP entry in <code>.mcp.json</code>. Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.</p>
-                        <p>Claude.ai and ChatGPT use OAuth and do not need the access key.</p>
+                        <summary>{t("Claude Code and other clients")}</summary>
+                        <p>{t("Claude Code uses an HTTP entry in")}<code>{t(".mcp.json")}</code>{t(". Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.")}</p>
+                        <p>{t("Claude.ai and ChatGPT use OAuth and do not need the access key.")}</p>
                       </details>
                     </div>
                     <div className="update-actions">
-                      <button className="btn" type="button" disabled={authBusy} onClick={() => void regenerateRemoteMcp()}>Regenerate key</button>
-                      <button className="btn danger" type="button" disabled={authBusy} onClick={() => void disableRemoteMcp()}>Disable</button>
+                      <button className="btn" type="button" disabled={authBusy} onClick={() => void regenerateRemoteMcp()}>{t("Regenerate key")}</button>
+                      <button className="btn danger" type="button" disabled={authBusy} onClick={() => void disableRemoteMcp()}>{t("Disable")}</button>
                     </div>
                   </>
                 )}
                 {remoteMcp.state === "disabled" && (
                   <>
-                    <p>Remote connections are disabled for this Windows device.</p>
-                    <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>Enable Remote MCP</button>
+                    <p>{t("Remote connections are disabled for this Windows device.")}</p>
+                    <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>{t("Enable Remote MCP")}</button>
                   </>
                 )}
                 {remoteMcp.error && <div className="modal-err" role="alert">{remoteMcp.error}</div>}
-                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>Try again</button>}
+                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>{t("Try again")}</button>}
               </div>
             </section>
           )}
 
 <section className="settings-card">
-            <header><Icon name="sun" className="sm" /><h2>Appearance</h2></header>
+            <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
-              <p>Choose how AliasMode looks. System follows your operating system setting.</p>
-              <div className="segmented" role="radiogroup" aria-label="Theme">
+              <p>{t("Choose how AliasMode looks. System follows your operating system setting.")}</p>
+              <div className="segmented" role="radiogroup" aria-label={t("Theme")}>
                 {THEMES.map((option) => (
                   <button
                     key={option.key}
@@ -3969,7 +3970,7 @@ function App() {
             </div>
           </section>
           <section className="settings-card">
-            <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>Switch mode</h2></header>
+            <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>{t("Switch mode")}</h2></header>
             <div className="card-body settings-mode">
               <p>{isCloudMode ? "Local mode keeps this installation offline from AliasMode Cloud." : "Cloud mode requires an account and does not upload Local profiles automatically."}</p>
               <button className="btn" type="button" disabled={modeBusy || desktopUpdateInstalling} onClick={() => requestModeSwitch(isCloudMode ? "local" : "cloud")}>
@@ -3989,17 +3990,17 @@ function App() {
             <div className="card-body">
             {isCloudMode ? (
               <>
-                <div className="settings-row"><span>Workspace</span><strong>{cloudAuth?.workspace?.name ?? "Cloud workspace"}</strong></div>
-                <div className="settings-row"><span>Role</span><strong>{cloudAuth?.workspace?.role ?? "member"}</strong></div>
-                {teamBusy && !team && <p className="hint" role="status">Loading team…</p>}
-                <h3 className="settings-subhead">Members</h3>
+                <div className="settings-row"><span>{t("Workspace")}</span><strong>{cloudAuth?.workspace?.name ?? "Cloud workspace"}</strong></div>
+                <div className="settings-row"><span>{t("Role")}</span><strong>{cloudAuth?.workspace?.role ?? "member"}</strong></div>
+                {teamBusy && !team && <p className="hint" role="status">{t("Loading team…")}</p>}
+                <h3 className="settings-subhead">{t("Members")}</h3>
                 {team?.members.map((member) => (
                   <div className="team-member" key={member.accountId}>
                     <div className="settings-row">
                       <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || "No folder access"}</small></span>
                       {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{member.role}</strong> : (
                         <select className="select" aria-label={`Role for ${member.email}`} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
-                          <option value="member">member</option><option value="admin">admin</option>
+                          <option value="member">{t("member")}</option><option value="admin">{t("admin")}</option>
                         </select>
                       )}
                       {member.role !== "owner" && (cloudAuth?.workspace?.role === "owner" || (cloudAuth?.workspace?.role === "admin" && member.role === "member")) && (
@@ -4010,45 +4011,45 @@ function App() {
                       <div className="team-grants">
                         {team.folders.filter((folder) => !folder.archivedAt).map((folder) => {
                           const permission = member.grants.find((grant) => grant.folderName === folder.name)?.permission ?? "";
-                          return <label key={folder.name}>{folder.name}<select className="select" aria-label={`${folder.name} access for ${member.email}`} value={permission} disabled={teamBusy} onChange={(event) => void runTeamAction(event.target.value ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission: event.target.value })}><option value="">No access</option><option value="view">View</option><option value="edit">Edit</option></select></label>;
+                          return <label key={folder.name}>{folder.name}<select className="select" aria-label={`${folder.name} access for ${member.email}`} value={permission} disabled={teamBusy} onChange={(event) => void runTeamAction(event.target.value ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission: event.target.value })}><option value="">{t("No access")}</option><option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option></select></label>;
                         })}
-                        <button className="btn xs danger" type="button" aria-label={`Remove ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, `Removed ${member.email}`)}>Remove</button>
+                        <button className="btn xs danger" type="button" aria-label={`Remove ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, `Removed ${member.email}`)}>{t("Remove")}</button>
                       </div>
                     )}
                   </div>
                 ))}
                 {(cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
                   <>
-                    <h3 className="settings-subhead">Invitations</h3>
+                    <h3 className="settings-subhead">{t("Invitations")}</h3>
                     <form className="team-code" onSubmit={(event) => { event.preventDefault(); void inviteTeamMember(); }}>
-                      <input className="input" type="email" aria-label="Invite email" aria-describedby="invite-team-help" placeholder="Staff email address" value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
-                      {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label="Invitation role" value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">Member</option><option value="admin">Admin</option></select>}
-                      <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>Send invite</button>
+                      <input className="input" type="email" aria-label={t("Invite email")} aria-describedby="invite-team-help" placeholder={t("Staff email address")} value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
+                      {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label={t("Invitation role")} value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">{t("Member")}</option><option value="admin">{t("Admin")}</option></select>}
+                      <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>{t("Send invite")}</button>
                     </form>
-                    <p className="hint" id="invite-team-help">Invitations go to that exact verified email. New members see no folders until you grant access here.</p>
+                    <p className="hint" id="invite-team-help">{t("Invitations go to that exact verified email. New members see no folders until you grant access here.")}</p>
                     {team?.invitations.filter((invite) => !invite.acceptedAt && !invite.revokedAt).map((invite) => {
                       const status = invite.expiresAt <= Date.now() ? "Expired" : "Pending";
                       return <div className="settings-row" key={invite.id}>
                         <span>{invite.email}<small>{invite.role}</small></span>
                         <span>
                           <span className={`team-tag ${status.toLowerCase()}`}>{status}</span>
-                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={`Resend invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, "Invitation resent")}>Resend</button> <button className="btn xs danger" type="button" aria-label={`Revoke invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, "Invitation revoked")}>Revoke</button></>}
+                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={`Resend invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, "Invitation resent")}>{t("Resend")}</button> <button className="btn xs danger" type="button" aria-label={`Revoke invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, "Invitation revoked")}>{t("Revoke")}</button></>}
                         </span>
                       </div>;
                     })}
                   </>
                 )}
                 {teamErr && <p className="modal-err" role="alert">{teamErr}</p>}
-                <h3 className="settings-subhead">Join another workspace</h3>
+                <h3 className="settings-subhead">{t("Join another workspace")}</h3>
                 <form className="team-code" onSubmit={(event) => { event.preventDefault(); void acceptInvitation(); }}>
-                  <input className="input" aria-label="Invitation code" placeholder="Paste invitation code" value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
-                  <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>Accept</button>
+                  <input className="input" aria-label={t("Invitation code")} placeholder={t("Paste invitation code")} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
+                  <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>{t("Accept")}</button>
                 </form>
-                <p className="hint">Paste the code from your invitation email. It works only for the email you signed in with.</p>
+                <p className="hint">{t("Paste the code from your invitation email. It works only for the email you signed in with.")}</p>
                 {authNotice && <p className="hint" role="status">{authNotice}</p>}
                 {authErr && <p className="modal-err" role="alert">{authErr}</p>}
               </>
-            ) : <p>Local mode has no Cloud workspace.</p>}
+            ) : <p>{t("Local mode has no Cloud workspace.")}</p>}
             </div>
           </section>
           
@@ -4056,11 +4057,11 @@ function App() {
           )}
           {settingsTab === "advanced" && (
             <>
-              <h2 className="sect-title">Updates and diagnostics</h2>
+              <h2 className="sect-title">{t("Updates and diagnostics")}</h2>
 <section className="settings-card update-settings">
-            <header><Icon name="import" className="sm" /><h2>Updates</h2></header>
+            <header><Icon name="import" className="sm" /><h2>{t("Updates")}</h2></header>
             <div className="card-body">
-            <div className="settings-row"><span>Installed version</span><strong className="mono">{appVersion || desktopUpdate?.currentVersion || "—"}</strong></div>
+            <div className="settings-row"><span>{t("Installed version")}</span><strong className="mono">{appVersion || desktopUpdate?.currentVersion || "—"}</strong></div>
             {desktopUpdateResultSummary && (
               <div
                 className={`update-last-result ${desktopUpdateResultSummary.tone}`}
@@ -4070,14 +4071,14 @@ function App() {
                 <span>{desktopUpdateResultSummary.detail}</span>
               </div>
             )}
-            {desktopUpdate?.state === "upToDate" && <p role="status">AliasMode is up to date.</p>}
+            {desktopUpdate?.state === "upToDate" && <p role="status">{t("AliasMode is up to date.")}</p>}
             {desktopUpdate?.state === "available" && (
               <>
                 <p role="status">Version {desktopUpdate.version} is ready. Active browsers will be saved and closed.</p>
                 <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
               </>
             )}
-            {!desktopUpdate && !desktopUpdateChecking && <p>AliasMode checks for updates when it starts.</p>}
+            {!desktopUpdate && !desktopUpdateChecking && <p>{t("AliasMode checks for updates when it starts.")}</p>}
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
             {desktopUpdateErr && <div className="modal-err" role="alert">{desktopUpdateErr}</div>}
             <div className="update-actions">
@@ -4096,7 +4097,7 @@ function App() {
 {isCloudMode && (
             <section className="settings-card diagnostics-section">
               <header>
-                <Icon name="activity" className="sm" /><h2>Recent diagnostics</h2>
+                <Icon name="activity" className="sm" /><h2>{t("Recent diagnostics")}</h2>
                 <button className="btn xs" type="button" disabled={cloudEventsBusy} onClick={() => void loadCloudEvents()}>
                   {cloudEventsBusy ? "Loading…" : "Refresh"}
                 </button>
@@ -4107,7 +4108,7 @@ function App() {
                 <p>{cloudEventsBusy ? "Loading recent Cloud events…" : "No Cloud lifecycle events in this run."}</p>
               )}
               {cloudEvents.length > 0 && (
-                <div className="diagnostics-list" role="log" aria-label="Recent Cloud diagnostics">
+                <div className="diagnostics-list" role="log" aria-label={t("Recent Cloud diagnostics")}>
                   {cloudEvents.map((event, index) => (
                     <div className={`diagnostics-row${cloudDiagnosticFailed(event.type) ? " failed" : ""}`} key={`${event.timestamp}-${index}`}>
                       <time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time>
@@ -4116,20 +4117,20 @@ function App() {
                   ))}
                 </div>
               )}
-              <p>Diagnostics contain fixed lifecycle labels only. They exclude profile data and credentials.</p>
+              <p>{t("Diagnostics contain fixed lifecycle labels only. They exclude profile data and credentials.")}</p>
               </div>
             </section>
           )}
           {/* Logs are not a Cloud feature — a Local install needs them just as
               much, so this card is the one part of Advanced that always shows. */}
           <section className="settings-card">
-            <header><Icon name="logs" className="sm" /><h2>Logs</h2></header>
+            <header><Icon name="logs" className="sm" /><h2>{t("Logs")}</h2></header>
             <div className="card-body">
-              <p>The detailed log records launches, proxy setup and browser lifecycle for this installation.</p>
+              <p>{t("The detailed log records launches, proxy setup and browser lifecycle for this installation.")}</p>
               <button type="button" className="btn" onClick={() => {
                 setLogErr(null);
                 fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
-              }}><Icon name="logs" className="sm" />View detailed logs</button>
+              }}><Icon name="logs" className="sm" />{t("View detailed logs")}</button>
               {logErr && <p className="cardnote">Logs: {logErr}</p>}
               {logDir && <p className="cardnote">File: {logDir}</p>}
             </div>
@@ -4141,7 +4142,7 @@ function App() {
         </div>
         <footer className="pagefoot">
           <span className="spacer" />
-          <button className="btn primary" type="button" onClick={() => setView("profiles")}>Done</button>
+          <button className="btn primary" type="button" onClick={() => setView("profiles")}>{t("Done")}</button>
         </footer>
       </div>
       ) : null}
@@ -4150,7 +4151,7 @@ function App() {
       {(logView || logErr) && (
         <div className="modal-backdrop" onClick={() => { setLogView(null); setLogErr(null); }}>
           <div className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-head">Detailed logs<button type="button" className="modal-close" aria-label="Close" onClick={() => { setLogView(null); setLogErr(null); }}><Icon name="close" className="sm" /></button></div>
+            <div className="modal-head">{t("Detailed logs")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={() => { setLogView(null); setLogErr(null); }}><Icon name="close" className="sm" /></button></div>
             <div className="modal-body">
               {logErr && <p className="hint">{logErr}</p>}
               {logView && (
@@ -4159,7 +4160,7 @@ function App() {
                 </pre>
               )}
             </div>
-            <div className="modal-foot"><button className="btn ghost" type="button" onClick={() => { setLogView(null); setLogErr(null); }}>Close</button></div>
+            <div className="modal-foot"><button className="btn ghost" type="button" onClick={() => { setLogView(null); setLogErr(null); }}>{t("Close")}</button></div>
           </div>
         </div>
       )}
@@ -4184,35 +4185,35 @@ function App() {
             onSubmit={(event) => { event.preventDefault(); void submitCookie(); }}
           >
             <div className="modal-head" id="add-cookie-title">
-              <Icon name="cookie" />Add cookie<span className="mono muted">{cookieProfile.name}</span>
-              <button type="button" className="modal-close" aria-label="Close" disabled={cookieSaving} onClick={closeCookie}><Icon name="close" className="sm" /></button>
+              <Icon name="cookie" />{t("Add cookie")}<span className="mono muted">{cookieProfile.name}</span>
+              <button type="button" className="modal-close" aria-label={t("Close")} disabled={cookieSaving} onClick={closeCookie}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {cookieErr && <div className="modal-err"><Icon name="alert" className="sm" />{cookieErr}</div>}
-              <p className="hint">Add one cookie directly to this open browser.</p>
+              <p className="hint">{t("Add one cookie directly to this open browser.")}</p>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Name</span>
+                  <span>{t("Name")}</span>
                   <input autoFocus value={cookieForm.name} onChange={(event) => setCookieField("name", event.target.value)} />
                 </label>
                 <label className="fld grow">
-                  <span>Value</span>
+                  <span>{t("Value")}</span>
                   <input type="password" autoComplete="off" value={cookieForm.value} onChange={(event) => setCookieField("value", event.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Domain</span>
+                  <span>{t("Domain")}</span>
                   <input value={cookieForm.domain} placeholder="example.com" onChange={(event) => setCookieField("domain", event.target.value)} />
                 </label>
                 <label className="fld port">
-                  <span>Path</span>
+                  <span>{t("Path")}</span>
                   <input value={cookieForm.path} onChange={(event) => setCookieField("path", event.target.value)} />
                 </label>
               </div>
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" type="button" disabled={cookieSaving} onClick={closeCookie}>Cancel</button>
+              <button className="btn ghost" type="button" disabled={cookieSaving} onClick={closeCookie}>{t("Cancel")}</button>
               <button className="btn primary" type="submit" disabled={cookieSaving || !cookieForm.name || !cookieForm.domain.trim() || !cookieForm.path.startsWith("/")}>
                 {cookieSaving ? "Adding…" : "Add cookie"}
               </button>
@@ -4227,24 +4228,23 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="create-profile-title">
-              <Icon name="plus" />New profile
-              <button type="button" className="modal-close" aria-label="Close" onClick={closeCreate}><Icon name="close" className="sm" /></button>
+              <Icon name="plus" />{t("New profile")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {createErr && <div className="modal-err"><Icon name="alert" className="sm" />{createErr}</div>}
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Name</span>
-                  <input value={form.name} placeholder="auto if blank" onChange={(e) => setF("name", e.target.value)} />
+                  <span>{t("Name")}</span>
+                  <input value={form.name} placeholder={t("auto if blank")} onChange={(e) => setF("name", e.target.value)} />
                 </label>
                 {!isCloudMode && (
                   <label className="fld no">
-                    <span>Custom NO.</span>
+                    <span>{t("Custom NO.")}</span>
                     <input
                       value={form.customNo}
                       inputMode="numeric"
                       maxLength={MAX_CUSTOM_NO}
-                      placeholder="auto"
+                      placeholder={t("auto")}
                       onChange={(e) => setF("customNo", e.target.value.replace(/\D/g, "").slice(0, MAX_CUSTOM_NO))}
                     />
                   </label>
@@ -4252,22 +4252,22 @@ function App() {
               </div>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Folder</span>
+                  <span>{t("Folder")}</span>
                   <GroupPicker value={form.group} onChange={(v) => setF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
-                  <span>Platform</span>
+                  <span>{t("Platform")}</span>
                   <PlatformPicker value={form.platform} onChange={(v) => setF("platform", v)} />
                 </label>
               </div>
               <div className="proxy-paste-row">
                 <label className="fld grow">
-                  <span>Paste proxy to autofill <span className="muted">(select type first · host:port:username:password)</span></span>
+                  <span>{t("Paste proxy to autofill")}<span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
                   <input
                     type="password"
                     autoComplete="off"
                     value={proxyPaste}
-                    placeholder="Paste here — credentials stay hidden"
+                    placeholder={t("Paste here — credentials stay hidden")}
                     onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
                     onPaste={(e) => {
                       const pasted = e.clipboardData.getData("text");
@@ -4276,30 +4276,30 @@ function App() {
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
                   />
                 </label>
-                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>Autofill</button>
+                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
               </div>
               {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
               <div className="fld-row">
                 <label className="fld type">
-                  <span>Proxy type</span>
+                  <span>{t("Proxy type")}</span>
                   <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="socks5">socks5</option>
+                    <option value="http">{t("http")}</option>
+                    <option value="https">{t("https")}</option>
+                    <option value="socks5">{t("socks5")}</option>
                   </select>
                 </label>
                 <label className="fld grow">
-                  <span>Host</span>
-                  <input value={form.host} placeholder="blank = no proxy" onChange={(e) => setF("host", e.target.value)} />
+                  <span>{t("Host")}</span>
+                  <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
                 </label>
                 <label className="fld port">
-                  <span>Port</span>
+                  <span>{t("Port")}</span>
                   <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
-                <label className="fld grow"><span>Proxy user</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
-                <label className="fld grow"><span>Proxy pass</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
+                <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
+                <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
               </div>
               <div className="proxy-check-actions">
                 <button
@@ -4315,7 +4315,7 @@ function App() {
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
               <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
-              <div className="browser-options" role="radiogroup" aria-label="Browser">
+              <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
                     engine: "chromium", label: "Chrome", runtime: "CloakBrowser",
@@ -4338,7 +4338,7 @@ function App() {
               </div>
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeCreate}>Cancel</button>
+              <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>
               <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? "Creating…" : "Create profile"}</button>
             </div>
           </div>
@@ -4351,13 +4351,13 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="edit-profile-title">
-              <Icon name="edit" />Edit profile<span className="mono muted">{editId}</span>
-              <button type="button" className="modal-close" aria-label="Close" onClick={closeEdit}><Icon name="close" className="sm" /></button>
+              <Icon name="edit" />{t("Edit profile")}<span className="mono muted">{editId}</span>
+              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeEdit}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {editErr && <div className="modal-err"><Icon name="alert" className="sm" />{editErr}</div>}
               {editLoading ? (
-                <p className="hint" role="status">Loading profile…</p>
+                <p className="hint" role="status">{t("Loading profile…")}</p>
               ) : (
                 <>
                   {editForm.proxyError && <div className="modal-err"><Icon name="alert" className="sm" />Stored proxy quarantined: {editForm.proxyError}. Replace it below or clear the field.</div>}
@@ -4370,10 +4370,8 @@ function App() {
                   )}
                   {!isCloudMode && editMobile && (
                     <div className="persona-warning">
-                      <strong><Icon name="warning" className="sm" />Imported mobile persona cannot open safely</strong>
-                      <span>
-                        Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.
-                      </span>
+                      <strong><Icon name="warning" className="sm" />{t("Imported mobile persona cannot open safely")}</strong>
+                      <span>{t("Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.")}</span>
                       <span>
                         Convert it once to {editMobile.platform === "macos" ? "macOS" : "Windows"} desktop. Cookies, login/session, proxy, timezone, credentials and fingerprint seed stay intact
                         {editMobile.screenChanged ? `; the mobile-sized screen becomes ${editMobile.resolution}` : "; the existing desktop-sized screen stays intact"}.
@@ -4385,12 +4383,12 @@ function App() {
                   )}
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Name</span>
+                      <span>{t("Name")}</span>
                       <input value={editForm.name ?? ""} onChange={(e) => setEF("name", e.target.value)} />
                     </label>
                     {!isCloudMode && (
                       <label className="fld no">
-                        <span>Custom NO.</span>
+                        <span>{t("Custom NO.")}</span>
                         <input
                           value={editForm.customNo ?? ""}
                           inputMode="numeric"
@@ -4398,17 +4396,17 @@ function App() {
                           placeholder={editSerial != null ? String(editSerial) : "auto"}
                           onChange={(e) => setEF("customNo", e.target.value.replace(/\D/g, "").slice(0, MAX_CUSTOM_NO))}
                         />
-                        <small>Digits only · blank uses the serial</small>
+                        <small>{t("Digits only · blank uses the serial")}</small>
                       </label>
                     )}
                   </div>
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Folder</span>
+                      <span>{t("Folder")}</span>
                       <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                     </label>
                     <label className="fld grow">
-                      <span>Platform</span>
+                      <span>{t("Platform")}</span>
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
@@ -4423,29 +4421,29 @@ function App() {
                     </div>
                   )}
                   <label className="fld">
-                    <span>Browser</span>
+                    <span>{t("Browser")}</span>
                     <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
                     <small>{editEngine === "firefox"
                       ? "Native Firefox profile · no CDP, PDF, or Chrome extensions."
                       : "CDP, PDF, and Chrome extensions are available."}</small>
                   </label>
                   <label className="fld">
-                    <span>Tags <span className="muted">(comma-separated)</span></span>
-                    <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
+                    <span>{t("Tags")}<span className="muted">{t("(comma-separated)")}</span></span>
+                    <input value={editForm.tags ?? ""} placeholder={t("warmup, us, priority")} onChange={(e) => setEF("tags", e.target.value)} />
                   </label>
                   <div className="fld-row">
                     <label className="fld type">
-                      <span>Proxy type</span>
+                      <span>{t("Proxy type")}</span>
                       <select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
-                        <option value="http">http</option>
-                        <option value="https">https</option>
-                        <option value="socks5">socks5</option>
+                        <option value="http">{t("http")}</option>
+                        <option value="https">{t("https")}</option>
+                        <option value="socks5">{t("socks5")}</option>
                       </select>
                     </label>
                     <label className="fld grow">
-                      <span>Proxy</span>
-                      <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
-                      <small>Leave blank to launch on a direct connection.</small>
+                      <span>{t("Proxy")}</span>
+                      <input value={editForm.proxy ?? ""} placeholder={t("host:port:username:password")} onChange={(e) => setEF("proxy", e.target.value)} />
+                      <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>
                   </div>
                   <div className="proxy-check-actions">
@@ -4490,9 +4488,9 @@ function App() {
                   <CopyField label="2FA secret" value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
                   {!isCloudMode && editTotp && (
                     <div className="authrow">
-                      <span className="authlabel">Authenticator</span>
+                      <span className="authlabel">{t("Authenticator")}</span>
                       <span className="authcode">{editTotp.code.slice(0, 3)} {editTotp.code.slice(3)}</span>
-                      <span className="authsecs" title="seconds until it refreshes">{editTotp.secs}s</span>
+                      <span className="authsecs" title={t("seconds until it refreshes")}>{editTotp.secs}s</span>
                       <button className="btn xs" onClick={() => navigator.clipboard?.writeText(editTotp.code)}>
                         <Icon name="copy" className="sm" />Copy
                       </button>
@@ -4507,12 +4505,12 @@ function App() {
                   />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
-                      <span>Extensions</span>
+                      <span>{t("Extensions")}</span>
                       <div className="extassign">
                         {editExtensionChoices.map((x) => (
                           <label key={x.id} className="extchk">
                             <input type="checkbox" checked={editExts.includes(x.id)} onChange={() => toggleEditExt(x.id)} />
-                            <span>{x.name}{x.missing && <span className="muted"> · Not installed on this device</span>}</span>
+                            <span>{x.name}{x.missing && <span className="muted">{t("· Not installed on this device")}</span>}</span>
                           </label>
                         ))}
                       </div>
@@ -4526,7 +4524,7 @@ function App() {
               )}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeEdit}>Cancel</button>
+              <button className="btn ghost" onClick={closeEdit}>{t("Cancel")}</button>
               <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
             </div>
           </div>
@@ -4540,7 +4538,7 @@ function App() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
               <Icon name="fileImport" />Import profiles
-              <button type="button" className="modal-close" aria-label="Close" onClick={closeBulk}><Icon name="close" className="sm" /></button>
+              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {bulkErr && <div className="modal-err"><Icon name="alert" className="sm" />{bulkErr}</div>}
@@ -4551,7 +4549,7 @@ function App() {
               </ol>
               <p className="hint">Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.</p>
 
-              <div className="segmented" role="tablist" aria-label="Import source">
+              <div className="segmented" role="tablist" aria-label={t("Import source")}>
                 <button
                   type="button"
                   role="tab"
@@ -4559,8 +4557,7 @@ function App() {
                   className={bulkSource === "file" ? "active" : ""}
                   onClick={() => { setBulkSource("file"); setBulkText(""); }}
                 >
-                  <Icon name="fileImport" className="sm" />From file
-                </button>
+                  <Icon name="fileImport" className="sm" />{t("From file")}</button>
                 <button
                   type="button"
                   role="tab"
@@ -4568,8 +4565,7 @@ function App() {
                   className={bulkSource === "paste" ? "active" : ""}
                   onClick={() => { setBulkSource("paste"); setBulkFiles([]); }}
                 >
-                  <Icon name="copy" className="sm" />Paste text
-                </button>
+                  <Icon name="copy" className="sm" />{t("Paste text")}</button>
               </div>
 
               {bulkSource === "file" ? (
@@ -4582,8 +4578,8 @@ function App() {
                     onDrop={(e) => { e.preventDefault(); setBulkOver(false); if (e.dataTransfer.files?.length) setBulkFiles(Array.from(e.dataTransfer.files)); }}
                   >
                     <Icon name="fileImport" />
-                    <b>Drag &amp; drop files, or click to choose</b>
-                    <div className="sub">Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers</div>
+                    <b>{t("Drag &amp; drop files, or click to choose")}</b>
+                    <div className="sub">{t("Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers")}</div>
                   </div>
                   {bulkFiles.length > 0 && (
                     <div className="filelist">
@@ -4598,13 +4594,13 @@ function App() {
                           ><Icon name="close" className="sm" /></button>
                         </span>
                       ))}
-                      <button type="button" className="btn xs ghost" onClick={() => setBulkFiles([])}>Clear all</button>
+                      <button type="button" className="btn xs ghost" onClick={() => setBulkFiles([])}>{t("Clear all")}</button>
                     </div>
                   )}
                 </>
               ) : (
                 <label className="fld">
-                  <span>AdsPower TXT records</span>
+                  <span>{t("AdsPower TXT records")}</span>
                   <textarea
                     rows={9}
                     value={bulkText}
@@ -4632,7 +4628,7 @@ function App() {
                   <GroupPicker value={bulkGroup} onChange={setBulkGroup} groups={isCloudMode ? editableGroups : existingGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
-                  <span>Platform</span>
+                  <span>{t("Platform")}</span>
                   <select value={bulkPlatform} onChange={(e) => setBulkPlatform(e.target.value)}>
                     {KNOWN_PLATFORMS.map((platform) => <option key={platform.value} value={platform.value}>{platform.label}</option>)}
                   </select>
@@ -4642,22 +4638,19 @@ function App() {
                 Anything chosen above overrides that field on every imported record, including
                 provider exports that already carry a group.
               </p>
-              <p className="formnote">
-                An AliasMode export also carries <code>seed</code>, <code>timezone</code> and{" "}
+              <p className="formnote">{t("An AliasMode export also carries")}<code>seed</code>, <code>timezone</code> and{" "}
                 <code>platform_os</code>, which recreate the exact browser fingerprint. Its{" "}
-                <code>fp_*</code> columns are a <b>record</b> of the fingerprint that was measured,
+                <code>fp_*</code>{t(" columns are a")}<b>{t("record")}</b> of the fingerprint that was measured,
                 not settings — they are checked after the browser opens, never applied to it.
               </p>
             </div>
             <div className="modal-foot">
               <button className="tlink" onClick={() => downloadText("aliasmode-template.csv", CSV_TEMPLATE, "text/csv")}>
-                <Icon name="export" className="sm" />CSV template
-              </button>
+                <Icon name="export" className="sm" />{t("CSV template")}</button>
               <button className="tlink" onClick={() => downloadText("aliasmode-example.txt", TXT_EXAMPLE, "text/plain")}>
-                <Icon name="export" className="sm" />.txt example
-              </button>
+                <Icon name="export" className="sm" />{t(".txt example")}</button>
               <span className="spacer" />
-              <button className="btn ghost" onClick={closeBulk}>Cancel</button>
+              <button className="btn ghost" onClick={closeBulk}>{t("Cancel")}</button>
               <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup)} onClick={submitBulk}>
                 <Icon name="fileImport" className="sm" />{bulkBusy ? "Importing…" : "Import profiles"}
               </button>
@@ -4671,32 +4664,32 @@ function App() {
            close via Cancel, the X, or Escape (the backdrop has no onClick). */
         <div className="modal-backdrop">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">Update profiles from file<button type="button" className="modal-close" aria-label="Close" onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
+            <div className="modal-head">{t("Update profiles from file")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
             <div className="modal-body">
               {updateErr && <div className="modal-err"><Icon name="alert" className="sm" />{updateErr}</div>}
               {updateResult && <div className="modal-ok"><Icon name="check" className="sm" />{updateResult}</div>}
               <ol className="steps">
-                <li><b>Export</b> the profiles you want to change — that gives you a file with each profile's <code>id</code> (how rows are matched).</li>
-                <li><b>Edit</b> the columns you want (name, username, password, 2FA, proxy…). Keep the <code>id</code> column; delete any column you don't want to touch.</li>
-                {!isCloudMode && <li>Add a <code>custom_no</code> column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.</li>}
-                <li><b>Re-upload</b> the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a <code>cookie</code> or <code>ua</code> column has no effect.</li>
-                {isCloudMode && <li>Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.</li>}
+                <li><b>{t("Export")}</b>{t("the profiles you want to change — that gives you a file with each profile's")}<code>{t("id")}</code>{t("(how rows are matched).")}</li>
+                <li><b>{t("Edit")}</b>{t("the columns you want (name, username, password, 2FA, proxy…). Keep the")}<code>{t("id")}</code>{t("column; delete any column you don't want to touch.")}</li>
+                {!isCloudMode && <li>{t("Add a")}<code>{t("custom_no")}</code>{t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
+                <li><b>{t("Re-upload")}</b>{t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")}<code>{t("cookie")}</code>{t("or")}<code>{t("ua")}</code>{t("column has no effect.")}</li>
+                {isCloudMode && <li>{t("Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.")}</li>}
               </ol>
               <div className="updexport">
                 {selected.size > 0 ? (
                   <span>
                     Export {selected.size} selected:&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("csv")}><Icon name="export" className="sm" />CSV</button>
+                    <button className="tlink" onClick={() => exportSelected("csv")}><Icon name="export" className="sm" />{t("CSV")}</button>
                     &nbsp;·&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("txt")}><Icon name="export" className="sm" />.txt</button>
+                    <button className="tlink" onClick={() => exportSelected("txt")}><Icon name="export" className="sm" />{t(".txt")}</button>
                     &nbsp;·&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("xlsx")}><Icon name="export" className="sm" />Excel</button>
+                    <button className="tlink" onClick={() => exportSelected("xlsx")}><Icon name="export" className="sm" />{t("Excel")}</button>
                   </span>
                 ) : (
-                  <span className="hint">Tip: select profiles first, then export here to get an editable file.</span>
+                  <span className="hint">{t("Tip: select profiles first, then export here to get an editable file.")}</span>
                 )}
                 <span className="grow" />
-                <button className="tlink" onClick={() => downloadText("aliasmode-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />example sheet</button>
+                <button className="tlink" onClick={() => downloadText("aliasmode-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />{t("example sheet")}</button>
               </div>
               <div
                 className={`bulkdrop${updateOver ? " over" : ""}`}
@@ -4706,8 +4699,8 @@ function App() {
                 onDrop={(e) => { e.preventDefault(); setUpdateOver(false); if (e.dataTransfer.files?.[0]) setUpdateFile(e.dataTransfer.files[0]); }}
               >
                 <Icon name="export" />
-                <b>Drag &amp; drop the edited file, or click to choose</b>
-                <div className="sub">CSV, <code>.txt</code> or Excel <code>.xlsx</code> with an <code>id</code> column</div>
+                <b>{t("Drag &amp; drop the edited file, or click to choose")}</b>
+                <div className="sub">{t("CSV,")}<code>{t(".txt")}</code>{t("or Excel")}<code>{t(".xlsx")}</code>{t("with an")}<code>{t("id")}</code>{t("column")}</div>
               </div>
               <input
                 ref={updateFileRef}
@@ -4716,10 +4709,10 @@ function App() {
                 style={{ display: "none" }}
                 onChange={(e) => { if (e.target.files?.[0]) setUpdateFile(e.target.files[0]); e.target.value = ""; }}
               />
-              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />Selected: <b>{updateFile.name}</b></div>}
+              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />{t("Selected:")}<b>{updateFile.name}</b></div>}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={() => setShowUpdate(false)}>Close</button>
+              <button className="btn ghost" onClick={() => setShowUpdate(false)}>{t("Close")}</button>
               <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? "Updating…" : "Update profiles"}</button>
             </div>
           </div>
@@ -4735,4 +4728,4 @@ function App() {
 }
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
+root.render(<I18nProvider><App /></I18nProvider>);

@@ -100,3 +100,15 @@ export function useTranslation(): TranslationContextValue {
   }
   return value;
 }
+
+export function availableLanguages(): Language[] {
+  return ["en-US", "zh-CN"];
+}
+
+export function languageNativeName(lang: string): string {
+  switch (lang) {
+    case "zh-CN": return "简体中文";
+    case "en-US": return "English";
+    default: return lang;
+  }
+}

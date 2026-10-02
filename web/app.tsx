@@ -5,7 +5,7 @@ import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
 import { ProxyProviderOffer } from "./proxy-offer.tsx";
-import { I18nProvider, useTranslation } from "./i18n.tsx";
+import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
@@ -1046,7 +1046,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
 }
 
 function App() {
-  const { t } = useTranslation();
+  const { t, language, setLanguage } = useTranslation();
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
   const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);
   const [appMode, setAppMode] = useState<AppModeConfig | null>(null);
@@ -3954,6 +3954,13 @@ function App() {
             <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
               <p>{t("Choose how AliasMode looks. System follows your operating system setting.")}</p>
+              <label className="fld"><span>{t("Language")}</span>
+                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value as "en-US" | "zh-CN")}>
+                  {availableLanguages().map((lang) => (
+                    <option key={lang} value={lang}>{languageNativeName(lang)}</option>
+                  ))}
+                </select>
+              </label>
               <div className="segmented" role="radiogroup" aria-label={t("Theme")}>
                 {THEMES.map((option) => (
                   <button

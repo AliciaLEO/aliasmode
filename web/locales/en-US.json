@@ -892,5 +892,6 @@
   "Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.": "Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.",
   "{action} {count} profiles…": "{action} {count} profiles…",
   "Folder {name}": "Folder {name}",
-  "What’s new in {version}": "What’s new in {version}"
+  "What’s new in {version}": "What’s new in {version}",
+  "Use system proxy for relay upstream connections": "Use system proxy for relay upstream connections"
 }

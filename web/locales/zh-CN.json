@@ -892,5 +892,6 @@
   "Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.": "旧版 AliasMode 会直接以桌面浏览器方式打开它：Android 变成 Windows，iPhone/iPad 变成 macOS。看似可用，但并非连贯的移动端模拟。",
   "{action} {count} profiles…": "{action}{count} 个配置文件…",
   "Folder {name}": "{name}文件夹",
-  "What’s new in {version}": "{version} 的新功能"
+  "What’s new in {version}": "{version} 的新功能",
+  "Use system proxy for relay upstream connections": "使用系统代理连接上游代理"
 }

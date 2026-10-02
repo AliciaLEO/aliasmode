@@ -66,7 +66,6 @@ export function retryProxyProfileIds(rows: ProxyReplacementView[]): string[] {
 }
 
 function proxyRequest(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
-  const { t } = useTranslation();
   return fetch(`/ui/api/proxies/${path}`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
   });

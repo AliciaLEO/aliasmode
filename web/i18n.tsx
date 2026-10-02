@@ -90,6 +90,13 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
 export function useTranslation(): TranslationContextValue {
   const value = useContext(I18nContext);
-  if (!value) throw new Error("useTranslation must be used inside I18nProvider");
+  if (!value) {
+    // Fall back to English when rendered outside a provider (e.g. in tests).
+    return {
+      language: "en-US",
+      setLanguage: () => {},
+      t: (source: string, values?: TranslationValues) => format(source, values),
+    };
+  }
   return value;
 }

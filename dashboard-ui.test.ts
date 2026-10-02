@@ -2,7 +2,16 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const app = readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8").replaceAll("\r\n", "\n");
+// Strip t() wrappers for assertions: the i18n build wraps UI strings in
+// {t("...")}, but these tests assert on the underlying English text.
+function stripT(source: string): string {
+  return source
+    .replace(/=\{t\("((?:[^"\\]|\\.)*)"(?:,\s*\{[^}]*\})?\)\}/g, '="$1"')
+    .replace(/\{t\("((?:[^"\\]|\\.)*)"(?:,\s*\{[^}]*\})?\)\}/g, "$1")
+    .replace(/\bt\("((?:[^"\\]|\\.)*)"(?:,\s*\{[^}]*\})?\)/g, '"$1"');
+}
+
+const app = stripT(readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8").replaceAll("\r\n", "\n"));
 const proxyOffer = readFileSync(join(import.meta.dir, "web", "proxy-offer.tsx"), "utf8");
 const styles = readFileSync(join(import.meta.dir, "web", "styles.css"), "utf8").replaceAll("\r\n", "\n");
 const logo = readFileSync(join(import.meta.dir, "web", "alias-loop.svg"), "utf8").replaceAll("\r\n", "\n");

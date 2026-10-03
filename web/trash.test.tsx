@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
 import type { TrashProfileView } from "../proxy-tools-types.ts";
+import { I18nProvider } from "./i18n.tsx";
 import { filterTrash, TrashPage } from "./trash.tsx";
 import { proxyResultPage } from "./proxies.tsx";
 
@@ -31,8 +33,8 @@ test("Trash folder scope includes every profile across pages and remains indepen
 });
 
 test("Trash stays mounted but hidden during page navigation", () => {
-  const inactive = renderToStaticMarkup(<TrashPage active={false} onChanged={async () => {}} />);
-  const active = renderToStaticMarkup(<TrashPage active onChanged={async () => {}} />);
+  const inactive = renderToStaticMarkup(createElement(I18nProvider, null, createElement(TrashPage, { active: false, onChanged: async () => {} })));
+  const active = renderToStaticMarkup(createElement(I18nProvider, null, createElement(TrashPage, { active: true, onChanged: async () => {} })));
   expect(inactive).toContain('hidden=""');
   expect(active).not.toContain('hidden=""');
   expect(active.match(/disabled=""/g)!.length).toBeGreaterThan(0);

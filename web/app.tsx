@@ -3050,67 +3050,67 @@ function App() {
           {appVersion && <span className="appversion" title={appVersion}>{appVersion}</span>}
         </div>
         <div className="newrow">
-          <button className="btn primary newbtn" data-tip="New profile" title="New profile" disabled={!canEditCloud} onClick={openCreate}>
-            <Icon name="plus" /><span className="navlabel">New Profile</span>
+          <button className="btn primary newbtn" data-tip={t("New profile")} title={t("New profile")} disabled={!canEditCloud} onClick={openCreate}>
+            <Icon name="plus" /><span className="navlabel">{t("New Profile")}</span>
           </button>
           <button
             className="btn importbtn tip"
-            data-tip="Import profiles"
-            aria-label="Import profiles"
+            data-tip={t("Import profiles")}
+            aria-label={t("Import profiles")}
             disabled={!canEditCloud}
-            title="Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports"
+            title={t("Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports")}
             onClick={openBulk}
-          ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
+          ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
         </div>
 
         <nav className="sidenav" aria-label="Sections">
           <button
             type="button"
             className={`navitem${view === "profiles" && group === "all" ? " active" : ""}`}
-            data-tip="All profiles"
-            title="All profiles"
+            data-tip={t("All profiles")}
+            title={t("All profiles")}
             onClick={() => { setView("profiles"); setGroup("all"); }}
           >
-            <Icon name="profiles" /><span className="navlabel">All profiles</span>
+            <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
           {!appMode?.legacyRemote && <>
-            <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip="Proxies" title="Proxies" onClick={() => setView("proxies")}>
-              <Icon name="activity" /><span className="navlabel">Proxies</span>
+            <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => setView("proxies")}>
+              <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
             </button>
-            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip="Trash" title="Trash" onClick={() => setView("trash")}>
-              <Icon name="trash" /><span className="navlabel">Trash</span>
+            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
+              <Icon name="trash" /><span className="navlabel">{t("Trash")}</span>
             </button>
           </>}
           <button
             type="button"
             className={`navitem${view === "scripts" ? " active" : ""}`}
-            data-tip="Scripts"
-            title="Scripts"
+            data-tip={t("Scripts")}
+            title={t("Scripts")}
             onClick={() => setView("scripts")}
           >
-            <Icon name="file" /><span className="navlabel">Scripts</span>
+            <Icon name="file" /><span className="navlabel">{t("Scripts")}</span>
           </button>
           <button
             type="button"
             className={`navitem${view === "extensions" ? " active" : ""}`}
-            data-tip="Manage extensions"
-            title="Manage extensions"
+            data-tip={t("Manage extensions")}
+            title={t("Manage extensions")}
             onClick={() => { setExtErr(null); setView("extensions"); }}
           >
-            <Icon name="puzzle" /><span className="navlabel">Manage extensions</span>
+            <Icon name="puzzle" /><span className="navlabel">{t("Manage extensions")}</span>
             {extensions.length > 0 && <span className="cnt">{extensions.length}</span>}
           </button>
           <button
             type="button"
             className="navitem"
-            title="View detailed logs"
+            title={t("View detailed logs")}
             onClick={() => {
               setLogErr(null);
               setLogView(null);
               fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
             }}
-          ><Icon name="logs" /><span className="navlabel">Logs</span></button>
+          ><Icon name="logs" /><span className="navlabel">{t("Logs")}</span></button>
         </nav>
 
         <div className="sidesection">
@@ -3122,7 +3122,7 @@ function App() {
           </button>
           {groupsOpen && <>
             <div className="folders">
-            {existingGroups.length === 0 && <div className="folders-empty">No {isCloudMode ? "folders" : "groups"} yet</div>}
+            {existingGroups.length === 0 && <div className="folders-empty">{t("No {item} yet", { item: t(isCloudMode ? "folders" : "groups") })}</div>}
             {existingGroups.map((g) => (
               <div
                 key={g}
@@ -3146,12 +3146,12 @@ function App() {
                     {(canEditGroup(g) || (isCloudMode && canManageCloudFolders)) && (
                       <span className="gactions">
                         {canEditGroup(g) && (
-                          <button title={isCloudMode ? "Rename folder" : "Rename group"} onClick={(e) => { e.stopPropagation(); startRename(g); }}>
+                          <button title={isCloudMode ? t("Rename folder") : t("Rename group")} onClick={(e) => { e.stopPropagation(); startRename(g); }}>
                             <Icon name="edit" className="sm" />
                           </button>
                         )}
                         {(!isCloudMode || canManageCloudFolders) && (
-                          <button className="danger" title={isCloudMode ? "Delete folder" : "Delete group"} onClick={(e) => { e.stopPropagation(); removeGroup(g); }}>
+                          <button className="danger" title={isCloudMode ? t("Delete folder") : t("Delete group")} onClick={(e) => { e.stopPropagation(); removeGroup(g); }}>
                             <Icon name="trash" className="sm" />
                           </button>
                         )}
@@ -3167,7 +3167,7 @@ function App() {
               <div className="newgroup">
                 <input
                   autoFocus
-                  aria-label={isCloudMode ? "New folder name" : "New group name"}
+                  aria-label={isCloudMode ? t("New folder name") : t("New group name")}
                   value={sidebarGroupName}
                   onChange={(event) => setSidebarGroupName(event.target.value)}
                   onKeyDown={(event) => {
@@ -3175,12 +3175,12 @@ function App() {
                     else if (event.key === "Escape") { setAddingGroup(false); setSidebarGroupName(""); }
                   }}
                 />
-                <button type="button" title="Create" onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
-                <button type="button" title="Cancel" onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
+                <button type="button" title={t("Create")} onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
+                <button type="button" title={t("Cancel")} onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
               <button className="newgroup" type="button" disabled={!canEditCloud} onClick={() => setAddingGroup(true)}>
-                <Icon name="plus" className="sm" />{isCloudMode ? "New folder" : "New group"}
+                <Icon name="plus" className="sm" />{isCloudMode ? t("New folder") : t("New group")}
               </button>
             )}
           </>}
@@ -3192,13 +3192,13 @@ function App() {
             href="https://t.me/aliasmode"
             target="_blank"
             rel="noreferrer"
-            data-tip="Support"
-            title="Support — AliasMode Telegram group"
+            data-tip={t("Support")}
+            title={t("Support — AliasMode Telegram group")}
           >
-            <Icon name="help" /><span className="navlabel">Support</span>
+            <Icon name="help" /><span className="navlabel">{t("Support")}</span>
           </a>
-          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip="Settings" title="Settings" onClick={openAccountSettings}>
-            <Icon name="settings" /><span className="navlabel">Settings</span>
+          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip={t("Settings")} title={t("Settings")} onClick={openAccountSettings}>
+            <Icon name="settings" /><span className="navlabel">{t("Settings")}</span>
           </button>
           <div className="sidecredit">
             {/* Only the name is a link, and it points at its owner: "Developed by
@@ -3730,45 +3730,45 @@ function App() {
       ) : view === "extensions" ? (
       <div className="workspace">
         <div className="settingspage">
-          <h2 className="sect-title">Extensions</h2>
+          <h2 className="sect-title">{t("Extensions")}</h2>
           {extErr && <div className="modal-err"><Icon name="alert" className="sm" />{extErr}</div>}
           <section className="settings-card">
-            <header><Icon name="puzzle" className="sm" /><h2>Install from Chrome Web Store</h2></header>
+            <header><Icon name="puzzle" className="sm" /><h2>{t("Install from Chrome Web Store")}</h2></header>
             <div className="card-body">
-              <p>Paste a Chrome Web Store extension link or its 32-character ID.</p>
+              <p>{t("Paste a Chrome Web Store extension link or its 32-character ID.")}</p>
               <form className="fld-row" onSubmit={(event) => { event.preventDefault(); void doInstallWebStoreExtension(); }}>
                 <input
                   className="input"
                   style={{ flex: 1 }}
-                  aria-label="Chrome Web Store URL or extension ID"
+                  aria-label={t("Chrome Web Store URL or extension ID")}
                   placeholder="https://chromewebstore.google.com/detail/…"
                   value={extSource}
                   onChange={(event) => setExtSource(event.target.value)}
                 />
                 <button className="btn primary" type="submit" disabled={extInstallBusy || extBusy}>
-                  <Icon name="plus" className="sm" />{extInstallBusy ? "Installing…" : "Install"}
+                  <Icon name="plus" className="sm" />{extInstallBusy ? t("Installing…") : t("Install")}
                 </button>
               </form>
             </div>
           </section>
-          <p className="formnote">The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.</p>
+          <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
           <ol className="steps">
-            <li>Install the extension here. New installs stay unassigned.</li>
-            <li>Use <b>Edit &gt; Extensions</b> to assign it to a profile{!isCloudMode && ", or assign many at once from the roster toolbar"}.</li>
-            <li>Reopen the profile. AliasMode loads the extension when the browser starts.</li>
+            <li>{t("Install the extension here. New installs stay unassigned.")}</li>
+            <li>{t("Use")} <b>{t("Edit &gt; Extensions")}</b> {isCloudMode ? t("to assign it to a profile.") : t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
+            <li>{t("Reopen the profile. AliasMode loads the extension when the browser starts.")}</li>
           </ol>
           <section className="settings-card">
-            <header><Icon name="folder" className="sm" /><h2>Group defaults</h2></header>
+            <header><Icon name="folder" className="sm" /><h2>{t("Group defaults")}</h2></header>
             <div className="card-body">
-              <p>Choose the exact extensions assigned to this group.</p>
+              <p>{t("Choose the exact extensions assigned to this group.")}</p>
               {editableDefaultGroups.length === 0 ? (
-                <p className="formnote">Create an editable group before setting its extension defaults.</p>
+                <p className="formnote">{t("Create an editable group before setting its extension defaults.")}</p>
               ) : (
                 <>
                   <label className="fld">
-                    <span>Group</span>
+                    <span>{t("Group")}</span>
                     <select
-                      aria-label="Extension default group"
+                      aria-label={t("Extension default group")}
                       value={groupDefaultName}
                       onChange={(event) => {
                         const name = event.target.value;
@@ -3793,11 +3793,11 @@ function App() {
                       ))}
                     </div>
                   ) : (
-                    <p className="formnote">No extensions are installed. Apply an empty selection to clear this default.</p>
+                    <p className="formnote">{t("No extensions are installed. Apply an empty selection to clear this default.")}</p>
                   )}
                   <p className="formnote">
-                    Applying replaces assignments on {groupDefaultProfileCount} current profile(s). New and moved profiles inherit it.
-                    Individual profiles can differ later. Reopen browsers to apply changes.
+                    {t("Applying replaces assignments on {count} current profile(s). New and moved profiles inherit it.", { count: groupDefaultProfileCount })}
+                    {t("Individual profiles can differ later. Reopen browsers to apply changes.")}
                   </p>
                   <button
                     type="button"
@@ -3805,7 +3805,7 @@ function App() {
                     disabled={groupDefaultBusy || !groupDefaultName}
                     onClick={applyGroupExtensionDefault}
                   >
-                    {groupDefaultBusy ? "Applying…" : "Apply group default"}
+                    {groupDefaultBusy ? t("Applying…") : t("Apply group default")}
                   </button>
                 </>
               )}
@@ -3814,10 +3814,10 @@ function App() {
           {extensions.length === 0 ? (
             <div className="emptystate">
               <span className="glyph"><Icon name="puzzle" /></span>
-              <b>No extensions yet</b>
-              <p>Uploaded extensions appear here, ready to assign to any profile.</p>
+              <b>{t("No extensions yet")}</b>
+              <p>{t("Uploaded extensions appear here, ready to assign to any profile.")}</p>
               <button className="btn primary" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
-                <Icon name="plus" className="sm" />{extBusy ? "Uploading…" : "Upload ZIP/CRX"}
+                <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
               </button>
             </div>
           ) : (
@@ -3827,7 +3827,7 @@ function App() {
                   <Icon name="puzzle" className="sm" />
                   <span className="extname">{x.name}</span>
                   <span className="spacer" />
-                  <button className="btn xs danger" onClick={() => doRemoveExtension(x.id, x.name)}>Remove</button>
+                  <button className="btn xs danger" onClick={() => doRemoveExtension(x.id, x.name)}>{t("Remove")}</button>
                 </div>
               ))}
             </div>
@@ -3845,7 +3845,7 @@ function App() {
           <span className="spacer" />
           {extensions.length > 0 && (
             <button className="btn primary" type="button" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
-              <Icon name="plus" className="sm" />{extBusy ? "Uploading…" : "Upload ZIP/CRX"}
+              <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
             </button>
           )}
         </footer>
@@ -4165,7 +4165,7 @@ function App() {
       {(logView || logErr) && (
         <div className="modal-backdrop" onClick={() => { setLogView(null); setLogErr(null); }}>
           <div className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-head">Detailed logs<button type="button" className="modal-close" aria-label="Close" onClick={() => { setLogView(null); setLogErr(null); }}><Icon name="close" className="sm" /></button></div>
+            <div className="modal-head">{t("Detailed logs")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={() => { setLogView(null); setLogErr(null); }}><Icon name="close" className="sm" /></button></div>
             <div className="modal-body">
               {logErr && <p className="hint">{logErr}</p>}
               {logView && (
@@ -4174,7 +4174,7 @@ function App() {
                 </pre>
               )}
             </div>
-            <div className="modal-foot"><button className="btn ghost" type="button" onClick={() => { setLogView(null); setLogErr(null); }}>Close</button></div>
+            <div className="modal-foot"><button className="btn ghost" type="button" onClick={() => { setLogView(null); setLogErr(null); }}>{t("Close")}</button></div>
           </div>
         </div>
       )}

@@ -553,12 +553,13 @@ function PlatformPill({ platform }: { platform: string }) {
  * group on the fly. Consistent with the other modal selects (no native datalist).
  */
 function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: string; onChange: (v: string) => void; groups: string[]; allowCreate?: boolean }) {
+  const { t } = useTranslation();
   const [creating, setCreating] = useState(false);
   if (creating) {
     return (
       <div className="grouppick">
-        <input autoFocus placeholder="new group name" value={value} onChange={(e) => onChange(e.target.value)} />
-        <button type="button" className="btn gp-back tip" data-tip="Pick an existing group" title="Pick an existing group" onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
+        <input autoFocus placeholder={t("new group name")} value={value} onChange={(e) => onChange(e.target.value)} />
+        <button type="button" className="btn gp-back tip" data-tip={t("Pick an existing group")} title={t("Pick an existing group")} onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
       </div>
     );
   }
@@ -570,28 +571,29 @@ function GroupPicker({ value, onChange, groups, allowCreate = true }: { value: s
         else onChange(e.target.value);
       }}
     >
-      <option value="">(ungrouped)</option>
+      <option value="">{t("(ungrouped)")}</option>
       {groups.map((g) => <option key={g} value={g}>{g}</option>)}
-      {allowCreate && <option value="__new__">➕ New group…</option>}
+      {allowCreate && <option value="__new__">{t("➕ New group…")}</option>}
     </select>
   );
 }
 
 function PlatformPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const { t } = useTranslation();
   const known = KNOWN_PLATFORMS.some((p) => p.value === value);
   const [creating, setCreating] = useState(false);
   if (creating || (!!value && !known)) {
     return (
       <div className="grouppick">
-        <input autoFocus placeholder="new platform (e.g. linkedin.com)" value={value} onChange={(e) => onChange(e.target.value)} />
-        <button type="button" className="btn gp-back tip" data-tip="Pick a known platform" title="Pick a known platform" onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
+        <input autoFocus placeholder={t("new platform (e.g. linkedin.com)")} value={value} onChange={(e) => onChange(e.target.value)} />
+        <button type="button" className="btn gp-back tip" data-tip={t("Pick a known platform")} title={t("Pick a known platform")} onClick={() => { setCreating(false); onChange(""); }}><Icon name="chevronLeft" /></button>
       </div>
     );
   }
   return (
     <select value={value} onChange={(e) => { if (e.target.value === "__new__") { setCreating(true); onChange(""); } else onChange(e.target.value); }}>
       {KNOWN_PLATFORMS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-      <option value="__new__">➕ New platform…</option>
+      <option value="__new__">{t("➕ New platform…")}</option>
     </select>
   );
 }
@@ -651,6 +653,7 @@ async function copyPlainText(value: string): Promise<void> {
 }
 
 function CopyField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -671,8 +674,8 @@ function CopyField({ label, value, onChange }: { label: string; value: string; o
         <button
           type="button"
           className={`inline-action tip${copied ? " ok" : ""}`}
-          data-tip={copied ? "Copied" : `Copy ${label.toLowerCase()}`}
-          aria-label={`Copy ${label}`}
+          data-tip={copied ? t("Copied") : t("Copy {label}", { label: label.toLowerCase() })}
+          aria-label={t("Copy {label}", { label })}
           onClick={copy}
         >
           <Icon name={copied ? "check" : "copy"} className="sm" />
@@ -717,58 +720,59 @@ function FingerprintSettings({
   disabled?: boolean;
   onUndo?: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <details className="fingerprint-settings">
       <summary>
-        <span>Fingerprint settings</span>
-        <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
+        <span>{t("Fingerprint settings")}</span>
+        <span className="automatic-badge">{onTimezoneChange ? t("Advanced") : t("Automatic")}</span>
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
-          <span>Browser</span>
+          <span>{t("Browser")}</span>
           <input value={engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly tabIndex={-1} className="ro" />
         </label>
         {engine === "chromium" && (
           <label className="fld">
-            <span>Screen</span>
-            <input value={screen} disabled={disabled} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
+            <span>{t("Screen")}</span>
+            <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
         <label className="fld">
-          <span>Operating system</span>
+          <span>{t("Operating system")}</span>
           {onPlatformOsChange ? (
             <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
-              <option value="">Automatic — match this computer</option>
+              <option value="">{t("Automatic — match this computer")}</option>
               <option value="windows">Windows</option>
               <option value="macos">macOS</option>
               <option value="linux">Linux</option>
             </select>
           ) : (
-            <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
+            <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? t("Automatic")} readOnly tabIndex={-1} className="ro" />
           )}
         </label>
         {onTimezoneChange && (
           <label className="fld">
-            <span>Timezone</span>
-            <input value={timezone ?? ""} disabled={disabled} placeholder="Automatic · e.g. Europe/Paris" onChange={(event) => onTimezoneChange(event.target.value)} />
+            <span>{t("Timezone")}</span>
+            <input value={timezone ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. Europe/Paris")} onChange={(event) => onTimezoneChange(event.target.value)} />
           </label>
         )}
         {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
           <label className="fld" key={label}>
-            <span>{label}</span>
-            <input value={value} readOnly tabIndex={-1} className="ro" />
+            <span>{t(label)}</span>
+            <input value={t(value)} readOnly tabIndex={-1} className="ro" />
           </label>
         ))}
         <div className="hint">{disabled
-          ? "Close the browser before changing fingerprint settings."
+          ? t("Close the browser before changing fingerprint settings.")
           : onTimezoneChange
             ? engine === "firefox"
-              ? "Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated."
-              : "Screen, operating system, and timezone can be changed. CloakBrowser controls the other values."
+              ? t("Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated.")
+              : t("Screen, operating system, and timezone can be changed. CloakBrowser controls the other values.")
             : engine === "firefox"
-              ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-              : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
-        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>Undo fingerprint edits</button>}
+              ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
+              : t("CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
+        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{t("Undo fingerprint edits")}</button>}
       </div>
     </details>
   );
@@ -970,16 +974,17 @@ type ProxyCheckUiState = {
 
 const EMPTY_PROXY_CHECK: ProxyCheckUiState = { checking: false, result: null, error: null };
 
-function proxyFailureMessage(reason: ProxyCheckResult["reason"]): string {
-  if (reason === "authentication_failed") return "Proxy authentication failed.";
-  if (reason === "timeout") return "Proxy connection timed out.";
-  if (reason === "dns_failed") return "Proxy host could not be resolved.";
-  if (reason === "unreachable") return "Proxy server is unreachable.";
-  if (reason === "proxy_bypassed") return "Traffic did not use this proxy.";
-  return "Proxy connection failed.";
+function proxyFailureMessage(t: (key: string) => string, reason: ProxyCheckResult["reason"]): string {
+  if (reason === "authentication_failed") return t("Proxy authentication failed.");
+  if (reason === "timeout") return t("Proxy connection timed out.");
+  if (reason === "dns_failed") return t("Proxy host could not be resolved.");
+  if (reason === "unreachable") return t("Proxy server is unreachable.");
+  if (reason === "proxy_bypassed") return t("Traffic did not use this proxy.");
+  return t("Proxy connection failed.");
 }
 
 function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: ProxyCheckUiState }) {
+  const { t } = useTranslation();
   if (!hasProxy) return <ProxyProviderOffer />;
   if (state.error) {
     const invalid = state.error === "invalid";
@@ -988,8 +993,8 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
         <div className={`proxy-check-result ${invalid ? "failed" : "unavailable"}`} role="status">
           <Icon name={invalid ? "alert" : "activity"} className="sm" />
           <span>{invalid
-            ? "Proxy details are invalid. Check them and try again."
-            : "Proxy check is unavailable. Try again later."}</span>
+            ? t("Proxy details are invalid. Check them and try again.")
+            : t("Proxy check is unavailable. Try again later.")}</span>
         </div>
         {invalid && <ProxyProviderOffer replacement />}
       </>
@@ -998,12 +1003,12 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   const result = state.result;
   if (!result) return null;
   const location = [result.city, result.region, result.country].filter(Boolean).join(", ");
-  const exit = [result.ip ? `Exit IP: ${result.ip}` : "", location].filter(Boolean).join(" · ");
+  const exit = [result.ip ? t("Exit IP: {ip}", { ip: result.ip }) : "", location].filter(Boolean).join(" · ");
   if (result.status === "working") {
     return (
       <div className="proxy-check-result working" role="status">
         <Icon name="check" className="sm" />
-        <span><strong>Proxy is working.</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
+        <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <> {t("Rotating exit IPs detected.")}</>}</span>
       </div>
     );
   }
@@ -1012,7 +1017,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
       <>
         <div className="proxy-check-result unstable" role="status">
           <Icon name="warning" className="sm" />
-          <span><strong>Proxy checks were mixed.</strong> {result.successes} of {result.attempts} succeeded.</span>
+          <span><strong>{t("Proxy checks were mixed.")}</strong> {t("{successes} of {attempts} succeeded.", { successes: result.successes, attempts: result.attempts })}</span>
         </div>
         <ProxyProviderOffer replacement />
       </>
@@ -1023,7 +1028,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
       <>
         <div className="proxy-check-result failed" role="status">
           <Icon name="alert" className="sm" />
-          <span>{proxyFailureMessage(result.reason)}</span>
+          <span>{proxyFailureMessage(t, result.reason)}</span>
         </div>
         <ProxyProviderOffer replacement />
       </>
@@ -1032,7 +1037,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   return (
     <div className="proxy-check-result unavailable" role="status">
       <Icon name="activity" className="sm" />
-      <span>Proxy check is unavailable. Try again later.</span>
+      <span>{t("Proxy check is unavailable. Try again later.")}</span>
     </div>
   );
 }
@@ -2528,7 +2533,7 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
     const id = editId;
     const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
@@ -2550,7 +2555,7 @@ function App() {
     const fingerprintEdits = Object.fromEntries(Object.entries(editInitialFingerprint)
       .filter(([key, value]) => editForm[key] !== value)
       .map(([key]) => [key, editForm[key] ?? ""]));
-    if (Object.keys(fingerprintEdits).length && !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    if (Object.keys(fingerprintEdits).length && !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
     setEditSaving(true);
     setEditErr(null);
     try {
@@ -3783,7 +3788,7 @@ function App() {
                             checked={groupDefaultExts.includes(item.id)}
                             onChange={() => toggleGroupDefaultExt(item.id)}
                           />
-                          <span>{item.name}{item.missing && <span className="muted"> · Not installed on this device</span>}</span>
+                          <span>{item.name}{item.missing && <span className="muted">{t(" · Not installed on this device")}</span>}</span>
                         </label>
                       ))}
                     </div>
@@ -4237,7 +4242,7 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="create-profile-title">
-              <Icon name="plus" />New profile
+              <Icon name="plus" />{t("New profile")}
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
@@ -4245,16 +4250,16 @@ function App() {
               <div className="fld-row">
                 <label className="fld grow">
                   <span>{t("Name")}</span>
-                  <input value={form.name} placeholder="auto if blank" onChange={(e) => setF("name", e.target.value)} />
+                  <input value={form.name} placeholder={t("auto if blank")} onChange={(e) => setF("name", e.target.value)} />
                 </label>
                 {!isCloudMode && (
                   <label className="fld no">
-                    <span>Custom NO.</span>
+                    <span>{t("Custom NO.")}</span>
                     <input
                       value={form.customNo}
                       inputMode="numeric"
                       maxLength={MAX_CUSTOM_NO}
-                      placeholder="auto"
+                      placeholder={t("auto")}
                       onChange={(e) => setF("customNo", e.target.value.replace(/\D/g, "").slice(0, MAX_CUSTOM_NO))}
                     />
                   </label>
@@ -4262,22 +4267,22 @@ function App() {
               </div>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Folder</span>
+                  <span>{t("Folder")}</span>
                   <GroupPicker value={form.group} onChange={(v) => setF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
-                  <span>Platform</span>
+                  <span>{t("Platform")}</span>
                   <PlatformPicker value={form.platform} onChange={(v) => setF("platform", v)} />
                 </label>
               </div>
               <div className="proxy-paste-row">
                 <label className="fld grow">
-                  <span>Paste proxy to autofill <span className="muted">(select type first · host:port:username:password)</span></span>
+                  <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
                   <input
                     type="password"
                     autoComplete="off"
                     value={proxyPaste}
-                    placeholder="Paste here — credentials stay hidden"
+                    placeholder={t("Paste here — credentials stay hidden")}
                     onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
                     onPaste={(e) => {
                       const pasted = e.clipboardData.getData("text");
@@ -4286,12 +4291,12 @@ function App() {
                     onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
                   />
                 </label>
-                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>Autofill</button>
+                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
               </div>
               {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
               <div className="fld-row">
                 <label className="fld type">
-                  <span>Proxy type</span>
+                  <span>{t("Proxy type")}</span>
                   <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
                     <option value="http">http</option>
                     <option value="https">https</option>
@@ -4299,17 +4304,17 @@ function App() {
                   </select>
                 </label>
                 <label className="fld grow">
-                  <span>Host</span>
-                  <input value={form.host} placeholder="blank = no proxy" onChange={(e) => setF("host", e.target.value)} />
+                  <span>{t("Host")}</span>
+                  <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
                 </label>
                 <label className="fld port">
-                  <span>Port</span>
+                  <span>{t("Port")}</span>
                   <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
-                <label className="fld grow"><span>Proxy user</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
-                <label className="fld grow"><span>Proxy pass</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
+                <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
+                <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
               </div>
               <div className="proxy-check-actions">
                 <button
@@ -4320,12 +4325,12 @@ function App() {
                   onClick={checkCreateProxy}
                 >
                   <Icon name="activity" className="sm" />
-                  {createProxyCheck.checking ? "Checking…" : "Check proxy"}
+                  {createProxyCheck.checking ? t("Checking…") : t("Check proxy")}
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
               <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
-              <div className="browser-options" role="radiogroup" aria-label="Browser">
+              <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
                     engine: "chromium", label: "Chrome", runtime: "CloakBrowser",
@@ -4348,8 +4353,8 @@ function App() {
               </div>
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeCreate}>Cancel</button>
-              <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? "Creating…" : "Create profile"}</button>
+              <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>
+              <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? t("Creating…") : t("Create profile")}</button>
             </div>
           </div>
         </div>
@@ -4361,91 +4366,91 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="edit-profile-title">
-              <Icon name="edit" />Edit profile<span className="mono muted">{editId}</span>
+              <Icon name="edit" />{t("Edit profile")}<span className="mono muted">{editId}</span>
               <button type="button" className="modal-close" aria-label="Close" onClick={closeEdit}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {editErr && <div className="modal-err"><Icon name="alert" className="sm" />{editErr}</div>}
               {editLoading ? (
-                <p className="hint" role="status">Loading profile…</p>
+                <p className="hint" role="status">{t("Loading profile…")}</p>
               ) : (
                 <>
-                  {editForm.proxyError && <div className="modal-err"><Icon name="alert" className="sm" />Stored proxy quarantined: {editForm.proxyError}. Replace it below or clear the field.</div>}
+                  {editForm.proxyError && <div className="modal-err"><Icon name="alert" className="sm" />{t("Stored proxy quarantined: {error}. Replace it below or clear the field.", { error: editForm.proxyError })}</div>}
                   {(editLive || (!isCloudMode && editRunning)) && (
                     <p className="hint" role="status">
                       {editLive
-                        ? "This browser is open. Changes save to this device now and sync to Cloud when it closes."
-                        : "This browser is open. Changes save now and apply the next time it launches."}
+                        ? t("This browser is open. Changes save to this device now and sync to Cloud when it closes.")
+                        : t("This browser is open. Changes save now and apply the next time it launches.")}
                     </p>
                   )}
                   {!isCloudMode && editMobile && (
                     <div className="persona-warning">
-                      <strong><Icon name="warning" className="sm" />Imported mobile persona cannot open safely</strong>
+                      <strong><Icon name="warning" className="sm" />{t("Imported mobile persona cannot open safely")}</strong>
                       <span>
-                        Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.
+                        {t("Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.")}
                       </span>
                       <span>
-                        Convert it once to {editMobile.platform === "macos" ? "macOS" : "Windows"} desktop. Cookies, login/session, proxy, timezone, credentials and fingerprint seed stay intact
-                        {editMobile.screenChanged ? `; the mobile-sized screen becomes ${editMobile.resolution}` : "; the existing desktop-sized screen stays intact"}.
+                        {t("Convert it once to {platform} desktop. Cookies, login/session, proxy, timezone, credentials and fingerprint seed stay intact", { platform: editMobile.platform === "macos" ? "macOS" : "Windows" })}
+                        {editMobile.screenChanged ? t("; the mobile-sized screen becomes {resolution}", { resolution: editMobile.resolution }) : t("; the existing desktop-sized screen stays intact")}.
                       </span>
                       <button className="btn persona-convert" disabled={editSaving} onClick={convertEditedMobile}>
-                        {editSaving ? "Converting…" : `Convert to ${editMobile.platform === "macos" ? "macOS" : "Windows"} desktop`}
+                        {editSaving ? t("Converting…") : t("Convert to {platform} desktop", { platform: editMobile.platform === "macos" ? "macOS" : "Windows" })}
                       </button>
                     </div>
                   )}
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Name</span>
+                      <span>{t("Name")}</span>
                       <input value={editForm.name ?? ""} onChange={(e) => setEF("name", e.target.value)} />
                     </label>
                     {!isCloudMode && (
                       <label className="fld no">
-                        <span>Custom NO.</span>
+                        <span>{t("Custom NO.")}</span>
                         <input
                           value={editForm.customNo ?? ""}
                           inputMode="numeric"
                           maxLength={MAX_CUSTOM_NO}
-                          placeholder={editSerial != null ? String(editSerial) : "auto"}
+                          placeholder={editSerial != null ? String(editSerial) : t("auto")}
                           onChange={(e) => setEF("customNo", e.target.value.replace(/\D/g, "").slice(0, MAX_CUSTOM_NO))}
                         />
-                        <small>Digits only · blank uses the serial</small>
+                        <small>{t("Digits only · blank uses the serial")}</small>
                       </label>
                     )}
                   </div>
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Folder</span>
+                      <span>{t("Folder")}</span>
                       <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                     </label>
                     <label className="fld grow">
-                      <span>Platform</span>
+                      <span>{t("Platform")}</span>
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
                   {!outreachOfferDismissed && ["x.com", "linkedin.com", "telegram.org"].includes(editForm.platform ?? "") && (
                     <div className="outreach-offer hint">
-                      <span>Need outreach campaigns?</span>
-                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">Run outreach with Xreacher ↗</a>
-                      <button type="button" className="btn xs ghost" aria-label="Dismiss Xreacher offer" onClick={() => {
+                      <span>{t("Need outreach campaigns?")}</span>
+                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">{t("Run outreach with Xreacher ↗")}</a>
+                      <button type="button" className="btn xs ghost" aria-label={t("Dismiss Xreacher offer")} onClick={() => {
                         setOutreachOfferDismissed(true);
                         writeSetting("aliasmode.offers.xreacherDismissed", "1");
                       }}><Icon name="close" className="sm" /></button>
                     </div>
                   )}
                   <label className="fld">
-                    <span>Browser</span>
+                    <span>{t("Browser")}</span>
                     <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
                     <small>{editEngine === "firefox"
-                      ? "Native Firefox profile · no CDP, PDF, or Chrome extensions."
-                      : "CDP, PDF, and Chrome extensions are available."}</small>
+                      ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
+                      : t("CDP, PDF, and Chrome extensions are available.")}</small>
                   </label>
                   <label className="fld">
-                    <span>Tags <span className="muted">(comma-separated)</span></span>
-                    <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
+                    <span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span>
+                    <input value={editForm.tags ?? ""} placeholder={t("warmup, us, priority")} onChange={(e) => setEF("tags", e.target.value)} />
                   </label>
                   <div className="fld-row">
                     <label className="fld type">
-                      <span>Proxy type</span>
+                      <span>{t("Proxy type")}</span>
                       <select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
                         <option value="http">http</option>
                         <option value="https">https</option>
@@ -4453,9 +4458,9 @@ function App() {
                       </select>
                     </label>
                     <label className="fld grow">
-                      <span>Proxy</span>
-                      <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
-                      <small>Leave blank to launch on a direct connection.</small>
+                      <span>{t("Proxy")}</span>
+                      <input value={editForm.proxy ?? ""} placeholder={t("host:port:username:password")} onChange={(e) => setEF("proxy", e.target.value)} />
+                      <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>
                   </div>
                   <div className="proxy-check-actions">
@@ -4467,7 +4472,7 @@ function App() {
                       onClick={checkEditedProxy}
                     >
                       <Icon name="activity" className="sm" />
-                      {editProxyCheck.checking ? "Checking…" : "Check proxy"}
+                      {editProxyCheck.checking ? t("Checking…") : t("Check proxy")}
                     </button>
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
@@ -4481,30 +4486,30 @@ function App() {
                           onClick={refreshEditedTimezone}
                         >
                           <Icon name="activity" className="sm" />
-                          {timezoneBusy ? "Looking up timezone…" : editHasProxy ? "Set timezone from proxy" : "Use current connection timezone"}
+                          {timezoneBusy ? t("Looking up timezone…") : editHasProxy ? t("Set timezone from proxy") : t("Use current connection timezone")}
                         </button>
                       </div>
                       <p className="hint">{editProxyChanged
-                        ? "Save proxy changes before setting the timezone."
-                        : "This action saves the timezone immediately. It applies the next time this profile opens."}</p>
+                        ? t("Save proxy changes before setting the timezone.")
+                        : t("This action saves the timezone immediately. It applies the next time this profile opens.")}</p>
                     </>
                   )}
                   <div className="fld-row">
-                    <CopyField label="Username" value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
-                    <CopyField label="Password" value={editForm.password ?? ""} onChange={(value) => setEF("password", value)} />
+                    <CopyField label={t("Username")} value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
+                    <CopyField label={t("Password")} value={editForm.password ?? ""} onChange={(value) => setEF("password", value)} />
                   </div>
                   <div className="fld-row">
-                    <CopyField label="Email" value={editForm.email ?? ""} onChange={(value) => setEF("email", value)} />
-                    <CopyField label="Email password" value={editForm.emailPassword ?? ""} onChange={(value) => setEF("emailPassword", value)} />
+                    <CopyField label={t("Email")} value={editForm.email ?? ""} onChange={(value) => setEF("email", value)} />
+                    <CopyField label={t("Email password")} value={editForm.emailPassword ?? ""} onChange={(value) => setEF("emailPassword", value)} />
                   </div>
-                  <CopyField label="2FA secret" value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
+                  <CopyField label={t("2FA secret")} value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
                   {!isCloudMode && editTotp && (
                     <div className="authrow">
-                      <span className="authlabel">Authenticator</span>
+                      <span className="authlabel">{t("Authenticator")}</span>
                       <span className="authcode">{editTotp.code.slice(0, 3)} {editTotp.code.slice(3)}</span>
-                      <span className="authsecs" title="seconds until it refreshes">{editTotp.secs}s</span>
+                      <span className="authsecs" title={t("seconds until it refreshes")}>{editTotp.secs}s</span>
                       <button className="btn xs" onClick={() => navigator.clipboard?.writeText(editTotp.code)}>
-                        <Icon name="copy" className="sm" />Copy
+                        <Icon name="copy" className="sm" />{t("Copy")}
                       </button>
                     </div>
                   )}
@@ -4517,7 +4522,7 @@ function App() {
                   />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
-                      <span>Extensions</span>
+                      <span>{t("Extensions")}</span>
                       <div className="extassign">
                         {editExtensionChoices.map((x) => (
                           <label key={x.id} className="extchk">
@@ -4529,15 +4534,15 @@ function App() {
                     </div>
                   )}
                   <p className="formnote">
-                    Cookies and locked fingerprint values are preserved. Only editable fields change.
-                    {editEngine === "chromium" && " Extensions load when the browser opens."}
+                    {t("Cookies and locked fingerprint values are preserved. Only editable fields change.")}
+                    {editEngine === "chromium" && t(" Extensions load when the browser opens.")}
                   </p>
                 </>
               )}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeEdit}>Cancel</button>
-              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
+              <button className="btn ghost" onClick={closeEdit}>{t("Cancel")}</button>
+              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? t("Saving…") : t("Save changes")}</button>
             </div>
           </div>
         </div>

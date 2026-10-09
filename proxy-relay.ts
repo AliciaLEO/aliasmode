@@ -100,12 +100,6 @@ export async function connectUpstream(
       clearTimeout(timer);
       socket.removeListener("data", onData);
       socket.removeListener("error", onError);
-      // Pause immediately: the socket is still in flowing mode from the
-      // CONNECT handshake, and any SOCKS5 handshake bytes arriving before
-      // openSocks5OverSocket attaches its own 'data' listener would be
-      // silently dropped (flowing with no listener). Pausing buffers them
-      // until the next listener resumes the flow.
-      socket.pause();
       const status = response.subarray(0, end).toString("latin1").split("\r\n")[0] ?? "";
       if (!/\s2\d\d\s/.test(status)) {
         socket.destroy();

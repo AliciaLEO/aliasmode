@@ -5,16 +5,16 @@
  * the fingerprint by hand: a fresh unique id yields a unique deterministic seed,
  * and CloakBrowser derives a coherent, unique fingerprint + UA from that seed at
  * launch (forcing a separate UA would risk UA/UA-CH desync). The operator only
- * supplies name / folder / proxy / (optional) screen; timezone is resolved from
- * the proxy's geoip by the caller. Chromium receives a deterministic launch seed;
+ * supplies name / folder / proxy / (optional) screen; the initial host timezone
+ * is saved without a network lookup. Chromium receives a deterministic launch seed;
  * Firefox receives a complete persisted Camoufox config.
  */
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
-import { createFirefoxProfileConfig } from "./firefox-config.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig } from "./firefox-config.ts";
 import { deterministicSeed, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
-import { parseStrictCustomNo, parseStrictResolution } from "./parse.ts";
+import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 
 export interface NewProfileInput {
   /** Browser identity engine. Defaults to Chromium for compatibility. */
@@ -31,6 +31,8 @@ export interface NewProfileInput {
   proxy?: { type?: string; host?: string; port?: string; user?: string; pass?: string } | null;
   /** "1920x1080" / "1920*1080"; empty → a random realistic resolution. */
   screen?: string;
+  /** Fingerprint OS override: "windows" | "macos" | "linux". Empty/omitted → host OS. */
+  platformOs?: string;
   /** Operator-chosen serial shown in the roster and the browser window title. */
   customNo?: string;
 }
@@ -73,15 +75,16 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     })();
   const engine = input.engine === undefined ? "chromium" : input.engine;
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
-    ? createFirefoxProfileConfig(selected.width, selected.height)
+    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs)
     : undefined;
   const firefoxUa = firefox?.config["navigator.userAgent"];
   const firefoxScreenWidth = firefox?.config["screen.width"];
   const firefoxScreenHeight = firefox?.config["screen.height"];
   const firefoxTimezone = firefox?.config.timezone;
 
-  return {
+  return completeProfileFingerprint({
     id,
     engine,
     ...(firefox ? { firefox } : {}),
@@ -100,12 +103,13 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     // ...but the platform must be pinned, or a blank UA means no
     // --fingerprint-platform flag and the browser inherits whatever host it
     // happens to run on — a silent identity change on a move between boxes.
-    platformOs: engine === "firefox" ? "windows" : hostPlatformOs(),
-    timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : "", // Firefox saves a host timezone in its persisted config
+    // An explicit operator choice wins; otherwise fall back to the host OS.
+    platformOs,
+    timezone: typeof firefoxTimezone === "string" ? firefoxTimezone : Intl.DateTimeFormat().resolvedOptions().timeZone,
     screenWidth: typeof firefoxScreenWidth === "number" ? firefoxScreenWidth : selected.width,
     screenHeight: typeof firefoxScreenHeight === "number" ? firefoxScreenHeight : selected.height,
     fingerprintSeed: deterministicSeed(id),
     cookies: [],
     seeded: false,
-  };
+  });
 }

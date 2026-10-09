@@ -5,20 +5,21 @@ import { join } from "node:path";
 import { ScriptLibrary, ScriptSupervisor, resolveScriptRunner, verifyScriptRuntime, type ScriptExecution } from "./scripts.ts";
 import { handleUiRequest } from "./ui.ts";
 import { CloudClient } from "./cloud-client.ts";
+import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function root() { const dir = mkdtempSync(join(tmpdir(), "aliasmode-scripts-")); roots.push(dir); return dir; }
 const input = { name: "Visit", description: "Example", language: "javascript" as const, source: "export default async () => {};" };
 
-function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; cloud?: any; firefoxOwner?: any; realExecute?: boolean } = {}) {
+function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; profileIds?: string[]; admission?: LifecycleAdmissionController; close?: (id: string) => Promise<void>; cloud?: any; firefoxOwner?: any; realExecute?: boolean } = {}) {
   const directory = root();
   const events: string[] = [];
   const launch = (id: string) => options.firefoxOwner
     ? { ws: `firefox://127.0.0.1:9000/${options.firefoxOwner.generation}`, debugPort: 9000, engine: "firefox", firefoxOwner: options.firefoxOwner }
     : { ws: `ws://test/${id}`, debugPort: 9000 };
   const launches = new Map((options.active ?? []).map((id) => [id, launch(id)]));
-  const profiles = ["a", "b", "c"].map((id) => ({ id, name: id, group: "", platform: "", username: `user-${id}`, password: `test-password-${id}`, twofa: "" }));
+  const profiles = (options.profileIds ?? ["a", "b", "c"]).map((id) => ({ id, name: id, group: "", platform: "", username: `user-${id}`, password: `test-password-${id}`, twofa: "" }));
   const library = new ScriptLibrary(directory, !!options.cloud, options.cloud);
   const supervisor = new ScriptSupervisor({
     root: directory, library, ...(options.realExecute ? {} : { execute }),
@@ -26,9 +27,9 @@ function harness(execute: ScriptExecution = async () => {}, options: { active?: 
     launcher: {
       certifiedActive: async (id: string) => launches.has(id),
       start: async (id: string) => { events.push(`open:${id}`); const value = launch(id); launches.set(id, value); return { ws: value.ws, port: 9000 }; },
-      stop: async (id: string) => { events.push(`close:${id}`); launches.delete(id); return true; },
+      stop: async (id: string) => { await options.close?.(id); events.push(`close:${id}`); launches.delete(id); return true; },
     } as any,
-    admission: { run: async (_: unknown, work: () => Promise<unknown>) => work() } as any,
+    admission: options.admission ?? { run: async (_: unknown, work: () => Promise<unknown>) => work() } as any,
     cloudConnection: options.cloud,
   });
   return { library, supervisor, events, directory, launches };
@@ -97,13 +98,144 @@ test("runs only selected profiles sequentially and closes only job-opened browse
   const calls: any[] = [];
   const h = harness(async (request) => { calls.push(request.input); }, { active: ["a"] });
   const script = await h.library.save(input);
-  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: { url: "https://example.test" }, useCredentials: false });
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: { url: "https://example.test" }, useCredentials: false, concurrency: 1 });
   await h.supervisor.settled();
   expect(calls.map((call) => call.profile.id)).toEqual(["a", "b"]);
   expect(calls.every((call) => call.credentials === null)).toBe(true);
   expect(h.events).toEqual(["open:b", "close:b"]);
   expect(h.launches.has("a")).toBe(true);
   expect(h.supervisor.status()?.profiles.map((p) => p.status)).toEqual(["succeeded", "succeeded"]);
+});
+
+async function until(check: () => boolean) {
+  const deadline = Date.now() + 1000;
+  while (!check() && Date.now() < deadline) await Bun.sleep(1);
+  expect(check()).toBe(true);
+}
+
+for (const concurrency of [undefined, 1, 30, 100]) {
+  test(`parallel runs respect concurrency ${concurrency ?? "default 10"} and refill individual slots`, async () => {
+    const profileIds = Array.from({ length: 30 }, (_, i) => `profile-${i}`);
+    const waiting = new Map<string, () => void>();
+    const called: string[] = [];
+    let peak = 0;
+    const h = harness(async ({ input: data, signal }) => {
+      called.push(data.profile.id);
+      await new Promise<void>((resolve) => {
+        waiting.set(data.profile.id, resolve);
+        peak = Math.max(peak, waiting.size);
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      waiting.delete(data.profile.id);
+    }, { profileIds, admission: new LifecycleAdmissionController() });
+    const script = await h.library.save(input);
+    h.supervisor.start({ scriptId: script.id, profileIds: [...profileIds, profileIds[0]!], inputs: {}, useCredentials: false, concurrency });
+    const limit = Math.min(concurrency ?? 10, profileIds.length);
+    try {
+      await until(() => waiting.size === limit);
+      expect(called).toHaveLength(limit);
+      if (limit < profileIds.length) {
+        waiting.get(profileIds[0]!)!();
+        await until(() => called.length === limit + 1);
+        expect(waiting.size).toBe(limit);
+        expect(h.events).toContain(`close:${profileIds[0]}`);
+      }
+      while (h.supervisor.status()?.status !== "finished") {
+        for (const finish of waiting.values()) finish();
+        await Bun.sleep(1);
+      }
+      expect(peak).toBe(limit);
+      expect(called).toHaveLength(30);
+      expect(new Set(called).size).toBe(30);
+      expect(h.supervisor.status()?.profiles.every((p) => p.status === "succeeded")).toBe(true);
+      expect(h.launches.size).toBe(0);
+    } finally { await h.supervisor.stop(); }
+  });
+}
+
+test("parallel slots remain occupied until browser cleanup finishes, and failures refill slots", async () => {
+  let finishClose!: () => void;
+  const close = new Promise<void>((resolve) => { finishClose = resolve; });
+  const waiting = new Map<string, () => void>();
+  const h = harness(async ({ input: data, signal }) => {
+    if (data.profile.id === "a") throw new Error("script failed");
+    await new Promise<void>((resolve) => {
+      waiting.set(data.profile.id, resolve);
+      signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+  }, { close: async (id) => { if (id === "a") await close; } });
+  const script = await h.library.save(input);
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b", "c"], inputs: {}, useCredentials: false, concurrency: 2 });
+  try {
+    await until(() => waiting.has("b") && h.supervisor.status()?.profiles[0]?.status === "failed");
+    expect(h.events).toEqual(["open:a", "open:b"]);
+    expect(h.supervisor.status()?.profiles[2]?.status).toBe("queued");
+    finishClose();
+    await until(() => waiting.has("c"));
+    for (const finish of waiting.values()) finish();
+    await h.supervisor.settled();
+    expect(h.supervisor.status()?.profiles.map((p) => p.status)).toEqual(["failed", "succeeded", "succeeded"]);
+  } finally { finishClose(); await h.supervisor.stop(); }
+});
+
+for (const action of ["stop", "shutdown"] as const) {
+  test(`${action} waits for all parallel runners and cleanup, cancels queued profiles, and preserves existing browsers`, async () => {
+    const started: string[] = [];
+    let finish!: () => void;
+    const release = new Promise<void>((resolve) => { finish = resolve; });
+    const h = harness(async ({ input: data, signal, logFd }) => {
+      started.push(data.profile.id);
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      await release;
+      writeFileSync(logFd, `stopped:${data.profile.id}\n`);
+      h.events.push(`terminated:${data.profile.id}`);
+    }, { active: ["a"] });
+    const script = await h.library.save(input);
+    h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b", "c"], inputs: {}, useCredentials: false, concurrency: 2 });
+    try {
+      await until(() => started.length === 2);
+      let done = false;
+      const stopping = h.supervisor[action]().then(() => { done = true; });
+      await Bun.sleep(1);
+      expect(done).toBe(false);
+      expect(h.supervisor.status()?.status).not.toBe("finished");
+      expect(h.events).toEqual(["open:b"]);
+      finish();
+      await stopping;
+      expect(h.events).toContain("close:b");
+      expect(h.events.indexOf("terminated:b")).toBeLessThan(h.events.indexOf("close:b"));
+      expect(h.launches.has("a")).toBe(true);
+      expect(h.events).not.toContain("open:c");
+      expect(h.supervisor.status()?.profiles.map((p) => p.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
+    } finally { finish(); await h.supervisor.stop(); }
+  });
+}
+
+test("Stop removes parallel browser opens waiting for lifecycle admission", async () => {
+  const admission = new LifecycleAdmissionController({ limit: 1 });
+  let release!: () => void;
+  const blocker = admission.run({ kind: "start" }, () => new Promise<void>((resolve) => { release = resolve; }));
+  const h = harness(undefined, { admission });
+  const script = await h.library.save(input);
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b", "c"], inputs: {}, useCredentials: false });
+  try {
+    await until(() => admission.stats().queued === 3);
+    const stopping = h.supervisor.stop();
+    await until(() => admission.stats().queued === 0);
+    await stopping;
+    expect(h.events).toEqual([]);
+    expect(h.supervisor.status()?.profiles.every((p) => p.status === "cancelled")).toBe(true);
+  } finally { release(); await blocker; await h.supervisor.stop(); }
+});
+
+test("invalid parallel limits fail before creating a run", async () => {
+  const h = harness();
+  const script = await h.library.save(input);
+  for (const concurrency of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "10", null]) {
+    expect(() => h.supervisor.start({ scriptId: script.id, profileIds: ["a"], inputs: {}, useCredentials: false, concurrency: concurrency as number })).toThrow("positive whole number");
+  }
+  expect(h.supervisor.status()).toBeNull();
+  expect(h.events).toEqual([]);
 });
 
 test("Firefox scripts use a private Playwright endpoint in the external runner", async () => {
@@ -204,7 +336,7 @@ test("Stop kills active work before close, cancels remaining profiles, and rejec
     await new Promise<void>((_, reject) => signal.addEventListener("abort", () => { h.events.push("terminated"); reject(new Error("stopped")); }, { once: true }));
   });
   const script = await h.library.save(input);
-  const request = { scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false };
+  const request = { scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false, concurrency: 1 };
   h.supervisor.start(request);
   await ready;
   expect(() => h.supervisor.start(request)).toThrow("already running");
@@ -217,7 +349,7 @@ test("a profile failure does not retry or skip the remaining selected profiles",
   const called: string[] = [];
   const h = harness(async ({ input: data }) => { called.push(data.profile.id); if (data.profile.id === "a") throw new Error("Script exited with code 1"); });
   const script = await h.library.save(input);
-  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false });
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false, concurrency: 1 });
   await h.supervisor.settled();
   expect(called).toEqual(["a", "b"]);
   expect(h.supervisor.status()?.profiles.map((p) => p.status)).toEqual(["failed", "succeeded"]);

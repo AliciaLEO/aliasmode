@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
 import { Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
+import { deriveFingerprintFlags } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest } from "./ui.ts";
 import { readXlsx, writeXlsx } from "./xlsx.ts";
 import { AppConfigStore } from "./app-config.ts";
@@ -55,16 +56,10 @@ function firefoxProfile(s: ProfileStore, id: string): Profile {
 }
 
 function timezoneFetch(timezones: Record<string, string>, calls?: string[][]) {
-  return async (_url: string, init: RequestInit) => {
-    const queries = (JSON.parse(String(init.body)) as Array<{ query: string }>).map((item) => item.query);
-    calls?.push(queries);
-    return {
-      async json() {
-        return queries.map((query) => timezones[query]
-          ? { query, timezone: timezones[query], status: "success" }
-          : { query, status: "fail" });
-      },
-    };
+  return async (url: string, _init: RequestInit) => {
+    calls?.push([url]);
+    const timezone = Object.values(timezones)[0];
+    return { json: async () => timezone ? { status: "success", timezone } : { status: "fail" } };
   };
 }
 
@@ -650,7 +645,7 @@ test("Local group creation keeps an empty group in the profile roster", async ()
     s,
   );
   expect(created!.status).toBe(200);
-  expect(await created!.json()).toEqual({ ok: true, name: "Empty group" });
+  expect(await created!.json()).toEqual({ ok: true, name: "Empty group", folder: { name: "Empty group", parentName: null, label: "Empty group" } });
 
   const reserved = await handleUiRequest(
     new Request("http://x/ui/api/groups/create", {
@@ -670,6 +665,23 @@ test("Local group creation keeps an empty group in the profile roster", async ()
   );
   expect((await roster!.json()).groups).toContain("Empty group");
   s.close();
+});
+
+test("Local folder routes preserve explicit parents through create, rename and move", async () => {
+  const s = store();
+  const request = (path: string, body: unknown) => handleUiRequest(new Request(`http://x/ui/api/groups/${path}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }), {} as any, s);
+  try {
+    await request("create", { name: "Facebook" });
+    const created = await request("create", { name: "Fitness", parentName: "Facebook" });
+    expect((await created!.json()).folder).toEqual({ name: "Facebook/Fitness", parentName: "Facebook", label: "Fitness" });
+    const renamed = await request("rename", { from: "Facebook/Fitness", to: "Health" });
+    expect((await renamed!.json()).folder.name).toBe("Facebook/Health");
+    expect((await request("move", { name: "Facebook", parentName: "Facebook/Health" }))!.status).toBe(400);
+    const moved = await request("move", { name: "Facebook/Health", parentName: null });
+    expect((await moved!.json()).folder).toEqual({ name: "Health", parentName: null, label: "Health" });
+  } finally { s.close(); }
 });
 
 test("move route reassigns selected profiles' group", async () => {
@@ -1351,7 +1363,8 @@ test("an explicit timezone action updates a Local proxy timezone", async () => {
   );
   expect(res!.status).toBe(200);
   expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London" });
-  expect(calls).toEqual([["1.2.3.4"]]);
+  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
+  expect(s.getProfile("k1d0cd11")!.locale).toBe("en-GB");
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
   s.close();
 });
@@ -1373,9 +1386,86 @@ test("an explicit timezone action updates Firefox configuration", async () => {
   expect(res!.status).toBe(200);
   expect(s.getProfile("firefox-timezone")!).toMatchObject({
     timezone: "Europe/London",
-    firefox: { config: { timezone: "Europe/London" } },
+    locale: "en-GB",
+    firefox: { config: { timezone: "Europe/London", "navigator.language": "en-GB", "locale:all": "en-GB, en" } },
   });
   s.close();
+});
+
+test("explicit connection timezone lookup supports system VPNs in both engines", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const s = store();
+    const profile = engine === "firefox" ? firefoxProfile(s, "vpn-profile") : { ...s.getProfile("k1d0cd11")!, id: "vpn-profile" };
+    profile.proxy = null;
+    profile.timezone = "UTC";
+    s.upsertProfile(profile);
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles/vpn-profile/timezone", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }), {} as any, s, null, { timezoneFetch: async (_url, init) => {
+      expect(init).not.toHaveProperty("proxy");
+      return { json: async () => ({ status: "success", timezone: "America/Toronto" }) };
+    } });
+    expect(response!.status).toBe(200);
+    expect(await response!.json()).toMatchObject({ ok: true, timezone: "America/Toronto" });
+    const saved = s.getProfile(profile.id)!;
+    expect(saved.timezone).toBe("America/Toronto");
+    expect(saved.fingerprintSeed).toBe(profile.fingerprintSeed);
+    expect(saved.cookies).toEqual(profile.cookies);
+    if (engine === "firefox") expect(saved.firefox!.config.timezone).toBe(saved.timezone);
+    s.close();
+  }
+});
+
+test("timezone lookup does not treat a quarantined proxy as a direct connection", async () => {
+  const s = store();
+  const profile = s.getProfile("k1d0cd11")!;
+  profile.proxy = null;
+  profile.proxyError = "Invalid proxy port";
+  s.upsertProfile(profile);
+  let calls = 0;
+  const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: async () => {
+    calls++;
+    return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+  } });
+  expect(response!.status).toBe(400);
+  expect(calls).toBe(0);
+  expect(s.getProfile(profile.id)).toEqual(profile);
+  s.close();
+});
+
+test("failed timezone lookups report failure without changing the saved identity", async () => {
+  const s = store();
+  const before = s.getProfile("k1d0cd11")!;
+  before.timezone = "Europe/Paris";
+  s.upsertProfile(before);
+  const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: async () => { throw new Error("offline"); } });
+  expect(response!.status).toBe(502);
+  expect(await response!.json()).toMatchObject({ ok: false, error: expect.any(String) });
+  expect(s.getProfile(before.id)).toEqual(before);
+  s.close();
+});
+
+test("timezone lookup cannot overwrite a changed connection or unrelated edits", async () => {
+  for (const changeProxy of [false, true]) {
+    const s = store();
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+    }), {} as any, s, null, { timezoneFetch: async () => {
+      const updated = s.getProfile("k1d0cd11")!;
+      updated.name = "edited while lookup was pending";
+      if (changeProxy) updated.proxy = null;
+      s.upsertProfile(updated);
+      return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+    } });
+    expect(response!.status).toBe(changeProxy ? 409 : 200);
+    expect(s.getProfile("k1d0cd11")!.name).toBe("edited while lookup was pending");
+    expect(s.getProfile("k1d0cd11")!.timezone).toBe(changeProxy ? "" : "Europe/Paris");
+    s.close();
+  }
 });
 
 test("legacy remote proxy edits preserve stored timezone without a lookup", async () => {
@@ -1616,21 +1706,91 @@ test("extension deletion cannot mutate the persona of an open profile", async ()
   s.close();
 });
 
-test("local edits are stored while the profile browser is open and apply next launch", async () => {
+test("open Local and Cloud profiles allow account edits but reject fingerprint changes", async () => {
+  for (const cloud of [false, true]) {
+    const s = store();
+    s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
+    const options = cloud ? { cloudBrowser: {
+      canEditLive: () => true,
+      commitLiveEdit: async (profile: Profile) => { s.upsertProfile(profile); return true; },
+    } as any } : {};
+    for (const set of [{ resolution: "1366x768" }, { platformOs: "macos" }, { timezone: "Europe/Paris" }, { locale: "fr-FR" }]) {
+      const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ set }),
+      }), {} as any, s, null, options);
+      expect(res!.status).toBe(409);
+    }
+    const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ set: { name: "Renamed", resolution: "1680x1050", platformOs: "windows", timezone: "" } }),
+    }), {} as any, s, null, options);
+    expect(res!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")).toMatchObject({ name: "Renamed", screenWidth: 1680, screenHeight: 1050 });
+    expect(s.getLaunch("k1d0cd11")).not.toBeNull();
+    s.close();
+  }
+});
+
+test("closed fingerprint edits persist and preserve the rest of the identity", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const s = store();
+    const id = engine === "firefox" ? "firefox-edit" : "k1d0cd11";
+    if (engine === "firefox") s.upsertProfile(firefoxProfile(s, id));
+    const before = s.getProfile(id)!;
+    const calls: string[][] = [];
+    for (const timezone of ["Europe/Paris", ""]) {
+      const set = { timezone, proxy: "next-proxy.example:8080", ...(engine === "chromium" ? { platformOs: "macos", resolution: "1920x1080" } : {}) };
+      const res = await handleUiRequest(new Request(`http://x/ui/api/profiles/${id}/update`, {
+        method: "POST", body: JSON.stringify({ set }),
+      }), {} as any, s, null, { timezoneFetch: timezoneFetch({}, calls) });
+      expect(res!.status).toBe(200);
+      const saved = s.getProfile(id)!;
+      expect(saved.timezone).toBe(timezone);
+      expect(saved.locale).toBe(before.locale);
+      expect(saved.cookies).toEqual(before.cookies);
+      expect(saved.fingerprintSeed).toBe(before.fingerprintSeed);
+      expect(saved.ua).toBe(before.ua);
+      if (engine === "firefox") {
+        const { timezone: _timezone, ...config } = before.firefox!.config;
+        expect(saved.firefox!.config).toEqual({ ...config, ...(timezone ? { timezone } : {}) });
+      } else {
+        expect(saved).toMatchObject({ platformOs: "macos", screenWidth: 1920, screenHeight: 1080 });
+        const flags = deriveFingerprintFlags(saved);
+        expect(flags).toContain("--fingerprint-platform=macos");
+        expect(flags).toContain("--fingerprint-screen-width=1920");
+        expect(flags.filter((flag) => flag.startsWith("--fingerprint-timezone="))).toEqual(timezone ? [`--fingerprint-timezone=${timezone}`] : []);
+      }
+      const detail = await handleUiRequest(new Request(`http://x/ui/api/profiles/${id}`), {} as any, s);
+      expect((await detail!.json()).profile.timezone).toBe(timezone);
+    }
+    expect(calls).toEqual([]);
+    s.close();
+  }
+});
+
+test("Firefox rejects OS edits and invalid timezone edits leave the profile unchanged", async () => {
+  const s = store();
+  s.upsertProfile(firefoxProfile(s, "firefox-edit"));
+  const before = s.getProfile("firefox-edit");
+  for (const set of [{ platformOs: "macos" }, { timezone: "Europe/Not_A_Zone" }]) {
+    const res = await handleUiRequest(new Request("http://x/ui/api/profiles/firefox-edit/update", {
+      method: "POST", body: JSON.stringify({ set }),
+    }), {} as any, s);
+    expect((await res!.json()).ok).toBe(false);
+    expect(s.getProfile("firefox-edit")).toEqual(before);
+  }
+  s.close();
+});
+
+test("timezone lookup refuses an open profile before making a request", async () => {
   const s = store();
   s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
-  const res = await handleUiRequest(
-    new Request("http://x/ui/api/profiles/k1d0cd11/update", {
-      method: "POST",
-      body: JSON.stringify({ set: { resolution: "1366x768" } }),
-    }),
-    {} as any,
-    s,
-  );
-  expect(res!.status).toBe(200);
-  // The running browser is untouched; the stored fields drive the NEXT launch.
-  expect([s.getProfile("k1d0cd11")!.screenWidth, s.getProfile("k1d0cd11")!.screenHeight]).toEqual([1366, 768]);
-  expect(s.getLaunch("k1d0cd11")).not.toBeNull();
+  const calls: string[][] = [];
+  const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/timezone", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+  }), {} as any, s, null, { timezoneFetch: timezoneFetch({}, calls) });
+  expect(res!.status).toBe(409);
+  expect(calls).toEqual([]);
   s.close();
 });
 
@@ -1781,7 +1941,7 @@ test("create (local mode) does not look up a proxy timezone", async () => {
   const body = await res!.json();
   expect(body.ok).toBe(true);
   expect(calls).toEqual([]);
-  expect(s.getProfile(body.id)!.timezone).toBe("");
+  expect(s.getProfile(body.id)!.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   s.close();
 });
 
@@ -2809,6 +2969,67 @@ test("Cloud workspace API combines team state and forwards grants", async () => 
   expect(calls).toEqual([{ folderName: "Sales", accountId: "account1", permission: "view" }]);
   s.close();
 });
+test("Cloud workspace forwards hierarchy and direct profile grants without local writes", async () => {
+  const s = store();
+  const calls: unknown[] = [];
+  const forward = (method: string) => async (...args: unknown[]) => { calls.push([method, ...args]); return { ok: true }; };
+  const client = { createFolder: forward("create"), moveFolder: forward("move"), setProfileGrant: forward("grant"), removeProfileGrant: forward("remove") };
+  const before = s.listFolders();
+  try {
+    for (const body of [
+      { action: "create-folder", name: "Fitness", parentName: "Facebook" },
+      { action: "move-folder", name: "Facebook/Fitness", parentName: null },
+      { action: "profile-grant", profileId: "p1", accountId: "member", permission: "edit" },
+      { action: "remove-profile-grant", profileId: "p1", accountId: "member" },
+    ]) {
+      const response = await handleUiRequest(new Request("http://x/ui/api/cloud-workspace", {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+      }), {} as any, s, null, { cloudConnection: { client } as unknown as CloudConnectionRuntime });
+      expect(response!.status).toBe(200);
+    }
+    expect(calls).toEqual([["create", "Fitness", "Facebook"], ["move", "Facebook/Fitness", null], ["grant", "p1", "member", "edit"], ["remove", "p1", "member"]]);
+    expect(s.listFolders()).toEqual(before);
+  } finally { s.close(); }
+});
+
+test("Cloud workspace API forwards member password resets", async () => {
+  const s = store();
+  const resets: string[] = [];
+  const client = {
+    async sendMemberPasswordReset(accountId: string) { resets.push(accountId); return { ok: true }; },
+  };
+  const response = await handleUiRequest(new Request("http://x/ui/api/cloud-workspace", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "reset-password", accountId: "account1" }),
+  }), {} as any, s, null, { cloudConnection: { client } as unknown as CloudConnectionRuntime });
+  expect(response!.status).toBe(200);
+  expect(resets).toEqual(["account1"]);
+  s.close();
+});
+
+test("Cloud forgot password stays neutral when Auth throttles repeat emails", async () => {
+  const s = store();
+  const requested: string[] = [];
+  let failure: Error | null = null;
+  const cloudAuth = {
+    async acquireTransition() { return { generation: 0, release() {} }; },
+    isTransitionCurrent() { return true; },
+    async requestPasswordReset(email: string) { requested.push(email); if (failure) throw failure; },
+  } as unknown as CloudAuthRuntime;
+  const request = () => handleUiRequest(new Request("http://x/ui/api/cloud-auth/forgot-password", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email: "member@example.com" }),
+  }), {} as any, s, null, { cloudAuth });
+
+  expect((await request())!.status).toBe(200);
+  failure = new SupabaseAuthRequestError("too many", { kind: "http", status: 429, retryable: true });
+  expect(await (await request())!.json()).toEqual({ ok: true });
+  failure = new SupabaseAuthRequestError("down", { kind: "http", status: 500, retryable: true });
+  expect((await request())!.status).not.toBe(200);
+  expect(requested).toEqual(["member@example.com", "member@example.com", "member@example.com"]);
+  s.close();
+});
+
 test("Cloud workspace API forwards folder deletion and preserves Cloud conflicts", async () => {
   const s = store();
   const deleted: string[] = [];
@@ -4227,6 +4448,28 @@ test("Cloud profile open on this device is edited live through the local cache",
   s.close();
 });
 
+test("Cloud live proxy edits leave a legacy locale absent until confirmed close", async () => {
+  const s = store();
+  try {
+    s.recordLaunch({ profileId: "k1d0cd11", pid: 1, debugPort: 9412, ws: "ws://x", startedAt: 123 });
+    (s as any).db.query("UPDATE profiles SET locale = '' WHERE id = ?").run("k1d0cd11");
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ set: { proxy: "new-proxy.example:8080" } }),
+    }), {} as any, s, null, {
+      cloudBrowser: {
+        canEditLive: () => true,
+        commitLiveEdit: async (profile: Profile) => { s.upsertProfile(profile); return true; },
+      } as any,
+      timezoneFetch: async () => ({ json: async () => ({ status: "success", timezone: "Europe/Paris", countryCode: "FR" }) }),
+    });
+    expect(response!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")!.locale).toBeUndefined();
+    s.clearLaunch("k1d0cd11");
+    expect(s.getProfile("k1d0cd11")!.locale).toBe("fr-FR");
+  } finally { s.close(); }
+});
+
 test("Cloud live edit rejects a save that loses the close race", async () => {
   const s = store();
   const root = mkdtempSync(join(tmpdir(), "aliasmode-ui-cloud-live-edit-close-race-"));
@@ -4421,6 +4664,42 @@ test("Cloud restore-session route reports the restored version and refusals", as
   expect(refused!.status).toBe(409);
   expect(await refused!.json()).toMatchObject({ ok: false });
   expect(asked).toEqual(["k1d0cd11", "k1d0cd11"]);
+  s.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("shell-language round-trips through the server and rejects invalid tags", async () => {
+  const s = store();
+  const root = mkdtempSync(join(tmpdir(), "shell-lang-"));
+  const paths = { root } as any;
+  const call = (req: Request) => handleUiRequest(req, {} as any, s, null, { paths });
+
+  // Default is English when nothing is stored.
+  let res = await call(new Request("http://x/ui/api/shell-language"));
+  expect(res!.status).toBe(200);
+  expect(await res!.json()).toEqual({ language: "en-US" });
+
+  // Store Chinese, read it back.
+  res = await call(new Request("http://x/ui/api/shell-language", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language: "zh-CN" }),
+  }));
+  expect(await res!.json()).toMatchObject({ ok: true, language: "zh-CN" });
+  res = await call(new Request("http://x/ui/api/shell-language"));
+  expect(await res!.json()).toEqual({ language: "zh-CN" });
+  expect(existsSync(join(root, "shell.json"))).toBe(true);
+
+  // Invalid tags fall back to English instead of being stored.
+  res = await call(new Request("http://x/ui/api/shell-language", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language: "../../etc/passwd" }),
+  }));
+  expect(await res!.json()).toMatchObject({ ok: true, language: "en-US" });
+  res = await call(new Request("http://x/ui/api/shell-language"));
+  expect(await res!.json()).toEqual({ language: "en-US" });
+
   s.close();
   rmSync(root, { recursive: true, force: true });
 });

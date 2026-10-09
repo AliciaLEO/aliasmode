@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const app = readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8").replaceAll("\r\n", "\n");
+const proxyOffer = readFileSync(join(import.meta.dir, "web", "proxy-offer.tsx"), "utf8");
 const styles = readFileSync(join(import.meta.dir, "web", "styles.css"), "utf8").replaceAll("\r\n", "\n");
 const logo = readFileSync(join(import.meta.dir, "web", "alias-loop.svg"), "utf8").replaceAll("\r\n", "\n");
 const notice = readFileSync(join(import.meta.dir, "NOTICE"), "utf8");
@@ -28,13 +29,13 @@ test("dashboard renders the approved Alias Loop logo and it survives dark mode",
 });
 
 test("dashboard exposes account settings and confirms mode switching", () => {
-  expect(app).toContain('aria-label="Open Account and Settings"');
+  expect(app).toContain('aria-label={t("Open Account and Settings")}');
   expect(app).toContain("<ModeSwitchConfirmation");
   expect(app).toContain("Cloud profiles will not appear until you switch back");
   expect(app).toContain("does not upload them to Cloud automatically");
   expect(app).toContain("Accept and continue to Cloud");
   expect(app).not.toContain(">Stay Local</button>");
-  expect(app).toContain('Switch to {isCloudMode ? "Local" : "Cloud"}');
+  expect(app).toContain('t("Switch to {target}", { target: isCloudMode ? t("Local") : t("Cloud") })');
   expect(app).toContain('invoke("restart_after_mode_change")');
 });
 
@@ -74,7 +75,7 @@ test("dashboard shows the durable result in its banner and Updates panel", () =>
   expect(app).toContain('invoke("last_update_result")');
   expect(app).toContain('setDesktopUpdateResult(parseDesktopUpdateResult(value))');
   expect(app).toContain('className={`update-banner update-result ${desktopUpdateResultSummary.tone}`}');
-  expect(app).toContain('aria-label="Dismiss last update result"');
+  expect(app).toContain('aria-label={t("Dismiss last update result")}');
   expect(app).toContain('className={`update-last-result ${desktopUpdateResultSummary.tone}`}');
   expect(app).toContain('{desktopUpdateResultSummary.title}');
   expect(app).toContain('{desktopUpdateResultSummary.detail}');
@@ -111,7 +112,7 @@ test("Account settings offers fenced Cloud sign-out and clears account state", (
   expect(app).toContain("generation !== authGeneration.current");
 
   const account = app.slice(
-    app.indexOf('<h2 className="sect-title">Account information</h2>'),
+    app.indexOf('<h2 className="sect-title">{t("Account information")}</h2>'),
     app.indexOf('className="settings-card remote-mcp-settings"'),
   );
   expect(account).toContain('{authErr && <p className="modal-err" role="alert">{authErr}</p>}');
@@ -127,17 +128,17 @@ test("Account settings prepares and protects one app-owned Remote MCP connector"
   expect(app).toContain('createCloudConnector()');
   expect(app).toContain('fetchCloudConnector(stored.connectorId)');
   expect(app).toContain('storeDesktopRemoteMcpCredential({ version: 1, state: "disabled" })');
-  expect(app).toContain('>Remote MCP</h2>');
-  expect(app).toContain('>MCP server URL</span>');
-  expect(app).toContain('>Access key</span>');
+  expect(app).toContain('{t("Remote MCP")}</h2>');
+  expect(app).toContain('{t("MCP server URL")}</span>');
+  expect(app).toContain('{t("Access key")}</span>');
   expect(app).toContain('remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"');
-  expect(app).toContain('>Connect Claude.ai or ChatGPT</strong>');
-  expect(app).toContain('Paste the MCP server URL and select Connect.');
-  expect(app).toContain('Sign into AliasMode and select Allow.');
-  expect(app).toContain('Claude.ai and ChatGPT use OAuth and do not need the access key.');
+  expect(app).toContain('{t("Connect Claude.ai or ChatGPT")}</strong>');
+  expect(app).toContain('t("Paste the MCP server URL and select Connect.")');
+  expect(app).toContain('t("Sign into AliasMode and select Allow.")');
+  expect(app).toContain('t("Claude.ai and ChatGPT use OAuth and do not need the access key.")');
   expect(app).not.toContain('web connectors are not supported');
-  expect(app).toContain('Regenerate key');
-  expect(app).toContain('Enable Remote MCP');
+  expect(app).toContain('t("Regenerate key")');
+  expect(app).toContain('t("Enable Remote MCP")');
   expect(app).toContain('if (remoteMcpAccountExit.current) return Promise.resolve();');
   expect(app).toContain('await prepareRemoteMcpForAccountExit(true);\n      await forgetCloudSession();');
   expect(app).toContain('if (view !== "settings" || !isCloudMode || !workspaceReady || restartRequired) return;');
@@ -199,26 +200,25 @@ test("New and Edit profile dialogs check proxies and show only relevant provider
   const createModal = app.slice(app.indexOf("{showCreate && ("), app.indexOf("{editId && ("));
   const editModal = app.slice(app.indexOf("{editId && ("), app.indexOf("{showBulk && ("));
 
-  expect(app).toContain('const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";');
-  expect(app).toContain("Need a proxy? Get one from our recommended provider.");
-  expect(app).toContain("This proxy is unstable. View recommended replacements.");
+  expect(proxyOffer).toContain('const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";');
+  expect(proxyOffer).toContain("replacement ?");
   expect(app).not.toContain("outreachproxy.com");
   expect(app).not.toContain("OutreachProxy");
   for (const modal of [createModal, editModal]) {
     expect(modal).toContain("Check proxy");
     expect(modal).toContain("<ProxyCheckFeedback");
   }
-  expect(app).toContain('target="_blank"');
-  expect(app).toContain('rel="noreferrer"');
-  expect(app).toContain('aria-label="View recommended proxies at NobleProxy (opens externally)"');
+  expect(proxyOffer).toContain('target="_blank"');
+  expect(proxyOffer).toContain('rel="noreferrer"');
+  expect(proxyOffer).toContain('aria-label="View recommended proxies at NobleProxy (opens externally)"');
   expect(app).toContain('if (k === "proxyType" || k === "host" || k === "port" || k === "user" || k === "pass")');
-  expect(app).toContain('if (k === "proxy" || k === "proxyType") resetEditProxyCheck();');
+  expect(app).toContain('if (k === "proxy" || k === "proxyType") {\n      resetEditProxyCheck();');
   expect(app).toContain("generation === createProxyCheckGeneration.current");
   expect(app).toContain("generation === editProxyCheckGeneration.current");
   expect(app).toContain("createProxyCheckGeneration.current++");
   expect(app).toContain("editProxyCheckGeneration.current++");
   expect(createModal).toContain('className="btn primary" disabled={creating}');
-  expect(editModal).toContain('className="btn primary" disabled={editSaving || editLoading}');
+  expect(editModal).toContain('className="btn primary" disabled={editSaving || editLoading || timezoneBusy}');
   for (const tone of ["working", "unstable", "failed", "unavailable"]) {
     expect(styles).toContain(`.proxy-check-result.${tone}`);
   }
@@ -252,15 +252,26 @@ test("dashboard selects browser for new profiles", () => {
   expect(app).toContain('selectedProfilesSupportChromeExtensions');
 });
 
+test("both engines offer OS choices at creation and only Chromium allows later OS edits", () => {
+  const settings = app.slice(app.indexOf("function FingerprintSettings("), app.indexOf("function FingerprintSettings(") + 3300);
+  expect(settings).not.toMatch(/\{engine === "chromium" && \(\s*<label className="fld">\s*<span>Operating system/);
+  for (const os of ["windows", "macos", "linux"]) expect(settings).toContain(`<option value="${os}">`);
+  expect(settings).toContain("{onPlatformOsChange ? (");
+  expect(settings).toContain("onPlatformOsChange(event.target.value)");
+  expect(settings).toContain('readOnly tabIndex={-1} className="ro"');
+  expect(app).toContain('platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)}');
+  expect(app).toContain('platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}');
+});
+
 test("Local timezone lookup is explicit", () => {
-  expect(app).toContain("refreshProfileTimezone(editId)");
+  expect(app).toContain("refreshProfileTimezone(id)");
   expect(app).toContain("Set timezone from proxy");
   expect(app).not.toContain("Automatic · from proxy");
 });
 
 test("running profile rows expose Bring to front in Local and Cloud mode", () => {
-  expect(app).toContain('data-tip="Bring to front"');
-  expect(app).toContain('aria-label="Bring this browser window to the front"');
+  expect(app).toContain('data-tip={t("Bring to front")}');
+  expect(app).toContain('aria-label={t("Bring this browser window to the front")}');
   expect(app).toContain('onClick={() => act(p.id, raiseProfile)}');
   // The running-row branch must stay mode-agnostic: raising a window is a local
   // action on a browser this machine already opened, in Cloud mode too.
@@ -270,7 +281,7 @@ test("running profile rows expose Bring to front in Local and Cloud mode", () =>
 });
 
 test("running profile rows expose live cookie addition in every mode", () => {
-  expect(app).toContain('data-tip="Add cookie"');
+  expect(app).toContain('data-tip={t("Add cookie")}');
   expect(app).toContain('aria-label={`Add a cookie to ${p.name}`}');
   expect(app).toContain('onClick={() => openCookie(p)}');
 
@@ -279,10 +290,10 @@ test("running profile rows expose live cookie addition in every mode", () => {
   expect(runningBranch).not.toContain("isCloudMode");
 
   expect(app).toContain('aria-labelledby="add-cookie-title"');
-  expect(app).toContain('<span>Name</span>');
-  expect(app).toContain('<span>Value</span>');
-  expect(app).toContain('<span>Domain</span>');
-  expect(app).toContain('<span>Path</span>');
+  expect(app).toContain('<span>{t("Name")}</span>');
+  expect(app).toContain('<span>{t("Value")}</span>');
+  expect(app).toContain('<span>{t("Domain")}</span>');
+  expect(app).toContain('<span>{t("Path")}</span>');
   expect(app).toContain('type="password" autoComplete="off"');
   expect(app).toContain("await addProfileCookie(cookieProfile.id, cookieForm);");
   expect(app).toContain('flash("Cookie added to the open browser.");');
@@ -294,7 +305,7 @@ test("Cloud rows expose Edit and Convert device only with effective Edit permiss
   // locked by ANOTHER session stay read-only.
   expect(app).toContain('(p.permission === "edit" && !p.lockedBy)');
   expect(app).toContain('(!isCloudMode || p.permission === "edit")');
-  expect(app).toContain('title="Convert this mobile persona to a desktop device"');
+  expect(app).toContain('title={t("Convert this mobile persona to a desktop device")}');
   expect(app).toContain("setEditExpectedVersion(p.expectedVersion ?? null)");
   expect(app).toContain("isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined");
   expect(app).toContain("!isCloudMode && editTotp");
@@ -336,9 +347,22 @@ test("Cloud workspace loads independently and refreshes with Account Settings", 
   expect(app).toContain("await Promise.all([load(), loadTeam()]);");
 });
 
+test("manual Cloud refresh reloads folder access as well as profiles", async () => {
+  const source = app.slice(app.indexOf("  const refreshRoster ="), app.indexOf("  useEffect(() => {", app.indexOf("  const refreshRoster =")));
+  for (const cloud of [false, true]) {
+    const calls: string[] = [];
+    const refresh = new Function("load", "loadTeam", "isCloudMode", "setRefreshing", `${source}\nreturn refreshRoster;`)(
+      async () => { calls.push("profiles"); }, async () => { calls.push("team"); }, cloud, () => {},
+    );
+    await refresh();
+    expect(calls).toEqual(cloud ? ["profiles", "team"] : ["profiles"]);
+  }
+});
+
 test("sidebar creates persistent groups and gates Cloud deletion to workspace managers", () => {
   expect(app).toContain("const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);");
-  expect(app).toContain("team?.folders.filter((folder) => !folder.archivedAt).map((folder) => folder.name)");
+  expect(app).toContain("team?.folders.filter((folder) => !folder.archivedAt) ?? []");
+  expect(app).toContain("folderTree(folders)");
   expect(app).toContain("const canManageCloudFolders = cloudAuth?.workspace?.role === \"owner\" || cloudAuth?.workspace?.role === \"admin\";");
   expect(app).toContain('className="newgroup"');
   expect(app).toContain('{isCloudMode ? "New folder" : "New group"}');
@@ -349,15 +373,15 @@ test("sidebar creates persistent groups and gates Cloud deletion to workspace ma
 });
 
 test("Team settings guide invitations and explicit folder access", () => {
-  for (const heading of ["Members", "Invitations", "Join another workspace"]) expect(app).toContain(`>${heading}</h3>`);
+  for (const heading of ["Members", "Invitations", "Join another workspace"]) expect(app).toContain(`{t("${heading}")}</h3>`);
   // The "Your folder access" self-listing was removed on request: an owner or
   // admin already sees every folder, so the list said nothing.
   expect(app).not.toContain("Your folder access");
-  expect(app).toContain("New members see no folders until you grant access here.");
-  expect(app).toContain("It works only for the email you signed in with.");
-  expect(app).toContain('invite.expiresAt <= Date.now() ? "Expired" : "Pending"');
-  expect(app).toContain('aria-label={`${folder.name} access for ${member.email}`}');
-  expect(app).toContain('aria-label={`Resend invitation to ${invite.email}`}');
+  expect(app).toContain('t("Invitations go to that exact verified email. New members see no folders until you grant access here.")');
+  expect(app).toContain('t("Paste the code from your invitation email. It works only for the email you signed in with.")');
+  expect(app).toContain('t(statusCode === "expired" ? "Expired" : "Pending")');
+  expect(app).toContain('t("{folder} access for {email}", { folder: folder.name, email: member.email })');
+  expect(app).toContain('t("Resend invitation to {email}", { email: invite.email })');
   expect(app).toContain('if (ok) setTeamEmail("")');
   expect(app).toContain('className="notice" role="status"');
   expect(styles).toContain(".team-tag");
@@ -373,7 +397,7 @@ test("Admin invitations are read-only for Admin viewers", () => {
 test("Cloud Delete requires edit permission for every selected profile", () => {
   expect(app).toContain('const selectedEditable = [...selected].every((id) => profiles.find((profile) => profile.id === id)?.permission === "edit");');
   expect(app).toContain('{(!isCloudMode || selectedEditable) && (');
-  expect(app).toContain('data-tip={appMode?.legacyRemote ? "Delete selected profiles" : "Move selected profiles to Trash"} disabled={!selected.size || deleting} onClick={deleteSelected}');
+  expect(app).toContain('data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting} onClick={deleteSelected}');
   expect(app).toContain('setSelected(new Set([...(r.locked ?? []), ...(r.failed ?? [])]));');
 });
 
@@ -412,8 +436,8 @@ test("the roster is sortable, pageable and its columns are selectable", () => {
   // A running browser is the row an operator acts on next, so it outranks the sort column.
   expect(app).toContain("if (a.running !== b.running) return a.running ? -1 : 1;");
   expect(app).toContain('aria-sort={sort.key === key ? (sort.dir === 1 ? "ascending" : "descending") : "none"}');
-  expect(app).toContain('aria-label="Choose visible columns"');
-  expect(app).toContain('aria-label="Rows per page"');
+  expect(app).toContain('aria-label={t("Choose visible columns")}');
+  expect(app).toContain('aria-label={t("Rows per page")}');
   expect(app).toContain("const PAGE_SIZES = [25, 50, 100, 200];");
   expect(app).toContain('const DEFAULT_HIDDEN_COLUMNS: ColumnKey[] = ["tags"];');
   // Layout preferences are a convenience; disabled storage must not break the roster.
@@ -421,14 +445,59 @@ test("the roster is sortable, pageable and its columns are selectable", () => {
   expect(app).toContain("catch { /* private mode / disabled storage */ }");
 });
 
+test("tag search shares the existing folder, number, name, and ID filter", () => {
+  const source = app.slice(app.indexOf("    const matched = profiles.filter"), app.indexOf("    // Running profiles stay on top"));
+  const filter = new Function("profiles", "group", "q", "numbering", "sharedOnly = false", "sharedProfiles = []", "selectedScope = new Set([group])", `${source}\nreturn matched;`);
+  const profiles = [
+    { id: "alpha", name: "First", group: "A", tags: ["Warm", "Priority"] },
+    { id: "beta", name: "Second", group: "B", tags: ["warm"] },
+    { id: "gamma", name: "Third", group: "A", tags: [] },
+    { id: "delta", name: "Fourth", group: "A" },
+  ];
+  const numbering = new Map(profiles.map((p, i) => [p.id, { value: String(i + 101) }]));
+  const ids = (q: string, group = "all") => filter(profiles, group, q, numbering).map((p: { id: string }) => p.id);
+  expect(ids("WARM")).toEqual(["alpha", "beta"]);
+  expect(ids("warm", "A")).toEqual(["alpha"]);
+  expect(ids("rior")).toEqual(["alpha"]);
+  expect(ids("GAMMA")).toEqual(["gamma"]);
+  expect(ids("FOURTH")).toEqual(["delta"]);
+  expect(ids("103")).toEqual(["gamma"]);
+  expect(ids("missing")).toEqual([]);
+  expect(ids("", "A")).toEqual(["alpha", "gamma", "delta"]);
+  expect(filter(profiles, "Parent", "warm", numbering, false, [], new Set(["Parent", "A"])).map((p: { id: string }) => p.id)).toEqual(["alpha"]);
+  expect(filter(profiles, "all", "warm", numbering, true, [profiles[1]]).map((p: { id: string }) => p.id)).toEqual(["beta"]);
+
+  const tagged = Array.from({ length: 60 }, (_, i) => ({ id: `p-${i}`, name: "Profile", group: "A", tags: ["Warm"] }));
+  const matched = filter(tagged, "A", "warm", new Map());
+  const selection = rosterSelection(matched, new Set(["other-folder"]), "A", "warm");
+  selection.selectAllFiltered();
+  expect(selection.selected().size).toBe(60);
+  expect(selection.selected().has("other-folder")).toBe(false);
+  const page = rosterSelection(matched, new Set(), "A", "warm", 1);
+  page.toggleAll();
+  expect(page.selected().size).toBe(10);
+});
+
+test("import entry points keep permission checks and collapsed labels", () => {
+  const sidebar = app.slice(app.indexOf('className="newrow"'), app.indexOf('className="sidenav"'));
+  const empty = app.slice(app.indexOf('className="empty-actions"'), app.indexOf('className="empty-actions"') + 450);
+  for (const entry of [sidebar, empty]) {
+    expect(entry).toContain("onClick={openBulk}");
+    expect(entry).toContain("disabled={!canEditCloud}");
+  }
+  expect(sidebar).toContain('aria-label="Import profiles"');
+  expect(sidebar).toContain('<span className="navlabel">Import profiles</span>');
+});
+
 function rosterSelection(filtered: { id: string }[], selected = new Set<string>(), group = "all", q = "", page = 0) {
   const source = app.slice(app.indexOf("  const allVisibleSelected ="), app.indexOf("  const moveSelected ="));
-  const controls = new Function("visibleProfiles", "filtered", "selected", "group", "q", "setSelected", `${source}
+  const controls = new Function("visibleProfiles", "filtered", "selected", "group", "q", "setSelected", "t", `${source}
     return { toggleAll, selectAllFiltered, allFilteredSelected, selectedOutsideFilter, selectionScope };`)(
     filtered.slice(page * 50, (page + 1) * 50), filtered, selected, group, q,
     (next: Set<string> | ((current: Set<string>) => Set<string>)) => {
       selected = typeof next === "function" ? next(selected) : next;
     },
+    (s: string) => s,
   );
   return { ...controls, selected: () => selected };
 }
@@ -467,8 +536,8 @@ test("selection controls expose scope selection and clearing without changing ex
   expect(app).not.toContain("allVisibleSelected && !allFilteredSelected");
   expect(app).toContain("disabled={deleting || allFilteredSelected}");
   expect(app).toContain("onClick={selectAllFiltered}");
-  expect(app).toContain('aria-label="Clear selection" onClick={() => setSelected(new Set())}');
-  expect(app).toContain('q ? "matching profiles" : "profiles"');
+  expect(app).toContain('aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}');
+  expect(app).toContain('q ? t("matching profiles") : t("profiles")');
   expect(app).toContain('group === "all" ? "" :');
   expect(app).toContain("const ids = [...selected];");
   expect(app).toContain("await exportProfiles(ids, format, (progress) => setExportProgress(progress));");
@@ -525,9 +594,9 @@ test("header controls stay reachable and dismissable", () => {
   expect(app).toContain("function useDismiss<T extends HTMLElement>(open: boolean, close: () => void)");
   expect(app).toContain('document.addEventListener("mousedown", onDown);');
   expect(app).toContain('if (event.key === "Escape") onClose.current();');
-  expect(app).toContain('aria-label="Refresh profiles"');
+  expect(app).toContain('aria-label={t("Refresh profiles")}');
   expect(app).toContain('aria-label="Automation node freshness"');
-  expect(app).toContain('aria-label="Open Account and Settings"');
+  expect(app).toContain('aria-label={t("Open Account and Settings")}');
 });
 
 test("the dashboard typeface is bundled, never fetched at runtime", () => {
@@ -569,7 +638,7 @@ test("New profile and Edit are instant dialogs; Scripts, Settings and Extensions
   expect(app).toContain("editFetchId.current = id;");
   expect(app).toContain("if (editFetchId.current !== id) return;");
   expect(app).toContain('<p className="hint" role="status">Loading profile…</p>');
-  expect(app).toContain("disabled={editSaving || editLoading}");
+  expect(app).toContain("disabled={editSaving || editLoading || timezoneBusy}");
 });
 
 test("running profiles are editable, live-synced in Cloud mode", () => {
@@ -633,7 +702,7 @@ test("every row action sits beside Open in the Action cell — nothing hides on 
   expect(app).toContain('aria-label={`Open ${p.name}`}');
   expect(app).toContain('aria-label={`Close ${p.name}`}');
   expect(app).toContain('aria-label={`Edit ${p.name}`}');
-  expect(app).toContain('aria-label="Copy current 2FA code"');
+  expect(app).toContain('aria-label={t("Copy current 2FA code")}');
   // The hover-revealed overlay is gone: it overlapped the profile name.
   expect(app).not.toContain("rowquick");
   expect(styles).not.toContain(".rowquick");
@@ -672,17 +741,18 @@ test("small windows keep navigation and dialogs keep typed input", () => {
 test("import offers one source at a time and counts what was pasted", () => {
   // Two full-height inputs stacked left it ambiguous which one Import would read.
   expect(app).toContain('const [bulkSource, setBulkSource] = useState<"file" | "paste">("file");');
-  expect(app).toContain('aria-label="Import source"');
+  expect(app).toContain('aria-label={t("Import source")}');
   // Switching sources clears the other, so a stale value cannot be submitted.
   expect(app).toContain('onClick={() => { setBulkSource("file"); setBulkText(""); }}');
   expect(app).toContain('onClick={() => { setBulkSource("paste"); setBulkFiles([]); }}');
   // Every AdsPower record opens with its own id= line, so this count is exact.
   expect(app).toContain("function countPastedRecords(text: string): number {");
   expect(app).toContain('return (text.match(/^id=/gm) ?? []).length;');
-  expect(app).toContain("} detected — each one starts with its own id= line.");
+  expect(app).toContain('t("1 record detected — each one starts with its own id= line.")');
+  expect(app).toContain('t("{count} records detected — each one starts with its own id= line.", { count: pastedRecordCount })');
   // Chosen files are individually removable rather than a comma-joined string.
   expect(app).toContain('aria-label={`Remove ${file.name}`}');
-  expect(app).toContain(">Clear all</button>");
+  expect(app).toContain(">{t(\"Clear all\")}</button>");
   expect(styles).toContain(".filechip");
   expect(styles).toContain(".segmented");
 });
@@ -771,7 +841,9 @@ test("the sidebar offers extension management in both modes and a support link",
   // assignments and load matching local uploads at launch.
   expect(app).toContain('<Icon name="puzzle" /><span className="navlabel">Manage extensions</span>');
   const nav = app.slice(app.indexOf('className="sidenav"'), app.indexOf("</nav>"));
-  expect(nav).not.toContain("isCloudMode");
+  expect(nav).not.toMatch(/\{isCloudMode\s*&&\s*\(?\s*<button[^>]*setView\("extensions"\)/);
+  const extensions = nav.slice(nav.lastIndexOf("<button", nav.indexOf('data-tip="Manage extensions"')), nav.indexOf("</button>", nav.indexOf('data-tip="Manage extensions"')));
+  expect(extensions).not.toContain("isCloudMode");
   // Small support entry that forwards to the Telegram group.
   expect(app).toContain('href="https://t.me/aliasmode"');
   expect(app).toContain('<Icon name="help" /><span className="navlabel">Support</span>');
@@ -830,8 +902,8 @@ test("extensions can be assigned to Cloud profiles and groups without losing mis
 
 test("Settings carries the Remote MCP connector card in Cloud mode", () => {
   expect(app).toContain('className="settings-card remote-mcp-settings"');
-  expect(app).toContain("MCP server URL");
-  expect(app).toContain('aria-label="Remote MCP access key"');
+  expect(app).toContain('t("MCP server URL")');
+  expect(app).toContain('t("Remote MCP access key")');
   // Leaving the account (sign out, forget session) always revokes and forgets
   // the connector so a stale key cannot outlive the session that made it.
   expect(app).toContain("prepareRemoteMcpForAccountExit");

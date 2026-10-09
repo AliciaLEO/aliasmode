@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { folderScope, type FolderInfo } from "../folders.ts";
+import { ProxyProviderOffer } from "./proxy-offer.tsx";
 import type {
   ProxyCheckView,
   ProxyPreview,
@@ -167,8 +169,9 @@ function AffectedProfiles({ profiles }: { profiles: ProxyCheckView["profiles"] }
   </details>;
 }
 
-export function ProxiesPage({ groups, onChanged, active }: {
+export function ProxiesPage({ groups, folders = [], onChanged, active }: {
   groups: string[];
+  folders?: FolderInfo[];
   onChanged: () => Promise<void>;
   active: boolean;
 }) {
@@ -305,7 +308,9 @@ export function ProxiesPage({ groups, onChanged, active }: {
         <label className={`folder-chip${all ? " selected" : ""}`}><input type="checkbox" checked={all} disabled={!!busy} onChange={(event) => { setAll(event.target.checked); setSelectedGroups([]); invalidateScope(); }} />All folders</label>
         {folderNames.map((name) => <label className={`folder-chip${!all && selectedGroups.includes(name) ? " selected" : ""}`} key={name}>
           <input type="checkbox" checked={all || selectedGroups.includes(name)} disabled={!!busy} onChange={(event) => {
-            setSelectedGroups(all ? folderNames.filter((group) => group !== name) : event.target.checked ? [...selectedGroups, name] : selectedGroups.filter((group) => group !== name));
+            const branch = new Set([name, ...folderScope(folders, name)]);
+            const current = all ? folderNames : selectedGroups;
+            setSelectedGroups(event.target.checked ? [...new Set([...current, ...branch])] : current.filter((group) => !branch.has(group)));
             setAll(false); invalidateScope();
           }} />{name || "Ungrouped"}
         </label>)}
@@ -342,6 +347,7 @@ export function ProxiesPage({ groups, onChanged, active }: {
             </tr>)}</tbody></table></div>
           {!checkResults.total && <p className="tools-hint tools-result-empty">No problems found in the completed checks.</p>}
           <Pager {...checkResults} onPage={setCheckPage} />
+          {!busy && checks.some((row) => row.status === "failed" || row.status === "unstable") && <ProxyProviderOffer replacement />}
         </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↗</span><h3>{busy === "check" ? "Checking selected folders…" : "Ready when you are"}</h3><p>Choose your folders above, then check which proxies are alive, dead, or need attention.</p></div>}
       </section>
       <p className="tools-footnote">Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.</p>

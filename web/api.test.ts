@@ -506,14 +506,14 @@ test("scripts require the desktop capability and send it on every request", asyn
   try {
     expect(scriptsDesktopAvailable()).toBe(true);
     await fetchScripts();
-    await startScriptRun({ scriptId: "script-1", profileIds: ["profile-1"], inputs: {}, useCredentials: false });
+    await startScriptRun({ scriptId: "script-1", profileIds: ["profile-1"], inputs: {}, useCredentials: false, concurrency: 30 });
     expect(calls).toEqual(["script_capability", "script_capability"]);
     expect(requests.map((request) => request.path)).toEqual(["/ui/api/scripts", "/ui/api/scripts/run"]);
     expect(requests.map((request) => new Headers(request.init?.headers).get("Authorization"))).toEqual([
       "Bearer test-capability", "Bearer test-capability",
     ]);
     expect(JSON.parse(String(requests[1]?.init?.body))).toEqual({
-      scriptId: "script-1", profileIds: ["profile-1"], inputs: {}, useCredentials: false,
+      scriptId: "script-1", profileIds: ["profile-1"], inputs: {}, useCredentials: false, concurrency: 30,
     });
   } finally {
     if (originalWindow === undefined) Reflect.deleteProperty(globalThis, "window");

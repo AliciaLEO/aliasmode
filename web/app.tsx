@@ -4,9 +4,12 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
+import { ProxyProviderOffer } from "./proxy-offer.tsx";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
+import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
+import { folderTree, folderScope, folderGrantPermission, type FolderInfo } from "../folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
   describeDesktopUpdateResult,
@@ -42,6 +45,7 @@ import {
   signOutCloud,
   signUpCloud,
   restoreCloudSession,
+  requestCloudPasswordReset,
   resendCloudSignUp,
   selectAppMode,
   fetchProfiles,
@@ -78,6 +82,7 @@ import {
   updateFromFile,
   createGroup,
   renameGroup,
+  moveGroup,
   deleteGroup,
   fetchTotp,
 } from "./api.ts";
@@ -682,30 +687,43 @@ function CopyField({ label, value, onChange }: { label: string; value: string; o
 const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["User agent", "Automatic"],
   ["Browser version", "Automatic · latest installed"],
-  ["Operating system", "Automatic"],
   ["GPU", "Automatic"],
   ["CPU", "Automatic"],
   ["RAM", "Automatic"],
   ["Fingerprint seed", "Automatic · unique and stable"],
-  ["Timezone", "Stored · set from proxy on request"],
+  ["Timezone", "Stored · set from connection on request"],
   ["Canvas / WebGL / audio", "Automatic"],
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
+
+const FINGERPRINT_EDIT_WARNING = "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?";
 
 function FingerprintSettings({
   engine,
   screen,
   onScreenChange,
+  platformOs,
+  onPlatformOsChange,
+  timezone,
+  onTimezoneChange,
+  disabled = false,
+  onUndo,
 }: {
   engine: "chromium" | "firefox";
   screen: string;
   onScreenChange: (value: string) => void;
+  platformOs: string;
+  onPlatformOsChange?: (value: string) => void;
+  timezone?: string;
+  onTimezoneChange?: (value: string) => void;
+  disabled?: boolean;
+  onUndo?: () => void;
 }) {
   return (
     <details className="fingerprint-settings">
       <summary>
         <span>Fingerprint settings</span>
-        <span className="automatic-badge">Automatic</span>
+        <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
@@ -715,18 +733,44 @@ function FingerprintSettings({
         {engine === "chromium" && (
           <label className="fld">
             <span>Screen</span>
-            <input value={screen} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
+            <input value={screen} disabled={disabled} placeholder="Automatic · e.g. 1920x1080" onChange={(event) => onScreenChange(event.target.value)} />
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.map(([label, value]) => (
+        <label className="fld">
+          <span>Operating system</span>
+          {onPlatformOsChange ? (
+            <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
+              <option value="">Automatic — match this computer</option>
+              <option value="windows">Windows</option>
+              <option value="macos">macOS</option>
+              <option value="linux">Linux</option>
+            </select>
+          ) : (
+            <input value={{ windows: "Windows", macos: "macOS", linux: "Linux" }[platformOs] ?? "Automatic"} readOnly tabIndex={-1} className="ro" />
+          )}
+        </label>
+        {onTimezoneChange && (
+          <label className="fld">
+            <span>Timezone</span>
+            <input value={timezone ?? ""} disabled={disabled} placeholder="Automatic · e.g. Europe/Paris" onChange={(event) => onTimezoneChange(event.target.value)} />
+          </label>
+        )}
+        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
           <label className="fld" key={label}>
             <span>{label}</span>
             <input value={value} readOnly tabIndex={-1} className="ro" />
           </label>
         ))}
-        <div className="hint">{engine === "firefox"
-          ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-          : "CloakBrowser keeps the locked values coordinated. Screen is the only fingerprint setting you can override."}</div>
+        <div className="hint">{disabled
+          ? "Close the browser before changing fingerprint settings."
+          : onTimezoneChange
+            ? engine === "firefox"
+              ? "Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated."
+              : "Screen, operating system, and timezone can be changed. CloakBrowser controls the other values."
+            : engine === "firefox"
+              ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
+              : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
+        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>Undo fingerprint edits</button>}
       </div>
     </details>
   );
@@ -915,11 +959,10 @@ async function storeDesktopCloudCredentials(
 
 const BLANK_FORM = {
   name: "", engine: "chromium" as "chromium" | "firefox", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
-  screen: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
+  screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
 const BLANK_COOKIE_FORM = { name: "", value: "", domain: "", path: "/" };
-const PROXY_PROVIDER_URL = "https://nobleproxy.com/t/aliasmode";
 
 type ProxyCheckUiState = {
   checking: boolean;
@@ -928,24 +971,6 @@ type ProxyCheckUiState = {
 };
 
 const EMPTY_PROXY_CHECK: ProxyCheckUiState = { checking: false, result: null, error: null };
-
-function ProxyProviderOffer({ replacement = false }: { replacement?: boolean }) {
-  return (
-    <div className="proxy-referral">
-      <strong>{replacement
-        ? "This proxy is unstable. View recommended replacements."
-        : "Need a proxy? Get one from our recommended provider."}</strong>
-      <a
-        href={PROXY_PROVIDER_URL}
-        target="_blank"
-        rel="noreferrer"
-        aria-label="View recommended proxies at NobleProxy (opens externally)"
-      >
-        {replacement ? "View replacements" : "View provider"} <span aria-hidden="true">↗</span>
-      </a>
-    </div>
-  );
-}
 
 function proxyFailureMessage(reason: ProxyCheckResult["reason"]): string {
   if (reason === "authentication_failed") return "Proxy authentication failed.";
@@ -1014,9 +1039,37 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   );
 }
 
+function GrantControl({ label, direct, inherited, busy, onChange }: {
+  label: string; direct: string; inherited: string; busy: boolean; onChange: (permission: string) => void;
+}) {
+  const { t } = useTranslation();
+  const effective = direct === "edit" || inherited === "edit" ? "edit" : direct || inherited;
+  const permissionLabel = (value: string) => value === "edit" ? t("Edit") : value === "view" ? t("View") : t("No access");
+  return <label className="grant-control">
+    <span>{label}</span>
+    <select className="select" aria-label={label} value={direct} disabled={busy} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{inherited ? t("Inherited: {permission}", { permission: permissionLabel(inherited) }) : t("No access")}</option>
+      <option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option>
+    </select>
+    <small>{t("Effective access: {permission}", { permission: permissionLabel(effective) })}{inherited && direct ? ` · ${t("Inherited: {permission}", { permission: permissionLabel(inherited) })}` : ""}</small>
+  </label>;
+}
+
 function App() {
+  const { t, language, setLanguage } = useTranslation();
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
   const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);
+  const [localFolders, setLocalFolders] = useState<FolderInfo[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [sharedOnly, setSharedOnly] = useState(false);
+  const [folderMenu, setFolderMenu] = useState<string | null>(null);
+  const [folderMenuPosition, setFolderMenuPosition] = useState({ left: 0, top: 0 });
+  const [newFolderParent, setNewFolderParent] = useState<string | null>(null);
+  const [movingFolder, setMovingFolder] = useState<string | null>(null);
+  const [folderParent, setFolderParent] = useState("");
+  const [folderMoveBusy, setFolderMoveBusy] = useState(false);
+  const [folderMoveErr, setFolderMoveErr] = useState<string | null>(null);
+  const [accessTarget, setAccessTarget] = useState<{ kind: "folder" | "profile"; id: string; name: string; folder: string } | null>(null);
   const [appMode, setAppMode] = useState<AppModeConfig | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeErr, setModeErr] = useState<string | null>(null);
@@ -1112,6 +1165,11 @@ function App() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editExpectedVersion, setEditExpectedVersion] = useState<number | null>(null);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
+  const [editInitialFingerprint, setEditInitialFingerprint] = useState<Record<string, string>>({});
+  const [editInitialProxy, setEditInitialProxy] = useState({ proxy: "", proxyType: "http" });
+  const [outreachOfferDismissed, setOutreachOfferDismissed] = useState(() => {
+    try { return localStorage.getItem("aliasmode.offers.xreacherDismissed") === "1"; } catch { return false; }
+  });
   const [editProxyCheck, setEditProxyCheck] = useState<ProxyCheckUiState>(EMPTY_PROXY_CHECK);
   const editProxyCheckGeneration = useRef(0);
   const [editErr, setEditErr] = useState<string | null>(null);
@@ -1177,7 +1235,7 @@ function App() {
   const isCloudMode = appMode?.mode === "cloud";
   const workspaceReady = appMode?.mode === "local" || (isCloudMode && cloudWorkspaceReady(cloudAuth));
   const canEditCloud = !isCloudMode || cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin" ||
-    profiles.some((profile) => profile.permission === "edit") || team?.folders.some((folder) => folder.permission === "edit") === true;
+    team?.folders.some((folder) => folder.permission === "edit" && !folder.archivedAt) === true;
   const canManageCloudFolders = cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin";
 
   // The app resolves "system" itself and stamps the result on <html>, so the
@@ -1207,6 +1265,8 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (accessTarget) { if (!teamBusy) setAccessTarget(null); return; }
+      if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
       if (pendingMode) { if (!modeBusy) setPendingMode(null); return; }
       if (logView || logErr) { setLogView(null); setLogErr(null); return; }
       if (showUpdate) { setShowUpdate(false); return; }
@@ -1232,6 +1292,7 @@ function App() {
       const roster = await fetchProfiles();
       setProfiles(roster.profiles);
       setRegisteredGroups(roster.groups);
+      setLocalFolders(roster.folders ?? []);
       setHealthSources(roster.healthSources);
       setConnErr(null); // manages connectivity only; never clears an action error
     } catch (e) {
@@ -1728,6 +1789,25 @@ function App() {
     }
   };
 
+  const forgotPassword = async () => {
+    const email = authEmail.trim();
+    setAuthErr(null);
+    setAuthNotice(null);
+    if (!email) {
+      setAuthErr("Enter your email, then select Forgot password.");
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      await requestCloudPasswordReset(email);
+      setAuthNotice(`If ${email} has an account, a password reset link is on its way. Check spam too.`);
+    } catch (error) {
+      setAuthErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const acceptInvitation = async () => {
     setAuthBusy(true);
     setAuthErr(null);
@@ -1929,15 +2009,20 @@ function App() {
     return () => { alive = false; clearInterval(timer); };
   }, [editId, isCloudMode]);
 
-  const groups = useMemo(
-    () => ["all", ...Array.from(new Set([
-      ...profiles.map((profile) => profile.group).filter(Boolean),
-      ...(isCloudMode
-        ? (team?.folders.filter((folder) => !folder.archivedAt).map((folder) => folder.name) ?? [])
-        : registeredGroups),
-    ])).sort()],
-    [profiles, isCloudMode, registeredGroups, team?.folders],
-  );
+  const folders = useMemo<FolderInfo[]>(() => {
+    if (isCloudMode) return team?.folders.filter((folder) => !folder.archivedAt) ?? [];
+    const metadata = new Map(localFolders.map((folder) => [folder.name, folder]));
+    return [...new Set([...registeredGroups, ...profiles.map((profile) => profile.group).filter(Boolean)])]
+      .map((name) => metadata.get(name) ?? { name });
+  }, [isCloudMode, team?.folders, localFolders, registeredGroups, profiles]);
+  const tree = useMemo(() => folderTree(folders), [folders]);
+  const groups = useMemo(() => ["all", ...tree.map((folder) => folder.name)], [tree]);
+  const selectedScope = useMemo(() => folderScope(folders, group), [folders, group]);
+  const sharedProfiles = useMemo(() => isCloudMode
+    ? profiles.filter((profile) => !folders.some((folder) => folder.name === profile.group)) : [], [isCloudMode, profiles, folders]);
+  const breadcrumb = tree.find((folder) => folder.name === group);
+  const selectFolder = (name: string) => { setSharedOnly(false); setGroup(name); setView("profiles"); };
+  const folderLabel = (name: string) => folders.find((folder) => folder.name === name)?.label ?? name;
 
   /**
    * Every profile's visible "No.", resolved once against the unsorted roster so
@@ -1963,14 +2048,15 @@ function App() {
 
   const filtered = useMemo(() => {
     const matched = profiles.filter((p) => {
-      if (group !== "all" && p.group !== group) return false;
+      if (sharedOnly ? !sharedProfiles.includes(p) : group !== "all" && !selectedScope.has(p.group)) return false;
       if (q) {
         const needle = q.toLowerCase();
         const no = numbering.get(p.id)?.value ?? "";
         if (
           !p.id.toLowerCase().includes(needle) &&
           !p.name.toLowerCase().includes(needle) &&
-          !no.includes(needle)
+          !no.includes(needle) &&
+          !(p.tags ?? []).some((tag) => tag.toLowerCase().includes(needle))
         ) return false;
       }
       return true;
@@ -1985,20 +2071,23 @@ function App() {
       if (left > right) return sort.dir;
       return a.id.localeCompare(b.id);
     });
-  }, [profiles, group, q, sort, numbering]);
+  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, q, sort, numbering]);
 
   const profilePageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleProfilePage = Math.min(profilePage, profilePageCount - 1);
   const visibleProfiles = filtered.slice(visibleProfilePage * pageSize, (visibleProfilePage + 1) * pageSize);
-  useEffect(() => setProfilePage(0), [q, group, pageSize]);
+  useEffect(() => setProfilePage(0), [q, group, sharedOnly, pageSize]);
 
   const editSerial = editId ? profiles.find((profile) => profile.id === editId)?.serial ?? null : null;
   const editRunning = editId ? profiles.find((profile) => profile.id === editId)?.running === true : false;
   const createHasProxy = !!(form.host.trim() || form.port.trim() || form.user.trim() || form.pass);
   const editHasProxy = !!(editForm.proxy ?? "").trim();
+  const editProxyChanged = (editForm.proxy ?? "") !== editInitialProxy.proxy ||
+    (editHasProxy && editForm.proxyType !== editInitialProxy.proxyType);
 
   const pastedRecordCount = bulkText.trim() ? countPastedRecords(bulkText) : null;
 
+  const folderMenuRef = useDismiss<HTMLSpanElement>(folderMenu !== null, () => setFolderMenu(null));
   const colsRef = useDismiss<HTMLDivElement>(colsOpen, () => setColsOpen(false));
   const nodesRef = useDismiss<HTMLDivElement>(nodesOpen, () => setNodesOpen(false));
   const exportRef = useDismiss<HTMLDivElement>(exportOpen, () => setExportOpen(false));
@@ -2027,7 +2116,7 @@ function App() {
     setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
   const refreshRoster = async () => {
     setRefreshing(true);
-    try { await load(); } finally { setRefreshing(false); }
+    try { await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]); } finally { setRefreshing(false); }
   };
   useEffect(() => {
     if (profilePage !== visibleProfilePage) setProfilePage(visibleProfilePage);
@@ -2037,16 +2126,23 @@ function App() {
   const selectedMobileCount = profiles.filter((p) => selected.has(p.id) && p.mobilePersona).length;
   const existingGroups = groups.slice(1); // drop the "all" pseudo-group
   const editableGroups = isCloudMode
-    ? (team?.folders.filter((folder) => folder.permission === "edit" && !folder.archivedAt).map((folder) => folder.name) ??
-      existingGroups.filter((name) => profiles.some((profile) => profile.group === name && profile.permission === "edit")))
+    ? existingGroups.filter((name) => team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt))
     : existingGroups;
   const selectedEditable = [...selected].every((id) => profiles.find((profile) => profile.id === id)?.permission === "edit");
   const selectedProfilesSupportChromeExtensions = [...selected].every((id) =>
     profiles.find((profile) => profile.id === id)?.engine === "chromium");
-  const countFor = (g: string) => profiles.filter((p) => p.group === g).length;
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    const byName = new Map(tree.map((folder) => [folder.name, folder]));
+    for (const profile of profiles) {
+      for (const name of [profile.group, ...(byName.get(profile.group)?.ancestors ?? [])]) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return counts;
+  }, [tree, profiles]);
+  const countFor = (g: string) => folderCounts.get(g) ?? 0;
   const canEditGroup = (name: string) => !isCloudMode ||
-    team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt) === true ||
-    profiles.some((profile) => profile.group === name && profile.permission === "edit");
+    team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt) === true;
+  const selectedMovable = !isCloudMode || [...selected].every((id) => canEditGroup(profiles.find((profile) => profile.id === id)?.group ?? ""));
   const editableDefaultGroups = groupExtensionDefaults.filter((item) => item.permission === "edit");
   const installedExtensionIds = new Set(extensions.map((item) => item.id));
   const storedGroupDefaultExts = groupExtensionDefaults.find((item) => item.name === groupDefaultName)?.extensions ?? [];
@@ -2075,7 +2171,7 @@ function App() {
   const selectedFilteredCount = filtered.filter((p) => selected.has(p.id)).length;
   const selectedOutsideFilter = selected.size - selectedFilteredCount;
   const allFilteredSelected = filtered.length > 0 && selectedFilteredCount === filtered.length && selectedOutsideFilter === 0;
-  const selectionScope = `${filtered.length.toLocaleString()} ${q ? "matching profiles" : "profiles"}${group === "all" ? "" : ` in “${group}”`}`;
+  const selectionScope = `${filtered.length.toLocaleString()} ${q ? t("matching profiles") : t("profiles")}${group === "all" ? "" : ` in “${group}”`}`;
   const selectAllFiltered = () => setSelected(new Set(filtered.map((p) => p.id)));
   const toggleAll = () =>
     setSelected((s) => {
@@ -2346,6 +2442,7 @@ function App() {
         group: form.group,
         platform: form.platform,
         screen: form.screen,
+        ...(form.platformOs ? { platformOs: form.platformOs } : {}),
         ...(isCloudMode ? {} : { customNo: form.customNo }),
         username: form.username,
         password: form.password,
@@ -2373,7 +2470,10 @@ function App() {
     setEditProxyCheck(EMPTY_PROXY_CHECK);
   };
   const setEF = (k: string, v: string) => {
-    if (k === "proxy" || k === "proxyType") resetEditProxyCheck();
+    if (k === "proxy" || k === "proxyType") {
+      resetEditProxyCheck();
+      setTimezoneBusy(false);
+    }
     setEditForm((f) => ({ ...f, [k]: v }));
   };
   // The dialog opens on the click; the detail fetch fills it in when it lands.
@@ -2384,6 +2484,7 @@ function App() {
     editFetchId.current = id;
     setEditId(id);
     setEditForm({});
+    setEditInitialFingerprint({});
     setEditExts([]);
     setEditInitialExts([]);
     setEditMobile(null);
@@ -2405,8 +2506,11 @@ function App() {
           email: p.email, emailPassword: p.emailPassword, twofa: p.twofa,
           resolution: p.resolution, tags: p.tags,
           customNo: p.customNo ?? "",
+          platformOs: p.platformOs ?? "",
           timezone: p.timezone,
         });
+        setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
+        setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
@@ -2430,6 +2534,7 @@ function App() {
     setTimezoneBusy(false);
     setEditLoading(false);
     setEditForm({});
+    setEditInitialFingerprint({});
     setEditExts([]);
     setEditInitialExts([]);
     setEditErr(null);
@@ -2468,20 +2573,29 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || !editHasProxy) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    const id = editId;
+    const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
     setEditErr(null);
     try {
-      const { timezone } = await refreshProfileTimezone(editId);
+      const { timezone } = await refreshProfileTimezone(id);
+      if (editFetchId.current !== id || generation !== editProxyCheckGeneration.current) return;
       setEditForm((form) => ({ ...form, timezone }));
+      setEditInitialFingerprint((initial) => ({ ...initial, timezone }));
+      await load();
     } catch (error) {
-      setEditErr(error instanceof Error ? error.message : String(error));
+      if (editFetchId.current === id && generation === editProxyCheckGeneration.current) setEditErr(error instanceof Error ? error.message : String(error));
     } finally {
-      setTimezoneBusy(false);
+      if (editFetchId.current === id && generation === editProxyCheckGeneration.current) setTimezoneBusy(false);
     }
   };
   const saveEdit = async () => {
     if (!editId) return;
+    const fingerprintEdits = Object.fromEntries(Object.entries(editInitialFingerprint)
+      .filter(([key, value]) => editForm[key] !== value)
+      .map(([key]) => [key, editForm[key] ?? ""]));
+    if (Object.keys(fingerprintEdits).length && !confirm(FINGERPRINT_EDIT_WARNING)) return;
     setEditSaving(true);
     setEditErr(null);
     try {
@@ -2491,7 +2605,7 @@ function App() {
         proxy: editForm.proxy ?? "", proxyType: editForm.proxyType ?? "http",
         username: editForm.username ?? "", password: editForm.password ?? "",
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
-        resolution: editForm.resolution ?? "", tags: editForm.tags ?? "",
+        tags: editForm.tags ?? "", ...fingerprintEdits,
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
@@ -2736,31 +2850,55 @@ function App() {
     setActionErr(null);
     try {
       const result = isCloudMode
-        ? await cloudWorkspaceAction("create-folder", { name })
-        : await createGroup(name);
+        ? await cloudWorkspaceAction("create-folder", { name, parentName: newFolderParent })
+        : await createGroup(name, newFolderParent);
       if (result.ok === false) {
         setActionErr(result.error || "create failed");
         return;
       }
       await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
-      setGroup(name);
+      selectFolder(result.folder?.name ?? name);
+      setCollapsedFolders((current) => new Set([...current].filter((folder) => folder !== newFolderParent)));
       setSidebarGroupName("");
       setAddingGroup(false);
     } catch (error) {
       setActionErr(error instanceof Error ? error.message : String(error));
     }
   };
-  const startRename = (g: string) => { setRenaming(g); setRenameVal(g); };
+  const startRename = (g: string) => { setRenaming(g); setRenameVal(folderLabel(g)); };
+  const remapSelectedFolder = (from: string, to: string) => {
+    if (folderScope(folders, from).has(group)) selectFolder(to + group.slice(from.length));
+  };
+  const commitFolderMove = async () => {
+    if (!movingFolder) return;
+    setFolderMoveBusy(true);
+    setFolderMoveErr(null);
+    try {
+      const result = isCloudMode
+        ? await cloudWorkspaceAction("move-folder", { name: movingFolder, parentName: folderParent || null })
+        : await moveGroup(movingFolder, folderParent || null);
+      if (result.ok === false) throw new Error(result.error || "Move failed");
+      remapSelectedFolder(movingFolder, result.folder.name);
+      setMovingFolder(null);
+      await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+    } catch (error) {
+      setFolderMoveErr(error instanceof Error ? error.message : String(error));
+    } finally { setFolderMoveBusy(false); }
+  };
+  const openAccess = (target: NonNullable<typeof accessTarget>) => {
+    setAccessTarget(target);
+    void loadTeam();
+  };
   const commitRename = async () => {
     const from = renaming, to = renameVal.trim();
     setRenaming(null);
-    if (!from || !to || to === from) return;
+    if (!from || !to || to === folderLabel(from)) return;
     setActionErr(null);
     try {
       const r = await renameGroup(from, to);
       if (r.ok === false) setActionErr(r.error || "rename failed");
       else {
-        if (group === from) setGroup(to);
+        remapSelectedFolder(from, r.folder?.name ?? to);
         await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
       }
     } catch (e) {
@@ -2861,6 +2999,7 @@ function App() {
                   <button type="button" onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView(authView === "signin" ? "signup" : "signin"); }}>
                     {authView === "signin" ? "Create an account" : "Back to sign in"}
                   </button>
+                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>Forgot password?</button>}
                 </div>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
               </>
@@ -2915,7 +3054,7 @@ function App() {
     // The Action column carries no header text: its buttons explain themselves,
     // and a floating "ACTION" label over a right-aligned cluster read as an
     // empty column. The column chooser still lists it by its registry label.
-    const label = column.key === "action" ? "" : column.key === "group" && isCloudMode ? "Folder" : column.label;
+    const label = column.key === "action" ? "" : column.key === "group" && isCloudMode ? t("Folder") : t(column.label);
     // Every column declares its width, so a wide window's extra space spreads
     // proportionally across all of them — an even layout, no dead gap.
     const style = { width: column.width } as CSSProperties;
@@ -2980,24 +3119,28 @@ function App() {
           </button>
           <button
             className="btn importbtn tip"
-            data-tip="Import from file"
+            data-tip="Import profiles"
+            aria-label="Import profiles"
             disabled={!canEditCloud}
-            title="Import profiles from TXT, CSV, JSON, or XLSX"
+            title="Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports"
             onClick={openBulk}
-          ><Icon name="fileImport" /></button>
+          ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
         </div>
 
         <nav className="sidenav" aria-label="Sections">
           <button
             type="button"
-            className={`navitem${view === "profiles" && group === "all" ? " active" : ""}`}
+            className={`navitem${view === "profiles" && group === "all" && !sharedOnly ? " active" : ""}`}
             data-tip="All profiles"
             title="All profiles"
-            onClick={() => { setView("profiles"); setGroup("all"); }}
+            onClick={() => selectFolder("all")}
           >
             <Icon name="profiles" /><span className="navlabel">All profiles</span>
             <span className="cnt">{profiles.length}</span>
           </button>
+          {isCloudMode && sharedProfiles.length > 0 && <button type="button" className={`navitem${view === "profiles" && sharedOnly ? " active" : ""}`} title={t("Shared with me")} onClick={() => { setGroup("all"); setSharedOnly(true); setView("profiles"); }}>
+            <Icon name="user" /><span className="navlabel">{t("Shared with me")}</span><span className="cnt">{sharedProfiles.length}</span>
+          </button>}
           {!appMode?.legacyRemote && <>
             <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip="Proxies" title="Proxies" onClick={() => setView("proxies")}>
               <Icon name="activity" /><span className="navlabel">Proxies</span>
@@ -3047,11 +3190,12 @@ function App() {
           {groupsOpen && <>
             <div className="folders">
             {existingGroups.length === 0 && <div className="folders-empty">No {isCloudMode ? "folders" : "groups"} yet</div>}
-            {existingGroups.map((g) => (
+            {tree.filter((folder) => !folder.ancestors.some((name) => collapsedFolders.has(name))).map(({ name: g, label, depth }) => (
               <div
                 key={g}
-                className={`folder${view === "profiles" && group === g ? " active" : ""}`}
-                onClick={() => { if (renaming !== g) { setView("profiles"); setGroup(g); } }}
+                style={{ paddingLeft: 10 + depth * 16 }}
+                className={`folder${view === "profiles" && !sharedOnly && group === g ? " active" : ""}`}
+                onClick={() => { if (renaming !== g) selectFolder(g); }}
               >
                 {renaming === g ? (
                   <input
@@ -3065,20 +3209,24 @@ function App() {
                   />
                 ) : (
                   <>
-                    <Icon name="folder" className="sm" />
-                    <span className="fname" title={g}>{g}</span>
-                    {(canEditGroup(g) || (isCloudMode && canManageCloudFolders)) && (
-                      <span className="gactions">
-                        {canEditGroup(g) && (
-                          <button title={isCloudMode ? "Rename folder" : "Rename group"} onClick={(e) => { e.stopPropagation(); startRename(g); }}>
-                            <Icon name="edit" className="sm" />
-                          </button>
-                        )}
-                        {(!isCloudMode || canManageCloudFolders) && (
-                          <button className="danger" title={isCloudMode ? "Delete folder" : "Delete group"} onClick={(e) => { e.stopPropagation(); removeGroup(g); }}>
-                            <Icon name="trash" className="sm" />
-                          </button>
-                        )}
+                    {folders.some((folder) => folder.parentName === g) ? <button className="folder-toggle" type="button" aria-label={t("Expand or collapse {folder}", { folder: g })} aria-expanded={!collapsedFolders.has(g)} onClick={(event) => {
+                      event.stopPropagation(); setCollapsedFolders((current) => { const next = new Set(current); if (next.has(g)) next.delete(g); else next.add(g); return next; });
+                    }}><Icon name={collapsedFolders.has(g) ? "chevronRight" : "chevronDown"} className="sm" /></button> : <Icon name="folder" className="sm" />}
+                    <button className="fname folder-select" title={g} onClick={() => selectFolder(g)}>{label ?? g}</button>
+                    {!appMode?.legacyRemote && (canEditGroup(g) || canManageCloudFolders) && (
+                      <span className="gactions menuwrap" ref={folderMenu === g ? folderMenuRef : undefined} onClick={(event) => event.stopPropagation()}>
+                        <button type="button" title={t("Folder actions")} aria-label={t("Actions for {folder}", { folder: g })} aria-expanded={folderMenu === g} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setFolderMenuPosition({ left: rect.right + 8, top: Math.min(rect.top, window.innerHeight - 220) }); setFolderMenu(folderMenu === g ? null : g); }}><Icon name="more" className="sm" /></button>
+                        {folderMenu === g && <span className="popover folder-menu" style={folderMenuPosition} onClick={() => setFolderMenu(null)}>
+                          {canEditGroup(g) && <>
+                            <button className="pop-item" onClick={() => { setNewFolderParent(g); setSidebarGroupName(""); setAddingGroup(true); }}><Icon name="plus" className="sm" />{t("New subfolder")}</button>
+                            <button className="pop-item" onClick={() => startRename(g)}><Icon name="edit" className="sm" />{t("Rename")}</button>
+                          </>}
+                          {(!isCloudMode || canManageCloudFolders) && <>
+                            <button className="pop-item" onClick={() => { setMovingFolder(g); setFolderParent(folders.find((folder) => folder.name === g)?.parentName ?? ""); setFolderMoveErr(null); }}><Icon name="move" className="sm" />{t("Move to…")}</button>
+                            <button className="pop-item danger" disabled={folders.some((folder) => folder.parentName === g)} onClick={() => void removeGroup(g)}><Icon name="trash" className="sm" />{t("Delete")}</button>
+                          </>}
+                          {isCloudMode && canManageCloudFolders && <button className="pop-item" onClick={() => openAccess({ kind: "folder", id: g, name: g, folder: g })}><Icon name="user" className="sm" />{t("Manage access")}</button>}
+                        </span>}
                       </span>
                     )}
                     <span className="cnt">{countFor(g)}</span>
@@ -3088,7 +3236,8 @@ function App() {
             ))}
             </div>
             {addingGroup ? (
-              <div className="newgroup">
+              <div className="newgroup" title={newFolderParent ?? undefined}>
+                {newFolderParent && <small>{t("In {folder}", { folder: folderLabel(newFolderParent) })}</small>}
                 <input
                   autoFocus
                   aria-label={isCloudMode ? "New folder name" : "New group name"}
@@ -3103,7 +3252,7 @@ function App() {
                 <button type="button" title="Cancel" onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
-              <button className="newgroup" type="button" disabled={!canEditCloud} onClick={() => setAddingGroup(true)}>
+              <button className="newgroup" type="button" disabled={!canEditCloud || appMode?.legacyRemote} onClick={() => { setNewFolderParent(null); setAddingGroup(true); }}>
                 <Icon name="plus" className="sm" />{isCloudMode ? "New folder" : "New group"}
               </button>
             )}
@@ -3155,10 +3304,10 @@ function App() {
 
       <div className="main">
       <header className="pagehead">
-        <h1>{PAGE_TITLES[view]}</h1>
+        <h1>{t(PAGE_TITLES[view])}</h1>
         {view === "profiles" && (
           <span className="pagesub">
-            {filtered.length === profiles.length ? `${profiles.length} total` : `${filtered.length} of ${profiles.length}`}
+            {filtered.length === profiles.length ? t("{count} total", { count: profiles.length }) : t("{filtered} of {total}", { filtered: filtered.length, total: profiles.length })}
           </span>
         )}
         <span className="spacer" />
@@ -3173,13 +3322,13 @@ function App() {
             <button
               type="button"
               className={`iconbtn tip${nodesOpen ? " on" : ""}`}
-              data-tip="Automation nodes"
-              aria-label="Automation node freshness"
+              data-tip={t("Automation nodes")}
+              aria-label={t("Automation node freshness")}
               onClick={() => setNodesOpen((o) => !o)}
             ><Icon name="activity" /></button>
             {nodesOpen && (
               <div className="popover below-right">
-                <div className="pop-head">Automation nodes</div>
+                <div className="pop-head">{t("Automation nodes")}</div>
                 <HealthSources sources={healthSources} />
               </div>
             )}
@@ -3188,8 +3337,8 @@ function App() {
           <button
             type="button"
             className="iconbtn tip"
-            data-tip="Refresh"
-            aria-label="Refresh profiles"
+            data-tip={t("Refresh")}
+            aria-label={t("Refresh profiles")}
             disabled={refreshing}
             onClick={() => void refreshRoster()}
           ><Icon name="refresh" /></button>
@@ -3197,17 +3346,17 @@ function App() {
             <button
               type="button"
               className={`iconbtn tip${colsOpen ? " on" : ""}`}
-              data-tip="Columns"
-              aria-label="Choose visible columns"
+              data-tip={t("Columns")}
+              aria-label={t("Choose visible columns")}
               onClick={() => setColsOpen((o) => !o)}
             ><Icon name="columns" /></button>
             {colsOpen && (
               <div className="popover below-right">
-                <div className="pop-head">Visible columns</div>
+                <div className="pop-head">{t("Visible columns")}</div>
                 {COLUMNS.map((column) => (
                   <label className="pop-item" key={column.key}>
                     <input type="checkbox" checked={columnVisible(column.key)} onChange={() => toggleColumn(column.key)} />
-                    {column.label}
+                    {t(column.label)}
                   </label>
                 ))}
               </div>
@@ -3217,8 +3366,8 @@ function App() {
           <button
             className="account-button"
             type="button"
-            aria-label="Open Account and Settings"
-            title="Account & Settings"
+            aria-label={t("Open Account and Settings")}
+            title={t("Account & Settings")}
             onClick={openAccountSettings}
           >
             <span className="avatar"><Icon name="user" /></span>
@@ -3235,7 +3384,7 @@ function App() {
         <div className="error">
           <Icon name="alert" />
           <span>{actionErr ?? connErr}</span>
-          <button className="dismiss" aria-label="Dismiss error" onClick={() => { setActionErr(null); setConnErr(null); }}>
+          <button className="dismiss" aria-label={t("Dismiss error")} onClick={() => { setActionErr(null); setConnErr(null); }}>
             <Icon name="close" className="sm" />
           </button>
         </div>
@@ -3266,7 +3415,7 @@ function App() {
           <button
             className="update-result-dismiss"
             type="button"
-            aria-label="Dismiss last update result"
+            aria-label={t("Dismiss last update result")}
             onClick={() => setDesktopUpdateResultDismissed(true)}
           >
             <Icon name="close" className="sm" />
@@ -3290,18 +3439,22 @@ function App() {
 
       {!appMode?.legacyRemote && <>
         <ProxiesPage key={`proxies:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
-          active={view === "proxies"} groups={[...(isCloudMode ? [] : [""]), ...groups.slice(1)]} onChanged={load} />
+          active={view === "proxies"} groups={[...(isCloudMode ? [] : [""]), ...groups.slice(1)]} folders={folders} onChanged={load} />
         <TrashPage key={`trash:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
-          active={view === "trash"} onChanged={load} />
+          active={view === "trash"} onChanged={load} folderTree={folders} />
       </>}
       {view === "profiles" ? (
       <div className="workspace">
+        {(breadcrumb || sharedOnly) && <nav className="folder-breadcrumb" aria-label={t("Folder path")}>
+          <button className="btn ghost xs" onClick={() => selectFolder("all")}>{t("All profiles")}</button>
+          {sharedOnly ? <span>{t("Shared with me")}</span> : [...(breadcrumb?.ancestors ?? []), group].map((name) => <span key={name}> / <button className="btn ghost xs" onClick={() => selectFolder(name)}>{folderLabel(name)}</button></span>)}
+        </nav>}
         <div className="filterbar">
           <select
             className="select group-filter"
             aria-label={isCloudMode ? "Folder filter" : "Group filter"}
             value={group}
-            onChange={(e) => setGroup(e.target.value)}
+            onChange={(e) => selectFolder(e.target.value)}
           >
             <option value="all">All {isCloudMode ? "folders" : "groups"}</option>
             {existingGroups.map((g) => <option key={g} value={g}>{g}</option>)}
@@ -3310,22 +3463,22 @@ function App() {
             <Icon name="search" className="sm" />
             <input
               className="input search"
-              placeholder="Search by No., id or name…"
-              aria-label="Search profiles"
+              placeholder={t("Search by No., id, name or tag…")}
+              aria-label={t("Search profiles")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
             />
-            {q && <button type="button" className="clear" aria-label="Clear search" onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
+            {q && <button type="button" className="clear" aria-label={t("Clear search")} onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
           </div>
         </div>
 
         {filtered.length > 0 && (
           <div className="toolbar" role="status">
             <button type="button" className="btn" disabled={deleting || allFilteredSelected} onClick={selectAllFiltered}>
-              {allFilteredSelected ? `All ${selectionScope} selected` : `Select all ${selectionScope}`}
+              {allFilteredSelected ? t("All {scope} selected", { scope: selectionScope }) : t("Select all {scope}", { scope: selectionScope })}
             </button>
-            <span className="muted">{deleting ? "Moving selected profiles…" : "Across all pages"}</span>
-            {!allFilteredSelected && selectedOutsideFilter > 0 && <span className="muted">This replaces your selection, excluding {selectedOutsideFilter} outside this view.</span>}
+            <span className="muted">{deleting ? t("Moving selected profiles…") : t("Across all pages")}</span>
+            {!allFilteredSelected && selectedOutsideFilter > 0 && <span className="muted">{t("This replaces your selection, excluding {count} outside this view.", { count: selectedOutsideFilter })}</span>}
           </div>
         )}
 
@@ -3335,14 +3488,14 @@ function App() {
         <div className="toolbar active">
           <span className="selcount">
             <Icon name="check" className="sm" />
-            {selected.size} selected
+            {t("{count} selected", { count: selected.size })}
           </span>
-          <button type="button" className="btn ghost" aria-label="Clear selection" onClick={() => setSelected(new Set())}>Clear selection</button>
-          <button className="btn primary tip" data-tip="Open selected browsers" disabled={!selected.size} onClick={openSelected}>
-            <Icon name="play" className="sm" />Open
+          <button type="button" className="btn ghost" aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button>
+          <button className="btn primary tip" data-tip={t("Open selected browsers")} disabled={!selected.size} onClick={openSelected}>
+            <Icon name="play" className="sm" />{t("Open")}
           </button>
-          <button className="btn solid-danger tip" data-tip="Close selected browsers" disabled={!selected.size} onClick={closeSelected}>
-            <Icon name="power" className="sm" />Close
+          <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
+            <Icon name="power" className="sm" />{t("Close")}
           </button>
           {(!isCloudMode || selectedEditable) && <>
           <button
@@ -3352,7 +3505,7 @@ function App() {
               setScriptRunProfiles(profiles.filter((profile) => selected.has(profile.id)));
               setScriptRunOpen(true);
             }}
-          ><Icon name="play" className="sm" />Run script</button>
+          ><Icon name="play" className="sm" />{t("Run script")}</button>
           <span className="vsep" />
           {!isCloudMode && selectedMobileCount > 0 && (
             <button className="btn warn" onClick={convertSelectedMobile}>
@@ -3361,65 +3514,65 @@ function App() {
           )}
           {/* Export and file edits work in Cloud; mobile conversion remains Local-only. */}
           <div className="menuwrap" ref={exportRef}>
-            <button className="btn tip" data-tip="Export selected profiles" disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
-              <Icon name="export" className="sm" />Export<Icon name="chevronDown" className="sm" />
+            <button className="btn tip" data-tip={t("Export selected profiles")} disabled={!selected.size || !!exportProgress} onClick={() => setExportOpen((o) => !o)}>
+              <Icon name="export" className="sm" />{t("Export")}<Icon name="chevronDown" className="sm" />
             </button>
             {exportOpen && selected.size > 0 && !exportProgress && (
               <div className="exportmenu popover below-left" onMouseLeave={() => setExportOpen(false)}>
-                <button className="pop-item" onClick={() => exportSelected("csv")}><Icon name="file" className="sm" />Export as CSV (credentials)</button>
-                <button className="pop-item" onClick={() => exportSelected("txt")}><Icon name="file" className="sm" />Export as .txt (full profile)</button>
-                <button className="pop-item" onClick={() => exportSelected("xlsx")}><Icon name="file" className="sm" />Export as Excel (full profile)</button>
+                <button className="pop-item" onClick={() => exportSelected("csv")}><Icon name="file" className="sm" />{t("Export as CSV (credentials)")}</button>
+                <button className="pop-item" onClick={() => exportSelected("txt")}><Icon name="file" className="sm" />{t("Export as .txt (full profile)")}</button>
+                <button className="pop-item" onClick={() => exportSelected("xlsx")}><Icon name="file" className="sm" />{t("Export as Excel (full profile)")}</button>
               </div>
             )}
           </div>
-          <button className="btn tip" data-tip="Export → edit → re-upload" disabled={!selected.size || !!exportProgress} onClick={openUpdate} title="Export → edit → re-upload to change credentials in bulk">
-            <Icon name="edit" className="sm" />Edit from file
+          <button className="btn tip" data-tip={t("Export → edit → re-upload")} disabled={!selected.size || !!exportProgress} onClick={openUpdate} title={t("Export → edit → re-upload to change credentials in bulk")}>
+            <Icon name="edit" className="sm" />{t("Edit from file")}
           </button>
           <span className="vsep" />
           <div className="movewrap">
             {newMode ? (
-              <input className="input" autoFocus placeholder="new group name" value={newGroup} onChange={(e) => setNewGroup(e.target.value)} />
+              <input className="input" autoFocus placeholder={t("new group name")} value={newGroup} onChange={(e) => setNewGroup(e.target.value)} />
             ) : (
               <select
                 className="select move-group"
-                aria-label="Move to group"
+                aria-label={t("Move to group")}
                 title={moveTarget || "Choose group"}
-                disabled={!selected.size}
+                disabled={!selected.size || !selectedMovable}
                 value={moveTarget}
                 onChange={(e) => (e.target.value === "__new__" ? setNewMode(true) : setMoveTarget(e.target.value))}
               >
-                <option value="">Move to…</option>
+                <option value="">{t("Move to…")}</option>
                 {editableGroups.map((g) => (
                   <option key={g} value={g}>{g}</option>
                 ))}
-                <option value="__new__">+ new group…</option>
+                <option value="__new__">{t("+ new group…")}</option>
               </select>
             )}
             {newMode && (
-              <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>cancel</button>
+              <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>{t("cancel")}</button>
             )}
-            <button className="btn accent" disabled={!selected.size || (newMode ? !newGroup.trim() : !moveTarget)} onClick={moveSelected}>
-              <Icon name="move" className="sm" />Move
+            <button className="btn accent" disabled={!selected.size || !selectedMovable || (newMode ? !newGroup.trim() : !moveTarget)} onClick={moveSelected}>
+              <Icon name="move" className="sm" />{t("Move")}
             </button>
           </div>
           {!isCloudMode && extensions.length > 0 && selectedProfilesSupportChromeExtensions && (
             <>
               <span className="vsep" />
               <div className="extctl">
-                <span className="extctl-lbl"><Icon name="puzzle" className="sm" />Extension</span>
-                <select className="select extctl-sel" aria-label="Extension for bulk assignment" disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
-                  <option value="">choose…</option>
+                <span className="extctl-lbl"><Icon name="puzzle" className="sm" />{t("Extension")}</span>
+                <select className="select extctl-sel" aria-label={t("Extension for bulk assignment")} disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
+                  <option value="">{t("choose…")}</option>
                   {extensions.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
                 </select>
-                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>Add</button>
-                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>Remove</button>
+                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>{t("Add")}</button>
+                <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>{t("Remove")}</button>
               </div>
             </>
           )}
           <span className="spacer" />
           {(!isCloudMode || selectedEditable) && (
-            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? "Delete selected profiles" : "Move selected profiles to Trash"} disabled={!selected.size || deleting} onClick={deleteSelected}>
-              <Icon name="trash" className="sm" />{deleting ? "Processing…" : appMode?.legacyRemote ? "Delete" : `Move ${selected.size.toLocaleString()} to Trash`}
+            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting} onClick={deleteSelected}>
+              <Icon name="trash" className="sm" />{deleting ? t("Processing…") : appMode?.legacyRemote ? t("Delete") : t("Move {count} to Trash", { count: selected.size.toLocaleString() })}
             </button>
           )}
           </>}
@@ -3434,7 +3587,7 @@ function App() {
             <thead>
               <tr>
                 <th className="chk" style={{ width: CHECKBOX_COLUMN_WIDTH }}>
-                  <input type="checkbox" aria-label="Select all visible profiles" checked={allVisibleSelected} onChange={toggleAll} />
+                  <input type="checkbox" aria-label={t("Select all visible profiles")} checked={allVisibleSelected} onChange={toggleAll} />
                 </th>
                 {shownColumns.map(columnHead)}
               </tr>
@@ -3505,14 +3658,15 @@ function App() {
                           <button
                             className={`iconbtn twofa tip${twoFaFlash?.id === p.id ? " flash" : ""}`}
                             data-tip={twoFaFlash?.id === p.id ? `Copied ${twoFaFlash.code}` : "Copy current 2FA code"}
-                            aria-label="Copy current 2FA code"
+                            aria-label={t("Copy current 2FA code")}
                             onClick={() => copy2fa(p.id)}
                           >
                             <Icon name={twoFaFlash?.id === p.id ? "check" : "key"} className="sm" />
                           </button>
                         )}
+                        {isCloudMode && canManageCloudFolders && <button className="iconbtn tip" data-tip={t("Manage access")} aria-label={t("Manage access for {profile}", { profile: p.name })} onClick={() => openAccess({ kind: "profile", id: p.id, name: p.name, folder: p.group })}><Icon name="user" className="sm" /></button>}
                         {canEditRow && (
-                          <button className="iconbtn tip" data-tip="Edit profile" aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
+                          <button className="iconbtn tip" data-tip={t("Edit profile")} aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
                             <Icon name="edit" className="sm" />
                           </button>
                         )}
@@ -3521,25 +3675,25 @@ function App() {
                             {p.engine === "chromium" && <>
                               <button
                                 className="iconbtn tip"
-                                data-tip="Add cookie"
+                                data-tip={t("Add cookie")}
                                 aria-label={`Add a cookie to ${p.name}`}
                                 onClick={() => openCookie(p)}
                               ><Icon name="cookie" className="sm" /></button>
                               <button
                                 className="iconbtn tip"
-                                data-tip="Bring to front"
-                                aria-label="Bring this browser window to the front"
+                                data-tip={t("Bring to front")}
+                                aria-label={t("Bring this browser window to the front")}
                                 disabled={busy[p.id]}
                                 onClick={() => act(p.id, raiseProfile)}
                               ><Icon name="raise" className="sm" /></button>
                             </>}
                             <button className="btn sm solid-danger" aria-label={`Close ${p.name}`} disabled={busy[p.id]} onClick={() => act(p.id, closeProfile)}>
-                              <Icon name="power" className="sm" />Close
+                              <Icon name="power" className="sm" />{t("Close")}
                             </button>
                           </>
                         ) : p.mobilePersona ? (
                           !p.lockedBy && (!isCloudMode || p.permission === "edit") ? (
-                            <button className="btn sm warn" disabled={busy[p.id]} title="Convert this mobile persona to a desktop device" onClick={() => openEdit(p.id)}>
+                            <button className="btn sm warn" disabled={busy[p.id]} title={t("Convert this mobile persona to a desktop device")} onClick={() => openEdit(p.id)}>
                               <Icon name="laptop" className="sm" />Convert
                             </button>
                           ) : null
@@ -3560,7 +3714,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => act(p.id, openProfile)}
                             >
-                              <Icon name="play" className="sm" />Open
+                              <Icon name="play" className="sm" />{t("Open")}
                             </button>
                           </>
                         ) : (
@@ -3571,7 +3725,7 @@ function App() {
                             disabled={busy[p.id]}
                             onClick={() => act(p.id, openProfile)}
                           >
-                            <Icon name="play" className="sm" />Open
+                            <Icon name="play" className="sm" />{t("Open")}
                           </button>
                         )}
                       </span>
@@ -3587,19 +3741,18 @@ function App() {
                       <span className="glyph"><Icon name="profiles" /></span>
                       {profiles.length === 0 ? (
                         <>
-                          <b>No profiles yet</b>
-                          <p>
-                            {isCloudMode
-                              ? "No Cloud profiles yet — click New Profile to create one."
-                              : "No profiles yet — click New Profile, or drop a TXT, CSV, JSON, or XLSX profile export anywhere in this window."}
-                          </p>
-                          <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />New Profile</button>
+                          <b>{t("No profiles yet")}</b>
+                          <p>{t("Create a profile or import a readable export from another browser.")}</p>
+                          <div className="empty-actions">
+                            <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />{t("New Profile")}</button>
+                            <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />{t("Import profiles")}</button>
+                          </div>
                         </>
                       ) : (
                         <>
-                          <b>No matches</b>
-                          <p>No profiles match the current filters.</p>
-                          <button className="btn" onClick={() => { setQ(""); setGroup("all"); }}>Clear filters</button>
+                          <b>{t("No matches")}</b>
+                          <p>{t("No profiles match the current filters.")}</p>
+                          <button className="btn" onClick={() => { setQ(""); setGroup("all"); }}>{t("Clear filters")}</button>
                         </>
                       )}
                     </div>
@@ -3620,8 +3773,8 @@ function App() {
         )}
 
         <footer className="statusbar">
-          <span className="stat"><b>{profiles.length}</b> profiles</span>
-          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b> running</span>
+          <span className="stat"><b>{profiles.length}</b> {t("profiles")}</span>
+          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b> {t("running")}</span>
           {diag && (
             <span className="diag" onClick={() => setShowDiag((s) => !s)}>
               Diagnose · last {diagWhen}
@@ -3632,20 +3785,20 @@ function App() {
             <button
               type="button"
               className="iconbtn"
-              aria-label="Previous page"
+              aria-label={t("Previous page")}
               disabled={visibleProfilePage === 0}
               onClick={() => setProfilePage(visibleProfilePage - 1)}
             ><Icon name="chevronLeft" className="sm" /></button>
-            <span className="page-of">Page <b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
+            <span className="page-of">{t("Page")} <b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
             <button
               type="button"
               className="iconbtn"
-              aria-label="Next page"
+              aria-label={t("Next page")}
               disabled={visibleProfilePage + 1 >= profilePageCount}
               onClick={() => setProfilePage(visibleProfilePage + 1)}
             ><Icon name="chevronRight" className="sm" /></button>
-            <select className="select" aria-label="Rows per page" value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
-              {PAGE_SIZES.map((size) => <option key={size} value={size}>{size} / page</option>)}
+            <select className="select" aria-label={t("Rows per page")} value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
+              {PAGE_SIZES.map((size) => <option key={size} value={size}>{t("{size} / page", { size })}</option>)}
             </select>
           </span>
         </footer>
@@ -3777,7 +3930,7 @@ function App() {
       </div>
       ) : view === "settings" ? (
       <div className="workspace">
-        <div className="tabs" role="tablist" aria-label="Settings sections">
+        <div className="tabs" role="tablist" aria-label={t("Settings sections")}>
           {SETTINGS_TABS.map((tab) => (
             <button
               key={tab.key}
@@ -3787,34 +3940,34 @@ function App() {
               className={`tab${settingsTab === tab.key ? " active" : ""}`}
               onClick={() => setSettingsTab(tab.key)}
             >
-              {tab.key === "team" && isCloudMode ? "Team" : tab.label}
+              {tab.key === "team" && isCloudMode ? t("Team") : t(tab.label)}
             </button>
           ))}
         </div>
         <div className="settingspage">
           {settingsTab === "account" && (
             <>
-              <h2 className="sect-title">Account information</h2>
+              <h2 className="sect-title">{t("Account information")}</h2>
               <div className="identity-card">
                 <span className="identity-avatar"><Icon name="user" className="lg" /></span>
                 <span className="identity-lines">
-                  <b>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local workspace"}</b>
+                  <b>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local workspace")}</b>
                   <span>
                     {isCloudMode
-                      ? `${cloudAuth?.workspace?.role ?? "member"} · ${cloudAuth?.workspace?.name ?? "Cloud workspace"}`
-                      : "No account · profile data stays on this computer"}
+                      ? `${t(cloudAuth?.workspace?.role ?? "member")} · ${cloudAuth?.workspace?.name ?? t("Cloud workspace")}`
+                      : t("No account · profile data stays on this computer")}
                   </span>
                 </span>
-                <span className="chip">{isCloudMode ? "Cloud" : "Local"}</span>
+                <span className="chip">{isCloudMode ? t("Cloud") : t("Local")}</span>
               </div>
 <section className="settings-card">
-            <header><Icon name="user" className="sm" /><h2>Account</h2></header>
+            <header><Icon name="user" className="sm" /><h2>{t("Account")}</h2></header>
             <div className="card-body">
-            <div className="settings-row"><span>Signed in as</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local · no account"}</strong></div>
-            <div className="settings-row"><span>Profiles stored</span><strong>{profiles.length}</strong></div>
+            <div className="settings-row"><span>{t("Signed in as")}</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local · no account")}</strong></div>
+            <div className="settings-row"><span>{t("Profiles stored")}</span><strong>{profiles.length}</strong></div>
             {isCloudMode && cloudAuth?.authenticated && (
               <button className="btn danger" type="button" disabled={authBusy} onClick={() => void signOut()}>
-                <Icon name="power" className="sm" />{authBusy ? "Signing out…" : "Sign out / Switch account"}
+                <Icon name="power" className="sm" />{authBusy ? t("Signing out…") : t("Sign out / Switch account")}
               </button>
             )}
             {authErr && <p className="modal-err" role="alert">{authErr}</p>}
@@ -3824,67 +3977,74 @@ function App() {
           {isCloudMode && cloudAuth?.authenticated && (
             <section className="settings-card remote-mcp-settings">
               <header>
-                <Icon name="cloud" className="sm" /><h2>Remote MCP</h2>
+                <Icon name="cloud" className="sm" /><h2>{t("Remote MCP")}</h2>
                 <span className={`remote-mcp-status ${remoteMcp.state}`}>
-                  {remoteMcp.state === "active" ? "Ready" : remoteMcp.state === "disabled" ? "Disabled" : remoteMcp.state === "loading" ? "Preparing" : remoteMcp.state === "error" ? "Unavailable" : "Not ready"}
+                  {remoteMcp.state === "active" ? t("Ready") : remoteMcp.state === "disabled" ? t("Disabled") : remoteMcp.state === "loading" ? t("Preparing") : remoteMcp.state === "error" ? t("Unavailable") : t("Not ready")}
                 </span>
               </header>
               <div className="card-body">
-                <p>Connect an AI client on another computer. Browser windows open on this Windows PC, so keep AliasMode running.</p>
-                {remoteMcp.state === "loading" && <p className="hint" role="status">Preparing your secure connection…</p>}
+                <p>{t("Connect an AI client on another computer. Browser windows open on this Windows PC, so keep AliasMode running.")}</p>
+                {remoteMcp.state === "loading" && <p className="hint" role="status">{t("Preparing your secure connection…")}</p>}
                 {remoteMcp.state === "active" && remoteMcp.url && remoteMcp.token && (
                   <>
                     <label className="fld remote-mcp-field">
-                      <span>MCP server URL</span>
+                      <span>{t("MCP server URL")}</span>
                       <span className="remote-mcp-value">
                         <input className="mono" value={remoteMcp.url} readOnly />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? "Copied" : "Copy"}</button>
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? t("Copied") : t("Copy")}</button>
                       </span>
                     </label>
                     <label className="fld remote-mcp-field">
-                      <span>Access key</span>
+                      <span>{t("Access key")}</span>
                       <span className="remote-mcp-value">
-                        <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label="Remote MCP access key" />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? "Hide" : "Reveal"}</button>
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? "Copied" : "Copy"}</button>
+                        <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label={t("Remote MCP access key")} />
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? t("Hide") : t("Reveal")}</button>
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? t("Copied") : t("Copy")}</button>
                       </span>
                     </label>
                     <div className="hint remote-mcp-guide">
-                      <strong>Connect Claude.ai or ChatGPT</strong>
+                      <strong>{t("Connect Claude.ai or ChatGPT")}</strong>
                       <ol>
-                        <li>Add a custom MCP connector or app.</li>
-                        <li>Paste the MCP server URL and select Connect.</li>
-                        <li>Sign into AliasMode and select Allow.</li>
+                        <li>{t("Add a custom MCP connector or app.")}</li>
+                        <li>{t("Paste the MCP server URL and select Connect.")}</li>
+                        <li>{t("Sign into AliasMode and select Allow.")}</li>
                       </ol>
                       <details>
-                        <summary>Claude Code and other clients</summary>
-                        <p>Claude Code uses an HTTP entry in <code>.mcp.json</code>. Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.</p>
-                        <p>Claude.ai and ChatGPT use OAuth and do not need the access key.</p>
+                        <summary>{t("Claude Code and other clients")}</summary>
+                        <p>{t("Claude Code uses an HTTP entry in {file}. Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.", { file: ".mcp.json" })}</p>
+                        <p>{t("Claude.ai and ChatGPT use OAuth and do not need the access key.")}</p>
                       </details>
                     </div>
                     <div className="update-actions">
-                      <button className="btn" type="button" disabled={authBusy} onClick={() => void regenerateRemoteMcp()}>Regenerate key</button>
-                      <button className="btn danger" type="button" disabled={authBusy} onClick={() => void disableRemoteMcp()}>Disable</button>
+                      <button className="btn" type="button" disabled={authBusy} onClick={() => void regenerateRemoteMcp()}>{t("Regenerate key")}</button>
+                      <button className="btn danger" type="button" disabled={authBusy} onClick={() => void disableRemoteMcp()}>{t("Disable")}</button>
                     </div>
                   </>
                 )}
                 {remoteMcp.state === "disabled" && (
                   <>
-                    <p>Remote connections are disabled for this Windows device.</p>
-                    <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>Enable Remote MCP</button>
+                    <p>{t("Remote connections are disabled for this Windows device.")}</p>
+                    <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>{t("Enable Remote MCP")}</button>
                   </>
                 )}
-                {remoteMcp.error && <div className="modal-err" role="alert">{remoteMcp.error}</div>}
-                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>Try again</button>}
+                {remoteMcp.error && <div className="modal-err" role="alert">{t(remoteMcp.error)}</div>}
+                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>{t("Try again")}</button>}
               </div>
             </section>
           )}
 
 <section className="settings-card">
-            <header><Icon name="sun" className="sm" /><h2>Appearance</h2></header>
+            <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
-              <p>Choose how AliasMode looks. System follows your operating system setting.</p>
-              <div className="segmented" role="radiogroup" aria-label="Theme">
+              <p>{t("Choose how AliasMode looks. System follows your operating system setting.")}</p>
+              <label className="fld"><span>{t("language.label")}</span>
+                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                  {availableLanguages().map((lang) => (
+                    <option key={lang} value={lang}>{languageNativeName(lang)}</option>
+                  ))}
+                </select>
+              </label>
+              <div className="segmented" role="radiogroup" aria-label={t("Theme")}>
                 {THEMES.map((option) => (
                   <button
                     key={option.key}
@@ -3894,19 +4054,19 @@ function App() {
                     className={theme === option.key ? "active" : ""}
                     onClick={() => chooseTheme(option.key)}
                   >
-                    <Icon name={option.icon} className="sm" />{option.label}
+                    <Icon name={option.icon} className="sm" />{t(option.label)}
                   </button>
                 ))}
               </div>
             </div>
           </section>
           <section className="settings-card">
-            <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>Switch mode</h2></header>
+            <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>{t("Switch mode")}</h2></header>
             <div className="card-body settings-mode">
-              <p>{isCloudMode ? "Local mode keeps this installation offline from AliasMode Cloud." : "Cloud mode requires an account and does not upload Local profiles automatically."}</p>
+              <p>{isCloudMode ? t("Local mode keeps this installation offline from AliasMode Cloud.") : t("Cloud mode requires an account and does not upload Local profiles automatically.")}</p>
               <button className="btn" type="button" disabled={modeBusy || desktopUpdateInstalling} onClick={() => requestModeSwitch(isCloudMode ? "local" : "cloud")}>
                 <Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" />
-                Switch to {isCloudMode ? "Local" : "Cloud"}
+                {t("Switch to {target}", { target: isCloudMode ? t("Local") : t("Cloud") })}
               </button>
             </div>
           </section>
@@ -3915,69 +4075,73 @@ function App() {
           )}
           {settingsTab === "team" && (
             <>
-              <h2 className="sect-title">{isCloudMode ? "Team and folder access" : "Workspace"}</h2>
+              <h2 className="sect-title">{isCloudMode ? t("Team and folder access") : t("Workspace")}</h2>
 <section className="settings-card">
-            <header><Icon name="folders" className="sm" /><h2>{isCloudMode ? "Team" : "Workspace"}</h2></header>
+            <header><Icon name="folders" className="sm" /><h2>{isCloudMode ? t("Team") : t("Workspace")}</h2></header>
             <div className="card-body">
             {isCloudMode ? (
               <>
-                <div className="settings-row"><span>Workspace</span><strong>{cloudAuth?.workspace?.name ?? "Cloud workspace"}</strong></div>
-                <div className="settings-row"><span>Role</span><strong>{cloudAuth?.workspace?.role ?? "member"}</strong></div>
-                {teamBusy && !team && <p className="hint" role="status">Loading team…</p>}
-                <h3 className="settings-subhead">Members</h3>
+                <div className="settings-row"><span>{t("Workspace")}</span><strong>{cloudAuth?.workspace?.name ?? t("Cloud workspace")}</strong></div>
+                <div className="settings-row"><span>{t("Role")}</span><strong>{t(cloudAuth?.workspace?.role ?? "member")}</strong></div>
+                {teamBusy && !team && <p className="hint" role="status">{t("Loading team…")}</p>}
+                <h3 className="settings-subhead">{t("Members")}</h3>
                 {team?.members.map((member) => (
                   <div className="team-member" key={member.accountId}>
                     <div className="settings-row">
-                      <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || "No folder access"}</small></span>
-                      {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{member.role}</strong> : (
-                        <select className="select" aria-label={`Role for ${member.email}`} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
-                          <option value="member">member</option><option value="admin">admin</option>
+                      <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || t("No folder access")}</small></span>
+                      {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{t(member.role)}</strong> : (
+                        <select className="select" aria-label={t("Role for {email}", { email: member.email })} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
+                          <option value="member">{t("member")}</option><option value="admin">{t("admin")}</option>
                         </select>
+                      )}
+                      {member.role !== "owner" && (cloudAuth?.workspace?.role === "owner" || (cloudAuth?.workspace?.role === "admin" && member.role === "member")) && (
+                        <button className="btn xs" type="button" aria-label={t("Send password reset to {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("reset-password", { accountId: member.accountId }, t("Password reset email sent to {email}", { email: member.email }))}>{t("Reset password")}</button>
                       )}
                     </div>
                     {member.role === "member" && (cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
                       <div className="team-grants">
                         {team.folders.filter((folder) => !folder.archivedAt).map((folder) => {
                           const permission = member.grants.find((grant) => grant.folderName === folder.name)?.permission ?? "";
-                          return <label key={folder.name}>{folder.name}<select className="select" aria-label={`${folder.name} access for ${member.email}`} value={permission} disabled={teamBusy} onChange={(event) => void runTeamAction(event.target.value ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission: event.target.value })}><option value="">No access</option><option value="view">View</option><option value="edit">Edit</option></select></label>;
+                          return <GrantControl key={folder.name} label={t("{folder} access for {email}", { folder: folder.name, email: member.email })} direct={permission} inherited={folderGrantPermission(team.folders, member.grants, folder.name, false)} busy={teamBusy} onChange={(permission) => void runTeamAction(permission ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission })} />;
                         })}
-                        <button className="btn xs danger" type="button" aria-label={`Remove ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, `Removed ${member.email}`)}>Remove</button>
+                        <button className="btn xs danger" type="button" aria-label={t("Remove {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, t("Removed {email}", { email: member.email }))}>{t("Remove")}</button>
                       </div>
                     )}
                   </div>
                 ))}
                 {(cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
                   <>
-                    <h3 className="settings-subhead">Invitations</h3>
+                    <h3 className="settings-subhead">{t("Invitations")}</h3>
                     <form className="team-code" onSubmit={(event) => { event.preventDefault(); void inviteTeamMember(); }}>
-                      <input className="input" type="email" aria-label="Invite email" aria-describedby="invite-team-help" placeholder="Staff email address" value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
-                      {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label="Invitation role" value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">Member</option><option value="admin">Admin</option></select>}
-                      <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>Send invite</button>
+                      <input className="input" type="email" aria-label={t("Invite email")} aria-describedby="invite-team-help" placeholder={t("Staff email address")} value={teamEmail} disabled={teamBusy} onChange={(event) => setTeamEmail(event.target.value)} />
+                      {cloudAuth?.workspace?.role === "owner" && <select className="select" aria-label={t("Invitation role")} value={teamRole} disabled={teamBusy} onChange={(event) => setTeamRole(event.target.value as "admin" | "member")}><option value="member">{t("Member")}</option><option value="admin">{t("Admin")}</option></select>}
+                      <button className="btn primary" type="submit" disabled={teamBusy || !teamEmail.trim()}>{t("Send invite")}</button>
                     </form>
-                    <p className="hint" id="invite-team-help">Invitations go to that exact verified email. New members see no folders until you grant access here.</p>
+                    <p className="hint" id="invite-team-help">{t("Invitations go to that exact verified email. New members see no folders until you grant access here.")}</p>
                     {team?.invitations.filter((invite) => !invite.acceptedAt && !invite.revokedAt).map((invite) => {
-                      const status = invite.expiresAt <= Date.now() ? "Expired" : "Pending";
+                      const statusCode = invite.expiresAt <= Date.now() ? "expired" : "pending";
+                      const status = t(statusCode === "expired" ? "Expired" : "Pending");
                       return <div className="settings-row" key={invite.id}>
                         <span>{invite.email}<small>{invite.role}</small></span>
                         <span>
-                          <span className={`team-tag ${status.toLowerCase()}`}>{status}</span>
-                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={`Resend invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, "Invitation resent")}>Resend</button> <button className="btn xs danger" type="button" aria-label={`Revoke invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, "Invitation revoked")}>Revoke</button></>}
+                          <span className={`team-tag ${statusCode}`}>{status}</span>
+                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={t("Resend invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, t("Invitation resent"))}>{t("Resend")}</button> <button className="btn xs danger" type="button" aria-label={t("Revoke invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, t("Invitation revoked"))}>{t("Revoke")}</button></>}
                         </span>
                       </div>;
                     })}
                   </>
                 )}
-                {teamErr && <p className="modal-err" role="alert">{teamErr}</p>}
-                <h3 className="settings-subhead">Join another workspace</h3>
+                {teamErr && <p className="modal-err" role="alert">{t(teamErr)}</p>}
+                <h3 className="settings-subhead">{t("Join another workspace")}</h3>
                 <form className="team-code" onSubmit={(event) => { event.preventDefault(); void acceptInvitation(); }}>
-                  <input className="input" aria-label="Invitation code" placeholder="Paste invitation code" value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
-                  <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>Accept</button>
+                  <input className="input" aria-label={t("Invitation code")} placeholder={t("Paste invitation code")} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
+                  <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>{t("Accept")}</button>
                 </form>
-                <p className="hint">Paste the code from your invitation email. It works only for the email you signed in with.</p>
-                {authNotice && <p className="hint" role="status">{authNotice}</p>}
-                {authErr && <p className="modal-err" role="alert">{authErr}</p>}
+                <p className="hint">{t("Paste the code from your invitation email. It works only for the email you signed in with.")}</p>
+                {authNotice && <p className="hint" role="status">{t(authNotice)}</p>}
+                {authErr && <p className="modal-err" role="alert">{t(authErr)}</p>}
               </>
-            ) : <p>Local mode has no Cloud workspace.</p>}
+            ) : <p>{t("Local mode has no Cloud workspace.")}</p>}
             </div>
           </section>
           
@@ -3985,37 +4149,37 @@ function App() {
           )}
           {settingsTab === "advanced" && (
             <>
-              <h2 className="sect-title">Updates and diagnostics</h2>
+              <h2 className="sect-title">{t("Updates and diagnostics")}</h2>
 <section className="settings-card update-settings">
-            <header><Icon name="import" className="sm" /><h2>Updates</h2></header>
+            <header><Icon name="import" className="sm" /><h2>{t("Updates")}</h2></header>
             <div className="card-body">
-            <div className="settings-row"><span>Installed version</span><strong className="mono">{appVersion || desktopUpdate?.currentVersion || "—"}</strong></div>
+            <div className="settings-row"><span>{t("Installed version")}</span><strong className="mono">{appVersion || desktopUpdate?.currentVersion || "—"}</strong></div>
             {desktopUpdateResultSummary && (
               <div
                 className={`update-last-result ${desktopUpdateResultSummary.tone}`}
                 role={desktopUpdateResultSummary.tone === "success" ? "status" : "alert"}
               >
-                <strong>{desktopUpdateResultSummary.title}</strong>
-                <span>{desktopUpdateResultSummary.detail}</span>
+                <strong>{t(desktopUpdateResultSummary.title)}</strong>
+                <span>{t(desktopUpdateResultSummary.detail)}</span>
               </div>
             )}
-            {desktopUpdate?.state === "upToDate" && <p role="status">AliasMode is up to date.</p>}
+            {desktopUpdate?.state === "upToDate" && <p role="status">{t("AliasMode is up to date.")}</p>}
             {desktopUpdate?.state === "available" && (
               <>
-                <p role="status">Version {desktopUpdate.version} is ready. Active browsers will be saved and closed.</p>
+                <p role="status">{t("Version {version} is ready. Active browsers will be saved and closed.", { version: desktopUpdate.version })}</p>
                 <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
               </>
             )}
-            {!desktopUpdate && !desktopUpdateChecking && <p>AliasMode checks for updates when it starts.</p>}
+            {!desktopUpdate && !desktopUpdateChecking && <p>{t("AliasMode checks for updates when it starts.")}</p>}
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
-            {desktopUpdateErr && <div className="modal-err" role="alert">{desktopUpdateErr}</div>}
+            {desktopUpdateErr && <div className="modal-err" role="alert">{t(desktopUpdateErr)}</div>}
             <div className="update-actions">
               <button className="btn" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void checkDesktopUpdate(true)}>
-                <Icon name="refresh" className="sm" />{desktopUpdateChecking ? "Checking…" : "Check for updates"}
+                <Icon name="refresh" className="sm" />{desktopUpdateChecking ? t("Checking…") : t("Check for updates")}
               </button>
               {desktopUpdate?.state === "available" && (
                 <button className="btn primary" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void installDesktopUpdate()}>
-                  {desktopUpdateInstalling ? "Updating…" : "Update now"}
+                  {desktopUpdateInstalling ? t("Updating…") : t("Update now")}
                 </button>
               )}
             </div>
@@ -4025,52 +4189,52 @@ function App() {
 {isCloudMode && (
             <section className="settings-card diagnostics-section">
               <header>
-                <Icon name="activity" className="sm" /><h2>Recent diagnostics</h2>
+                <Icon name="activity" className="sm" /><h2>{t("Recent diagnostics")}</h2>
                 <button className="btn xs" type="button" disabled={cloudEventsBusy} onClick={() => void loadCloudEvents()}>
-                  {cloudEventsBusy ? "Loading…" : "Refresh"}
+                  {cloudEventsBusy ? t("Loading…") : t("Refresh")}
                 </button>
               </header>
               <div className="card-body">
-              {cloudEventsErr && <div className="diagnostics-error" role="alert">{cloudEventsErr}</div>}
+              {cloudEventsErr && <div className="diagnostics-error" role="alert">{t(cloudEventsErr)}</div>}
               {!cloudEventsErr && cloudEvents.length === 0 && (
-                <p>{cloudEventsBusy ? "Loading recent Cloud events…" : "No Cloud lifecycle events in this run."}</p>
+                <p>{cloudEventsBusy ? t("Loading recent Cloud events…") : t("No Cloud lifecycle events in this run.")}</p>
               )}
               {cloudEvents.length > 0 && (
-                <div className="diagnostics-list" role="log" aria-label="Recent Cloud diagnostics">
+                <div className="diagnostics-list" role="log" aria-label={t("Recent Cloud diagnostics")}>
                   {cloudEvents.map((event, index) => (
                     <div className={`diagnostics-row${cloudDiagnosticFailed(event.type) ? " failed" : ""}`} key={`${event.timestamp}-${index}`}>
                       <time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time>
-                      <span>{CLOUD_DIAGNOSTIC_LABELS[event.type]}</span>
+                      <span>{t(CLOUD_DIAGNOSTIC_LABELS[event.type])}</span>
                     </div>
                   ))}
                 </div>
               )}
-              <p>Diagnostics contain fixed lifecycle labels only. They exclude profile data and credentials.</p>
+              <p>{t("Diagnostics contain fixed lifecycle labels only. They exclude profile data and credentials.")}</p>
               </div>
             </section>
           )}
           {/* Logs are not a Cloud feature — a Local install needs them just as
               much, so this card is the one part of Advanced that always shows. */}
           <section className="settings-card">
-            <header><Icon name="logs" className="sm" /><h2>Logs</h2></header>
+            <header><Icon name="logs" className="sm" /><h2>{t("Logs")}</h2></header>
             <div className="card-body">
-              <p>The detailed log records launches, proxy setup and browser lifecycle for this installation.</p>
+              <p>{t("The detailed log records launches, proxy setup and browser lifecycle for this installation.")}</p>
               <button type="button" className="btn" onClick={() => {
                 setLogErr(null);
                 fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
-              }}><Icon name="logs" className="sm" />View detailed logs</button>
-              {logErr && <p className="cardnote">Logs: {logErr}</p>}
-              {logDir && <p className="cardnote">File: {logDir}</p>}
+              }}><Icon name="logs" className="sm" />{t("View detailed logs")}</button>
+              {logErr && <p className="cardnote">{t("Logs")}: {t(logErr)}</p>}
+              {logDir && <p className="cardnote">{t("File")}: {logDir}</p>}
             </div>
           </section>
           
             </>
           )}
-          {modeErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{modeErr}</div>}
+          {modeErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{t(modeErr)}</div>}
         </div>
         <footer className="pagefoot">
           <span className="spacer" />
-          <button className="btn primary" type="button" onClick={() => setView("profiles")}>Done</button>
+          <button className="btn primary" type="button" onClick={() => setView("profiles")}>{t("Done")}</button>
         </footer>
       </div>
       ) : null}
@@ -4113,42 +4277,76 @@ function App() {
             onSubmit={(event) => { event.preventDefault(); void submitCookie(); }}
           >
             <div className="modal-head" id="add-cookie-title">
-              <Icon name="cookie" />Add cookie<span className="mono muted">{cookieProfile.name}</span>
-              <button type="button" className="modal-close" aria-label="Close" disabled={cookieSaving} onClick={closeCookie}><Icon name="close" className="sm" /></button>
+              <Icon name="cookie" />{t("Add cookie")}<span className="mono muted">{cookieProfile.name}</span>
+              <button type="button" className="modal-close" aria-label={t("Close")} disabled={cookieSaving} onClick={closeCookie}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {cookieErr && <div className="modal-err"><Icon name="alert" className="sm" />{cookieErr}</div>}
-              <p className="hint">Add one cookie directly to this open browser.</p>
+              <p className="hint">{t("Add one cookie directly to this open browser.")}</p>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Name</span>
+                  <span>{t("Name")}</span>
                   <input autoFocus value={cookieForm.name} onChange={(event) => setCookieField("name", event.target.value)} />
                 </label>
                 <label className="fld grow">
-                  <span>Value</span>
+                  <span>{t("Value")}</span>
                   <input type="password" autoComplete="off" value={cookieForm.value} onChange={(event) => setCookieField("value", event.target.value)} />
                 </label>
               </div>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Domain</span>
+                  <span>{t("Domain")}</span>
                   <input value={cookieForm.domain} placeholder="example.com" onChange={(event) => setCookieField("domain", event.target.value)} />
                 </label>
                 <label className="fld port">
-                  <span>Path</span>
+                  <span>{t("Path")}</span>
                   <input value={cookieForm.path} onChange={(event) => setCookieField("path", event.target.value)} />
                 </label>
               </div>
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" type="button" disabled={cookieSaving} onClick={closeCookie}>Cancel</button>
+              <button className="btn ghost" type="button" disabled={cookieSaving} onClick={closeCookie}>{t("Cancel")}</button>
               <button className="btn primary" type="submit" disabled={cookieSaving || !cookieForm.name || !cookieForm.domain.trim() || !cookieForm.path.startsWith("/")}>
-                {cookieSaving ? "Adding…" : "Add cookie"}
+                {cookieSaving ? t("Adding…") : t("Add cookie")}
               </button>
             </div>
           </form>
         </div>
       )}
+
+      {movingFolder && <div className="modal-backdrop" onClick={() => { if (!folderMoveBusy) setMovingFolder(null); }}>
+        <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="folder-move-title" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-head" id="folder-move-title">{t("Move {folder}", { folder: movingFolder })}</div>
+          <div className="modal-body">
+            <label className="fld"><span>{t("Parent folder")}</span><select value={folderParent} disabled={folderMoveBusy} onChange={(event) => setFolderParent(event.target.value)}>
+              <option value="">{t("Top level")}</option>
+              {tree.filter((folder) => folder.name !== movingFolder && !folder.ancestors.includes(movingFolder)).map((folder) => <option key={folder.name} value={folder.name}>{folder.name}</option>)}
+            </select></label>
+            {isCloudMode && <p className="hint">{t("Inherited access follows the new parent folder.")}</p>}
+            {folderMoveErr && <div className="modal-err" role="alert">{folderMoveErr}</div>}
+          </div>
+          <div className="modal-foot"><button className="btn ghost" disabled={folderMoveBusy} onClick={() => setMovingFolder(null)}>{t("Cancel")}</button><button className="btn primary" disabled={folderMoveBusy} onClick={() => void commitFolderMove()}>{t("Move")}</button></div>
+        </div>
+      </div>}
+
+      {accessTarget && isCloudMode && canManageCloudFolders && <div className="modal-backdrop" onClick={() => { if (!teamBusy) setAccessTarget(null); }}>
+        <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="manage-access-title" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-head" id="manage-access-title">{t("Manage access")} · {accessTarget.name}</div>
+          <div className="modal-body">
+            <p className="hint">{t("Owners and admins have access to all folders and profiles.")}</p>
+            <p className="hint">{accessTarget.kind === "folder" ? t("Folder access includes all subfolders. The strongest grant applies.") : t("Profile access shares only this profile and follows it when moved.")}</p>
+            {team?.members.filter((member) => member.role === "member").map((member) => {
+              const profile = accessTarget.kind === "profile";
+              const direct = profile ? member.profileGrants?.find((grant) => grant.profileId === accessTarget.id)?.permission ?? ""
+                : member.grants.find((grant) => grant.folderName === accessTarget.id)?.permission ?? "";
+              return <GrantControl key={member.accountId} label={member.email} direct={direct} inherited={folderGrantPermission(team.folders, member.grants, accessTarget.folder, profile)} busy={teamBusy} onChange={(permission) => void runTeamAction(profile ? permission ? "profile-grant" : "remove-profile-grant" : permission ? "grant" : "remove-grant", { ...(profile ? { profileId: accessTarget.id } : { folderName: accessTarget.id }), accountId: member.accountId, permission })} />;
+            })}
+            {team && !team.members.some((member) => member.role === "member") && <p>{t("Invite members in Settings → Team to share access.")}</p>}
+            {teamErr && <div className="modal-err" role="alert">{teamErr}</div>}
+          </div>
+          <div className="modal-foot"><button className="btn" disabled={teamBusy} onClick={() => setAccessTarget(null)}>{t("Close")}</button></div>
+        </div>
+      </div>}
 
       {showCreate && (
         /* Form dialog: a stray backdrop click must not discard typed input —
@@ -4157,13 +4355,13 @@ function App() {
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="create-profile-title">
               <Icon name="plus" />New profile
-              <button type="button" className="modal-close" aria-label="Close" onClick={closeCreate}><Icon name="close" className="sm" /></button>
+              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {createErr && <div className="modal-err"><Icon name="alert" className="sm" />{createErr}</div>}
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Name</span>
+                  <span>{t("Name")}</span>
                   <input value={form.name} placeholder="auto if blank" onChange={(e) => setF("name", e.target.value)} />
                 </label>
                 {!isCloudMode && (
@@ -4243,7 +4441,7 @@ function App() {
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} />
+              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label="Browser">
                 {([
                   {
@@ -4334,13 +4532,25 @@ function App() {
                   <div className="fld-row">
                     <label className="fld grow">
                       <span>Folder</span>
-                      <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                      {canEditGroup(profiles.find((profile) => profile.id === editId)?.group ?? "")
+                        ? <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                        : <input value={editForm.group ?? ""} readOnly />}
                     </label>
                     <label className="fld grow">
                       <span>Platform</span>
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
+                  {!outreachOfferDismissed && ["x.com", "linkedin.com", "telegram.org"].includes(editForm.platform ?? "") && (
+                    <div className="outreach-offer hint">
+                      <span>Need outreach campaigns?</span>
+                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">Run outreach with Xreacher ↗</a>
+                      <button type="button" className="btn xs ghost" aria-label="Dismiss Xreacher offer" onClick={() => {
+                        setOutreachOfferDismissed(true);
+                        writeSetting("aliasmode.offers.xreacherDismissed", "1");
+                      }}><Icon name="close" className="sm" /></button>
+                    </div>
+                  )}
                   <label className="fld">
                     <span>Browser</span>
                     <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
@@ -4371,7 +4581,7 @@ function App() {
                     <button
                       type="button"
                       className="btn proxy-check-btn"
-                      disabled={editProxyCheck.checking || !editHasProxy}
+                      disabled={editProxyCheck.checking || timezoneBusy || !editHasProxy}
                       aria-busy={editProxyCheck.checking}
                       onClick={checkEditedProxy}
                     >
@@ -4380,19 +4590,23 @@ function App() {
                     </button>
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
-                  {!isCloudMode && (
-                    <div className="proxy-check-actions">
-                      <span className="hint">Timezone: {editForm.timezone || "not set"}</span>
-                      <button
-                        type="button"
-                        className="btn proxy-check-btn"
-                        disabled={timezoneBusy || !editHasProxy}
-                        onClick={refreshEditedTimezone}
-                      >
-                        <Icon name="activity" className="sm" />
-                        {timezoneBusy ? "Looking up timezone…" : "Set timezone from proxy"}
-                      </button>
-                    </div>
+                  {!isCloudMode && !appMode?.legacyRemote && (
+                    <>
+                      <div className="proxy-check-actions">
+                        <button
+                          type="button"
+                          className="btn proxy-check-btn"
+                          disabled={timezoneBusy || editSaving || editProxyChanged || !!editForm.proxyError || editRunning || editLive}
+                          onClick={refreshEditedTimezone}
+                        >
+                          <Icon name="activity" className="sm" />
+                          {timezoneBusy ? "Looking up timezone…" : editHasProxy ? "Set timezone from proxy" : "Use current connection timezone"}
+                        </button>
+                      </div>
+                      <p className="hint">{editProxyChanged
+                        ? "Save proxy changes before setting the timezone."
+                        : "This action saves the timezone immediately. It applies the next time this profile opens."}</p>
+                    </>
                   )}
                   <div className="fld-row">
                     <CopyField label="Username" value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
@@ -4413,7 +4627,13 @@ function App() {
                       </button>
                     </div>
                   )}
-                  <FingerprintSettings engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} />
+                  <FingerprintSettings
+                    engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
+                    platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
+                    timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
+                    disabled={editRunning || editLive || editSaving || timezoneBusy}
+                    onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
+                  />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>Extensions</span>
@@ -4436,7 +4656,7 @@ function App() {
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeEdit}>Cancel</button>
-              <button className="btn primary" disabled={editSaving || editLoading} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
+              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
             </div>
           </div>
         </div>
@@ -4448,13 +4668,19 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <Icon name="fileImport" />Import accounts
-              <button type="button" className="modal-close" aria-label="Close" onClick={closeBulk}><Icon name="close" className="sm" /></button>
+              <Icon name="fileImport" />Import profiles
+              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeBulk}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {bulkErr && <div className="modal-err"><Icon name="alert" className="sm" />{bulkErr}</div>}
+              <ol className="steps">
+                <li>{t("Export profiles from your previous browser as TXT, CSV, JSON, or XLSX.")}</li>
+                <li>{t("Add the files below and choose a destination group.")}</li>
+                <li>{t("Click Import profiles. Only data included in the export can transfer.")}</li>
+              </ol>
+              <p className="hint">{t("Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.")}</p>
 
-              <div className="segmented" role="tablist" aria-label="Import source">
+              <div className="segmented" role="tablist" aria-label={t("Import source")}>
                 <button
                   type="button"
                   role="tab"
@@ -4462,7 +4688,7 @@ function App() {
                   className={bulkSource === "file" ? "active" : ""}
                   onClick={() => { setBulkSource("file"); setBulkText(""); }}
                 >
-                  <Icon name="fileImport" className="sm" />From file
+                  <Icon name="fileImport" className="sm" />{t("From file")}
                 </button>
                 <button
                   type="button"
@@ -4471,7 +4697,7 @@ function App() {
                   className={bulkSource === "paste" ? "active" : ""}
                   onClick={() => { setBulkSource("paste"); setBulkFiles([]); }}
                 >
-                  <Icon name="copy" className="sm" />Paste text
+                  <Icon name="copy" className="sm" />{t("Paste text")}
                 </button>
               </div>
 
@@ -4485,7 +4711,7 @@ function App() {
                     onDrop={(e) => { e.preventDefault(); setBulkOver(false); if (e.dataTransfer.files?.length) setBulkFiles(Array.from(e.dataTransfer.files)); }}
                   >
                     <Icon name="fileImport" />
-                    <b>Drag &amp; drop files, or click to choose</b>
+                    <b>{t("Drag &amp; drop files, or click to choose")}</b>
                     <div className="sub">Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers</div>
                   </div>
                   {bulkFiles.length > 0 && (
@@ -4501,13 +4727,13 @@ function App() {
                           ><Icon name="close" className="sm" /></button>
                         </span>
                       ))}
-                      <button type="button" className="btn xs ghost" onClick={() => setBulkFiles([])}>Clear all</button>
+                      <button type="button" className="btn xs ghost" onClick={() => setBulkFiles([])}>{t("Clear all")}</button>
                     </div>
                   )}
                 </>
               ) : (
                 <label className="fld">
-                  <span>AdsPower TXT records</span>
+                  <span>{t("AdsPower TXT records")}</span>
                   <textarea
                     rows={9}
                     value={bulkText}
@@ -4515,8 +4741,10 @@ function App() {
                     onChange={(event) => setBulkText(event.target.value)}
                   />
                   <small>{pastedRecordCount === null
-                    ? "Paste one or more key=value records, separated by a line of asterisks."
-                    : `${pastedRecordCount} record${pastedRecordCount === 1 ? "" : "s"} detected — each one starts with its own id= line.`}</small>
+                    ? t("Paste one or more key=value records, separated by a line of asterisks.")
+                    : pastedRecordCount === 1
+                      ? t("1 record detected — each one starts with its own id= line.")
+                      : t("{count} records detected — each one starts with its own id= line.", { count: pastedRecordCount })}</small>
                 </label>
               )}
 
@@ -4535,15 +4763,14 @@ function App() {
                   <GroupPicker value={bulkGroup} onChange={setBulkGroup} groups={isCloudMode ? editableGroups : existingGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
-                  <span>Platform</span>
+                  <span>{t("Platform")}</span>
                   <select value={bulkPlatform} onChange={(e) => setBulkPlatform(e.target.value)}>
                     {KNOWN_PLATFORMS.map((platform) => <option key={platform.value} value={platform.value}>{platform.label}</option>)}
                   </select>
                 </label>
               </div>
               <p className="formnote">
-                Anything chosen above overrides that field on every imported record, including
-                provider exports that already carry a group.
+                {t("Anything chosen above overrides that field on every imported record, including provider exports that already carry a group.")}
               </p>
               <p className="formnote">
                 An AliasMode export also carries <code>seed</code>, <code>timezone</code> and{" "}
@@ -4554,15 +4781,15 @@ function App() {
             </div>
             <div className="modal-foot">
               <button className="tlink" onClick={() => downloadText("aliasmode-template.csv", CSV_TEMPLATE, "text/csv")}>
-                <Icon name="export" className="sm" />CSV template
+                <Icon name="export" className="sm" />{t("CSV template")}
               </button>
               <button className="tlink" onClick={() => downloadText("aliasmode-example.txt", TXT_EXAMPLE, "text/plain")}>
-                <Icon name="export" className="sm" />.txt example
+                <Icon name="export" className="sm" />{t(".txt example")}
               </button>
               <span className="spacer" />
-              <button className="btn ghost" onClick={closeBulk}>Cancel</button>
+              <button className="btn ghost" onClick={closeBulk}>{t("Cancel")}</button>
               <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup)} onClick={submitBulk}>
-                <Icon name="fileImport" className="sm" />{bulkBusy ? "Importing…" : "Import"}
+                <Icon name="fileImport" className="sm" />{bulkBusy ? t("Importing…") : t("Import profiles")}
               </button>
             </div>
           </div>
@@ -4574,32 +4801,32 @@ function App() {
            close via Cancel, the X, or Escape (the backdrop has no onClick). */
         <div className="modal-backdrop">
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head">Update profiles from file<button type="button" className="modal-close" aria-label="Close" onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
+            <div className="modal-head">{t("Update profiles from file")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={() => setShowUpdate(false)}><Icon name="close" className="sm" /></button></div>
             <div className="modal-body">
               {updateErr && <div className="modal-err"><Icon name="alert" className="sm" />{updateErr}</div>}
               {updateResult && <div className="modal-ok"><Icon name="check" className="sm" />{updateResult}</div>}
               <ol className="steps">
-                <li><b>Export</b> the profiles you want to change — that gives you a file with each profile's <code>id</code> (how rows are matched).</li>
-                <li><b>Edit</b> the columns you want (name, username, password, 2FA, proxy…). Keep the <code>id</code> column; delete any column you don't want to touch.</li>
-                {!isCloudMode && <li>Add a <code>custom_no</code> column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.</li>}
-                <li><b>Re-upload</b> the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a <code>cookie</code> or <code>ua</code> column has no effect.</li>
-                {isCloudMode && <li>Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.</li>}
+                <li><b>{t("Export")}</b> {t("the profiles you want to change — that gives you a file with each profile's")} — that gives you a file with each profile's <code>id</code> {t("(how rows are matched).")}</li>
+                <li><b>{t("Edit")}</b> {t("the columns you want (name, username, password, 2FA, proxy…). Keep the")} <code>id</code> {t("column; delete any column you don't want to touch.")}</li>
+                {!isCloudMode && <li>{t("Add a")} <code>custom_no</code> {t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
+                <li><b>{t("Re-upload")}</b> {t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")} <code>cookie</code> or <code>ua</code> {t("column has no effect.")}</li>
+                {isCloudMode && <li>{t("Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.")}</li>}
               </ol>
               <div className="updexport">
                 {selected.size > 0 ? (
                   <span>
-                    Export {selected.size} selected:&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("csv")}><Icon name="export" className="sm" />CSV</button>
+                    {t("Export {count} selected:", { count: selected.size })}&nbsp;
+                    <button className="tlink" onClick={() => exportSelected("csv")}><Icon name="export" className="sm" />{t("CSV")}</button>
                     &nbsp;·&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("txt")}><Icon name="export" className="sm" />.txt</button>
+                    <button className="tlink" onClick={() => exportSelected("txt")}><Icon name="export" className="sm" />{t(".txt")}</button>
                     &nbsp;·&nbsp;
-                    <button className="tlink" onClick={() => exportSelected("xlsx")}><Icon name="export" className="sm" />Excel</button>
+                    <button className="tlink" onClick={() => exportSelected("xlsx")}><Icon name="export" className="sm" />{t("Excel")}</button>
                   </span>
                 ) : (
-                  <span className="hint">Tip: select profiles first, then export here to get an editable file.</span>
+                  <span className="hint">{t("Tip: select profiles first, then export here to get an editable file.")}</span>
                 )}
                 <span className="grow" />
-                <button className="tlink" onClick={() => downloadText("aliasmode-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />example sheet</button>
+                <button className="tlink" onClick={() => downloadText("aliasmode-update-template.csv", UPDATE_TEMPLATE_CSV, "text/csv")}><Icon name="export" className="sm" />{t("example sheet")}</button>
               </div>
               <div
                 className={`bulkdrop${updateOver ? " over" : ""}`}
@@ -4609,7 +4836,7 @@ function App() {
                 onDrop={(e) => { e.preventDefault(); setUpdateOver(false); if (e.dataTransfer.files?.[0]) setUpdateFile(e.dataTransfer.files[0]); }}
               >
                 <Icon name="export" />
-                <b>Drag &amp; drop the edited file, or click to choose</b>
+                <b>{t("Drag &amp; drop the edited file, or click to choose")}</b>
                 <div className="sub">CSV, <code>.txt</code> or Excel <code>.xlsx</code> with an <code>id</code> column</div>
               </div>
               <input
@@ -4619,11 +4846,11 @@ function App() {
                 style={{ display: "none" }}
                 onChange={(e) => { if (e.target.files?.[0]) setUpdateFile(e.target.files[0]); e.target.value = ""; }}
               />
-              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />Selected: <b>{updateFile.name}</b></div>}
+              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />{t("Selected:")} <b>{updateFile.name}</b></div>}
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={() => setShowUpdate(false)}>Close</button>
-              <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? "Updating…" : "Update profiles"}</button>
+              <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? t("Updating…") : t("Update profiles")}</button>
             </div>
           </div>
         </div>
@@ -4638,4 +4865,8 @@ function App() {
 }
 
 const root = createRoot(document.getElementById("root")!);
-root.render(<App />);
+root.render(
+  <I18nProvider>
+    <App />
+  </I18nProvider>
+);

@@ -36,8 +36,9 @@ import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
-import { attachTimezones, type FetchLike } from "./geoip.ts";
-import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictCustomNo, decodeText } from "./parse.ts";
+import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
+import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
+import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
 import { generateTotp } from "./totp.ts";
@@ -52,9 +53,10 @@ import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { addBrowserCookie } from "./session.ts";
-import { join, resolve } from "node:path";
-import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
 
@@ -112,16 +114,6 @@ function profileEngine(profile: unknown): "chromium" | "firefox" {
   return typeof profile === "object" && profile !== null && "engine" in profile && profile.engine === "firefox"
     ? "firefox"
     : "chromium";
-}
-
-function syncFirefoxTimezone(profile: Profile): void {
-  if (profileEngine(profile) !== "firefox") return;
-  if (!profile.firefox) throw new Error("Firefox profile is missing its saved configuration");
-  const { timezone: _timezone, ...config } = profile.firefox.config;
-  profile.firefox = {
-    ...profile.firefox,
-    config: { ...config, ...(profile.timezone ? { timezone: profile.timezone } : {}) },
-  };
 }
 
 function openResponse(
@@ -346,6 +338,38 @@ function noStoreJson(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
+// Shell UI language preference. localStorage cannot persist it: the desktop
+// shell serves the UI from a random loopback port each launch, and localStorage
+// is origin-scoped (http://127.0.0.1:PORT), so it is wiped on every restart.
+// Persist to <state-root>/shell.json instead. The value is a BCP47 language
+// tag validated by pattern only, so adding a locale never needs backend changes.
+const SHELL_LANGUAGE_PATTERN = /^[a-z]{2,3}(-[A-Za-z]{2,8})?$/;
+
+function shellLanguagePath(paths?: StatePaths): string | null {
+  if (!paths?.root) return null;
+  return join(paths.root, "shell.json");
+}
+
+export function readShellLanguage(paths?: StatePaths): string {
+  try {
+    const file = shellLanguagePath(paths);
+    if (!file) return "en-US";
+    const raw = JSON.parse(readFileSync(file, "utf8")) as { language?: unknown };
+    if (typeof raw.language === "string" && SHELL_LANGUAGE_PATTERN.test(raw.language)) return raw.language;
+  } catch {
+    // Missing or corrupt file: fall back to English.
+  }
+  return "en-US";
+}
+
+export function writeShellLanguage(paths: StatePaths | undefined, language: string): void {
+  if (!SHELL_LANGUAGE_PATTERN.test(language)) throw new Error(`Invalid language tag: ${language}`);
+  const file = shellLanguagePath(paths);
+  if (!file) throw new Error("Shell language storage is unavailable");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ language })}\n`, "utf8");
+}
+
 function proxyCheckView(result: ProxyCheckResult): ProxyCheckResult {
   return {
     status: result.status,
@@ -397,6 +421,7 @@ function profileEditView(p: Profile) {
     extensions: p.extensions ?? [],
     tags: (p.tags ?? []).join(", "),
     customNo: p.customNo ?? "",
+    platformOs: p.platformOs ?? "",
     timezone: p.timezone,
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
@@ -408,6 +433,14 @@ function profileEditView(p: Profile) {
       },
     } : {}),
   };
+}
+
+function fingerprintChanges(p: Profile, set: Record<string, unknown>): boolean {
+  const screen = "resolution" in set ? parseStrictResolution(set.resolution) : null;
+  return !!(screen && (screen.width !== p.screenWidth || screen.height !== p.screenHeight)) ||
+    ("platformOs" in set && parseStrictPlatformOs(set.platformOs) !== (p.platformOs ?? "")) ||
+    ("timezone" in set && parseStrictTimezone(set.timezone) !== p.timezone) ||
+    ("locale" in set && (normalizeProfileLocale(set.locale) ?? p.locale) !== p.locale);
 }
 
 /**
@@ -432,6 +465,18 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     }
     p.screenWidth = r.width;
     p.screenHeight = r.height;
+  }
+  if ("platformOs" in set) {
+    const platformOs = parseStrictPlatformOs(set.platformOs);
+    if (profileEngine(p) === "firefox" && platformOs !== (p.platformOs ?? "")) {
+      throw new Error("Firefox operating system cannot be changed");
+    }
+    p.platformOs = platformOs;
+  }
+  if ("locale" in set) p.locale = normalizeProfileLocale(set.locale) ?? p.locale;
+  if ("timezone" in set) {
+    p.timezone = parseStrictTimezone(set.timezone);
+    syncFirefoxTimezone(p);
   }
   if ("proxy" in set) {
     const nextProxy = parseStrictProxy(set.proxyType ?? p.proxy?.type ?? "http", set.proxy);
@@ -611,6 +656,23 @@ export async function handleUiRequest(
     });
   }
 
+  if (pathname === "/ui/api/shell-language" && req.method === "GET") {
+    return noStoreJson({ language: readShellLanguage(options.paths) });
+  }
+
+  if (pathname === "/ui/api/shell-language" && req.method === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { language?: unknown };
+    const language = typeof body.language === "string" && SHELL_LANGUAGE_PATTERN.test(body.language)
+      ? body.language
+      : "en-US";
+    try {
+      writeShellLanguage(options.paths, language);
+    } catch {
+      return noStoreJson({ ok: false, error: "Could not save language preference" }, 500);
+    }
+    return noStoreJson({ ok: true, language });
+  }
+
   if (pathname === "/ui/api/cloud-events" && req.method === "GET") {
     return Response.json(
       { events: normalizeCloudDiagnostics(options.cloudBrowser?.diagnostics?.() ?? []) },
@@ -732,6 +794,18 @@ export async function handleUiRequest(
           return Response.json({ ok: false, error: "email is required" }, { status: 400 });
         }
         await options.cloudAuth.resendSignUpConfirmation(body.email);
+        return Response.json({ ok: true });
+      }
+      if (pathname === "/ui/api/cloud-auth/forgot-password") {
+        if (typeof body.email !== "string" || !body.email) {
+          return Response.json({ ok: false, error: "email is required" }, { status: 400 });
+        }
+        try {
+          await options.cloudAuth.requestPasswordReset(body.email);
+        } catch (error) {
+          // Auth throttles repeat reset emails per address; keep the reply neutral.
+          if (!(error instanceof SupabaseAuthRequestError && error.failure.kind === "http" && error.failure.status === 429)) throw error;
+        }
         return Response.json({ ok: true });
       }
       if (pathname === "/ui/api/cloud-auth/signin") {
@@ -1009,11 +1083,15 @@ export async function handleUiRequest(
       const body = await req.json() as Record<string, unknown>;
       const action = String(body.action ?? "");
       if (action === "invite") return Response.json(await cloud.createInvitation(String(body.email ?? ""), body.role === "admin" ? "admin" : "member"));
-      if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? "")));
+      if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
+      if (action === "move-folder") return Response.json(await cloud.moveFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
+      if (action === "profile-grant") return Response.json(await cloud.setProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
+      if (action === "remove-profile-grant") return Response.json(await cloud.removeProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? "")));
       if (action === "delete-folder") return Response.json(await cloud.deleteFolder(String(body.name ?? "")));
       if (action === "resend") return Response.json(await cloud.resendInvitation(String(body.id ?? "")));
       if (action === "revoke") return Response.json(await cloud.revokeInvitation(String(body.id ?? "")));
       if (action === "role") return Response.json(await cloud.changeMemberRole(String(body.accountId ?? ""), body.role === "admin" ? "admin" : "member"));
+      if (action === "reset-password") return Response.json(await cloud.sendMemberPasswordReset(String(body.accountId ?? "")));
       if (action === "remove-member") return Response.json(await cloud.removeMember(String(body.accountId ?? "")));
       if (action === "grant") return Response.json(await cloud.setFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
       if (action === "remove-grant") return Response.json(await cloud.removeFolderGrant(String(body.folderName ?? ""), String(body.accountId ?? "")));
@@ -1113,7 +1191,7 @@ export async function handleUiRequest(
       // otherwise show "running" forever and hide the Open action. reconcileOrphans
       // probes active() per launch and drops dead rows (it never kills processes).
       await launcher.reconcileOrphans();
-      return Response.json({ profiles: listUiProfiles(store), healthSources: [], groups: store.listGroups() });
+      return Response.json({ profiles: listUiProfiles(store), healthSources: [], groups: store.listGroups(), folders: store.listFolders() });
     } catch (error) {
       // Bun renders an uncaught route exception as an HTML 500 page. The React
       // client then cannot expose the actual hub/reconciliation error and only
@@ -1138,7 +1216,7 @@ export async function handleUiRequest(
       // Cloud keeps its existing server-side identity flow. Local profiles only
       // resolve proxy geography after the operator explicitly requests it.
       if (options.cloudBrowser && profile.proxy) {
-        await attachTimezones([profile], options.timezoneFetch).catch(() => {});
+        await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
         syncFirefoxTimezone(profile);
       }
       if (options.cloudBrowser) {
@@ -1549,12 +1627,12 @@ export async function handleUiRequest(
   if (pathname === "/ui/api/groups/create" && req.method === "POST") {
     if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
     try {
-      const body = (await req.json()) as { name?: unknown };
+      const body = (await req.json()) as { name?: unknown; parentName?: unknown };
       const name = String(body.name ?? "").trim();
       if (!name) return Response.json({ ok: false, error: "group name required" }, { status: 400 });
       if (name === "all") return Response.json({ ok: false, error: "group name is reserved" }, { status: 400 });
-      store.registerGroup(name);
-      return Response.json({ ok: true, name });
+      const folder = store.createGroup(name, typeof body.parentName === "string" ? body.parentName : null);
+      return Response.json({ ok: true, name: folder.name, folder });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
     }
@@ -1570,9 +1648,27 @@ export async function handleUiRequest(
         const renamed = await options.cloudConnection!.client.renameFolder(from, to);
         return Response.json({ ok: true, moved: 0, folder: renamed.folder });
       }
-      return Response.json({ ok: true, moved: store.renameGroup(from, to) });
+      const source = store.listFolders().find((folder) => folder.name === from);
+      const moved = store.renameGroup(from, to);
+      const name = source?.parentName ? `${source.parentName}/${to}` : to;
+      return Response.json({ ok: true, moved, folder: store.listFolders().find((folder) => folder.name === name) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
+    }
+  }
+
+  if (pathname === "/ui/api/groups/move" && req.method === "POST") {
+    if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    try {
+      const body = await req.json() as { name?: unknown; parentName?: unknown };
+      if (typeof body.name !== "string" || (body.parentName !== null && typeof body.parentName !== "string")) {
+        return Response.json({ ok: false, error: "name and parentName are required" }, { status: 400 });
+      }
+      return Response.json({ ok: true, folder: store.moveGroup(body.name, body.parentName) });
+    } catch (error) {
+      return Response.json({ ok: false, error: msg(error) }, { status: 400 });
     }
   }
 
@@ -1763,11 +1859,24 @@ export async function handleUiRequest(
       if (!isSafeProfileId(id)) return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
       const profile = store.getProfile(id);
       if (!profile) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
-      if (!profile.proxy) return Response.json({ ok: false, error: "profile has no proxy" }, { status: 400 });
-      await attachTimezones([profile], options.timezoneFetch);
-      syncFirefoxTimezone(profile);
-      store.upsertProfile(profile);
-      return Response.json({ ok: true, timezone: profile.timezone });
+      if (profile.proxyError) return Response.json({ ok: false, error: "Fix or remove the invalid proxy before setting the timezone." }, { status: 400 });
+      if (store.getLaunch(id)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+      }
+      const location = await lookupExitLocation(profile.proxy, options.timezoneFetch);
+      if (!location) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
+      const current = store.getProfile(id);
+      if (!current || current.proxyError || JSON.stringify(current.proxy) !== JSON.stringify(profile.proxy)) {
+        return Response.json({ ok: false, error: "Profile connection changed. Reopen Edit and try again." }, { status: 409 });
+      }
+      if (store.getLaunch(id)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+      }
+      current.timezone = location.timezone;
+      current.locale = localeForCountry(location.country) ?? localeForTimezone(location.timezone);
+      syncFirefoxTimezone(current);
+      store.upsertProfile(current);
+      return Response.json({ ok: true, timezone: current.timezone });
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 500 });
     }
@@ -1928,11 +2037,15 @@ export async function handleUiRequest(
           // one here would only survive until the next open erased it. Ignore
           // it, like the closed-profile Cloud editor does.
           delete set.customNo;
+          if (fingerprintChanges(live, set)) {
+            return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+          }
           const liveProxyChanged = applyEdits(live, set);
-          if (liveProxyChanged && live.proxy) {
-            await attachTimezones([live], options.timezoneFetch).catch(() => {});
+          if (liveProxyChanged && live.proxy && !("timezone" in set)) {
+            const location = await lookupExitLocation(live.proxy, options.timezoneFetch);
+            if (location) live.timezone = location.timezone;
             syncFirefoxTimezone(live);
-          } else if (liveProxyChanged) {
+          } else if (liveProxyChanged && !("timezone" in set)) {
             live.timezone = "";
             syncFirefoxTimezone(live);
           }
@@ -1963,16 +2076,20 @@ export async function handleUiRequest(
       }
       const body = (await req.json()) as { set?: unknown };
       const set = body.set && typeof body.set === "object" ? (body.set as Record<string, unknown>) : {};
-      // Remote: fetch the live profile from the hub, apply the edits, save it
-      // back. Local: the store — a running profile may be edited too; the
-      // stored fields simply apply the next time its browser launches.
+      // Account details can be edited live; fingerprint changes require a closed browser.
       const p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
       if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+      if (!remote && store.getLaunch(id) && fingerprintChanges(p, set)) {
+        return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+      }
       const previousGroup = p.group;
       applyEdits(p, set);
       if (!remote) store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
       if (remote) await remote.saveProfile(p);
-      else store.upsertProfile(p);
+      else {
+        store.upsertProfile(p);
+        if ("timezone" in set) store.setTimezone(id, p.timezone);
+      }
       return Response.json({ ok: true });
     } catch (e) {
       return Response.json(

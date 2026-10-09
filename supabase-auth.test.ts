@@ -89,6 +89,19 @@ test("Supabase auth resends signup confirmation with the production redirect", a
   expect(body).toEqual({ type: "signup", email: "user@example.com" });
 });
 
+test("Supabase auth password reset uses the production redirect", async () => {
+  let url = "";
+  let body: unknown;
+  const auth = client(async (nextUrl, init) => {
+    url = String(nextUrl);
+    body = JSON.parse(String(init?.body));
+    return Response.json({});
+  });
+  await auth.requestPasswordReset("user@example.com");
+  expect(url).toBe("https://auth.aliasmode.test/auth/v1/recover?redirect_to=https%3A%2F%2Faliasmode.com%2Fauth%2Fpassword-reset");
+  expect(body).toEqual({ email: "user@example.com" });
+});
+
 test("Supabase auth refresh uses only the supplied refresh token", async () => {
   let body: any;
   const auth = client(async (_url, init) => {

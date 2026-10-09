@@ -175,7 +175,7 @@ export class AgentControlSession {
   private queue: Promise<unknown> = Promise.resolve();
   private cleanup?: Promise<void>;
 
-  constructor(private readonly deps: AgentControlDeps) {}
+  constructor(private readonly deps: AgentControlDeps, private readonly openSignal?: AbortSignal) {}
 
   enqueue(raw: string | Uint8Array): Promise<AgentControlResponse> {
     let request: AgentControlRequest;
@@ -416,7 +416,7 @@ export class AgentControlSession {
         : (() => { throw agentError("invalid_request", "startupUrls must contain only HTTP(S) URLs"); })();
 
     const opened = await this.deps.admission.run(
-      { kind: "start", profileIds: [profileId] },
+      { kind: "start", profileIds: [profileId], signal: this.openSignal },
       async () => {
         const alreadyOpen = await this.deps.launcher.certifiedActive(profileId).catch(() => false);
         const existing = alreadyOpen ? this.deps.store.getLaunch(profileId) : null;

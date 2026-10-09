@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { CloudApiError } from "./cloud-client.ts";
 import { CloudProfileEditor } from "./cloud-profile-editor.ts";
 import type { PortableProfileV1, PortableProfileV2 } from "./contracts/cloud-v1.ts";
+import { completeProfileFingerprint } from "./firefox-config.ts";
+import { decodePortableProfile } from "./portable-profile.ts";
 
 function payload(): PortableProfileV1 {
   return {
@@ -52,6 +54,39 @@ function firefoxPayload(): PortableProfileV2 {
   };
 }
 
+test("Cloud fingerprint edits round-trip manual timezone and OS without changing the session", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const authoritative = { ...response(), payload: engine === "firefox" ? firefoxPayload() : payload() };
+    const session = structuredClone(authoritative.payload.session);
+    const calls: string[][] = [];
+    authoritative.payload.profile.locale = "fr-CA";
+    const expected = completeProfileFingerprint(decodePortableProfile(authoritative.payload).profile);
+    const editor = new CloudProfileEditor({
+      getProfile: async () => authoritative,
+      updateProfile: async (_id: string, request: any) => { authoritative.payload = request.payload; },
+    } as any, readOnlyStore(), timezoneFetch({}, calls));
+    for (const timezone of ["Europe/Paris", ""]) {
+      await editor.save("cloud1", 7, {
+        timezone, proxy: "new-proxy.example:8080",
+        ...(engine === "chromium" ? { platformOs: "macos", resolution: "1920x1080" } : {}),
+      });
+      const view = await editor.get("cloud1");
+      expect(view.timezone).toBe(timezone);
+      if (engine === "chromium") expect(view.platformOs).toBe("macos");
+      else {
+        const { timezone: _timezone, ...config } = expected.firefox!.config;
+        expect((authoritative.payload as PortableProfileV2).profile.firefox.config).toEqual({
+          ...config, ...(timezone ? { timezone } : {}),
+        });
+      }
+      expect(authoritative.payload.profile.locale).toBe("fr-CA");
+      expect(authoritative.payload.session).toEqual(session);
+      expect(authoritative.payload.profile.fingerprintSeed).toBe(1234);
+    }
+    expect(calls).toEqual([]);
+  }
+});
+
 test("Firefox Cloud edits preserve saved identity and session without automatic lookup", async () => {
   const authoritative = { ...response(), payload: firefoxPayload() };
   let updated: any;
@@ -65,13 +100,13 @@ test("Firefox Cloud edits preserve saved identity and session without automatic 
   expect(calls).toEqual([]);
   expect(updated.payload.schemaVersion).toBe(2);
   expect(updated.payload.profile.engine).toBe("firefox");
-  expect(updated.payload.profile.firefox).toEqual(authoritative.payload.profile.firefox);
+  expect(updated.payload.profile.firefox).toEqual(completeProfileFingerprint(decodePortableProfile(authoritative.payload).profile).firefox);
   expect(updated.payload.profile.timezone).toBe("Etc/UTC");
   expect(updated.payload.session).toEqual(authoritative.payload.session);
 });
 
 test("Firefox Cloud edits reject conversion and unsupported identity edits before moving", async () => {
-  for (const set of [{ engine: "chromium" }, { resolution: "1920*1080" }, { extensions: ["chrome-extension"] }]) {
+  for (const set of [{ engine: "chromium" }, { resolution: "1920*1080" }, { platformOs: "macos" }, { extensions: ["chrome-extension"] }]) {
     const writes: string[] = [];
     const editor = new CloudProfileEditor({
       getProfile: async () => ({ ...response(), payload: firefoxPayload() }),
@@ -118,16 +153,10 @@ function readOnlyStore(launch: unknown = null) {
 }
 
 function timezoneFetch(timezones: Record<string, string>, calls?: string[][]) {
-  return async (_url: string, init: RequestInit) => {
-    const queries = (JSON.parse(String(init.body)) as Array<{ query: string }>).map((item) => item.query);
-    calls?.push(queries);
-    return {
-      async json() {
-        return queries.map((query) => timezones[query]
-          ? { query, timezone: timezones[query], status: "success" }
-          : { query, status: "fail" });
-      },
-    };
+  return async (url: string, _init: RequestInit) => {
+    calls?.push([url]);
+    const timezone = Object.values(timezones)[0];
+    return { json: async () => timezone ? { status: "success", timezone } : { status: "fail" } };
   };
 }
 

@@ -9,6 +9,7 @@ import type {
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
+import type { FolderInfo } from "../folders.ts";
 import {
   CLOUD_DIAGNOSTIC_TYPES,
   type CloudDiagnosticEvent,
@@ -87,6 +88,7 @@ export interface UiRoster {
   profiles: UiProfile[];
   healthSources: HealthSource[];
   groups: string[];
+  folders?: FolderInfo[];
 }
 
 export interface DiagnoseReport {
@@ -113,6 +115,27 @@ export async function fetchAppMode(): Promise<AppModeConfig> {
     throw new Error(body.error || "AliasMode returned an invalid application mode");
   }
   return body as AppModeConfig;
+}
+
+/** Shell UI language (BCP47 tag), persisted server-side: localStorage is
+ *  origin-scoped and the desktop shell serves the UI from a random loopback
+ *  port each launch. */
+export async function fetchShellLanguage(): Promise<string> {
+  const path = "/ui/api/shell-language";
+  const response = await fetch(path);
+  const body = await apiJson(response, path);
+  return typeof body.language === "string" && body.language.length > 0 ? body.language : "en-US";
+}
+
+export async function saveShellLanguage(language: string): Promise<void> {
+  const path = "/ui/api/shell-language";
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ language }),
+  });
+  const body = await apiJson(response, path);
+  if (!response.ok || body.ok !== true) throw new Error(body.error || "Could not save language preference");
 }
 
 export async function selectAppMode(mode: "local" | "cloud"): Promise<any> {
@@ -256,6 +279,7 @@ async function cloudAuthAction(action: string, input: Record<string, string | bo
 export const signUpCloud = (email: string, password: string) =>
   cloudAuthAction("signup", { email, password });
 export const resendCloudSignUp = (email: string) => cloudAuthAction("resend-signup", { email });
+export const requestCloudPasswordReset = (email: string) => cloudAuthAction("forgot-password", { email });
 export const signInCloud = (email: string, password: string, queueKey?: string) =>
   cloudAuthAction("signin", { email, password, ...(queueKey ? { queueKey } : {}) });
 export const restoreCloudSession = (
@@ -305,8 +329,7 @@ export const fetchCloudConnector = (connectorId: string) => cloudConnectorAction
 export const revokeCloudConnector = (connectorId: string) => cloudConnectorAction("revoke", connectorId);
 
 export interface CloudTeamState {
-  folders: Array<{
-    name: string;
+  folders: Array<FolderInfo & {
     archivedAt: number | null;
     permission: "view" | "edit";
     extensionDefaults: string[];
@@ -314,6 +337,7 @@ export interface CloudTeamState {
   members: Array<{
     accountId: string; email: string; role: "owner" | "admin" | "member"; joinedAt: number;
     grants: Array<{ folderName: string; accountId: string; permission: "view" | "edit" }>;
+    profileGrants?: Array<{ profileId: string; accountId: string; permission: "view" | "edit" }>;
   }>;
   invitations: Array<{
     id: string; email: string; role: "admin" | "member"; expiresAt: number;
@@ -329,7 +353,7 @@ export async function fetchCloudTeam(): Promise<CloudTeamState> {
   return { folders: body.folders, members: body.members, invitations: body.invitations };
 }
 
-export async function cloudWorkspaceAction(action: string, input: Record<string, string>): Promise<any> {
+export async function cloudWorkspaceAction(action: string, input: Record<string, string | null>): Promise<any> {
   const path = "/ui/api/cloud-workspace";
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -395,6 +419,7 @@ export async function fetchProfiles(): Promise<UiRoster> {
     }),
     healthSources: Array.isArray(body.healthSources) ? body.healthSources : [],
     groups: Array.isArray(body.groups) ? body.groups.filter((name: unknown) => typeof name === "string") : [],
+    ...(Array.isArray(body.folders) ? { folders: body.folders } : {}),
   };
 }
 
@@ -622,6 +647,8 @@ export interface NewProfileInput {
   platform?: string;
   proxy?: ProxyCheckInput | null;
   screen?: string;
+  /** Fingerprint OS override: "windows" | "macos" | "linux". Omitted → host OS. */
+  platformOs?: string;
   /** Operator-chosen serial shown in the roster and the browser window title. */
   customNo?: string;
   username?: string;
@@ -664,13 +691,15 @@ export interface EditProfile {
   twofa: string;
   /** "1920*1080". */
   resolution: string;
+  /** Fingerprint OS: "windows" | "macos" | "linux", or "" for automatic. */
+  platformOs: string;
   /** Ids of extensions assigned to this profile. */
   extensions: string[];
   /** Comma-separated custom tags. */
   tags: string;
   /** Operator-chosen "custom NO."; "" falls back to the store serial. Local mode only. */
   customNo?: string;
-  /** Stored timezone. It changes only through the explicit Local lookup action. */
+  /** Stored timezone; blank uses the browser default. */
   timezone: string;
   cookieCount: number;
   seeded: boolean;
@@ -799,11 +828,11 @@ export async function updateFromFile(files: FileList | File[]): Promise<any> {
 }
 
 // ---- Group create / rename / delete -----------------------------------------
-export async function createGroup(name: string): Promise<any> {
+export async function createGroup(name: string, parentName?: string | null): Promise<any> {
   const r = await fetch("/ui/api/groups/create", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, parentName }),
   });
   return apiJson(r, "/ui/api/groups/create");
 }
@@ -815,6 +844,16 @@ export async function renameGroup(from: string, to: string): Promise<any> {
     body: JSON.stringify({ from, to }),
   });
   return apiJson(r, "/ui/api/groups/rename");
+}
+
+export async function moveGroup(name: string, parentName: string | null): Promise<any> {
+  const path = "/ui/api/groups/move";
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, parentName }),
+  });
+  return apiJson(r, path);
 }
 
 export async function deleteGroup(name: string): Promise<any> {
@@ -948,7 +987,7 @@ export async function fetchScriptRun(): Promise<ScriptRun | null> {
   return body.run === null ? null : body.run as ScriptRun;
 }
 
-export async function startScriptRun(input: { scriptId: string; profileIds: string[]; inputs: object; useCredentials: boolean }): Promise<ScriptRun> {
+export async function startScriptRun(input: { scriptId: string; profileIds: string[]; inputs: object; useCredentials: boolean; concurrency?: number }): Promise<ScriptRun> {
   return (await scriptRequest("/ui/api/scripts/run", { method: "POST", body: JSON.stringify(input) })).run as ScriptRun;
 }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "./i18n.tsx";
 import { folderScope, type FolderInfo } from "../folders.ts";
 import { ProxyProviderOffer } from "./proxy-offer.tsx";
 import type {
@@ -14,24 +15,34 @@ import type {
 class ProxyToolsError extends Error {}
 
 const PAGE_SIZE = 50;
-const CHECK_LABELS: Record<ProxyCheckView["status"], string> = {
-  working: "Alive", failed: "Dead", unstable: "Unstable", unavailable: "Unknown",
-  missing: "Missing proxy", invalid: "Invalid proxy", unsupported: "Unsupported",
-};
-const REPLACEMENT_LABELS: Record<ProxyReplacementView["status"], string> = {
-  ready: "Ready", updated: "Updated", unchanged: "No change", missing: "No match", skipped: "Skipped", failed: "Failed",
-};
-const REASONS: Record<string, string> = {
-  authentication_failed: "Authentication failed", timeout: "Timed out", dns_failed: "DNS lookup failed",
-  unreachable: "Cannot connect", connection_failed: "Connection failed", intermittent: "Intermittent connection",
-  proxy_bypassed: "Connection bypassed the proxy", check_unavailable: "Check service unavailable",
-  profile_open: "Close this profile before replacing its proxy", version_conflict: "Profile changed; preview again",
-  profile_trashed: "Profile is in Trash", invalid_row: "Invalid input row", invalid_proxy: "Invalid proxy",
-  duplicate_selector: "Duplicate input selector", duplicate_target: "Conflicting assignments",
-  no_editable_match: "No editable profile matched", ambiguous_username: "More than one profile matched",
-  expected_version_required: "Preview this profile again", unsupported: "This proxy type cannot be checked",
-  cancelled: "Not completed", folder_access_denied: "Folder access denied",
-};
+const CHECK_STATUSES = ["working", "failed", "unstable", "unavailable", "missing", "invalid", "unsupported"] as const;
+function getCheckLabel(t: (key: string) => string, status: ProxyCheckView["status"]): string {
+  const labels: Record<ProxyCheckView["status"], string> = {
+    working: t("Alive"), failed: t("Dead"), unstable: t("Unstable"), unavailable: t("Unknown"),
+    missing: t("Missing proxy"), invalid: t("Invalid proxy"), unsupported: t("Unsupported"),
+  };
+  return labels[status];
+}
+function getReplacementLabel(t: (key: string) => string, status: ProxyReplacementView["status"]): string {
+  const labels: Record<ProxyReplacementView["status"], string> = {
+    ready: t("Ready"), updated: t("Updated"), unchanged: t("No change"), missing: t("No match"), skipped: t("Skipped"), failed: t("Failed"),
+  };
+  return labels[status];
+}
+function getReasonLabel(t: (key: string) => string, reason: string): string {
+  const reasons: Record<string, string> = {
+    authentication_failed: t("Authentication failed"), timeout: t("Timed out"), dns_failed: t("DNS lookup failed"),
+    unreachable: t("Cannot connect"), connection_failed: t("Connection failed"), intermittent: t("Intermittent connection"),
+    proxy_bypassed: t("Connection bypassed the proxy"), check_unavailable: t("Check service unavailable"),
+    profile_open: t("Close this profile before replacing its proxy"), version_conflict: t("Profile changed; preview again"),
+    profile_trashed: t("Profile is in Trash"), invalid_row: t("Invalid input row"), invalid_proxy: t("Invalid proxy"),
+    duplicate_selector: t("Duplicate input selector"), duplicate_target: t("Conflicting assignments"),
+    no_editable_match: t("No editable profile matched"), ambiguous_username: t("More than one profile matched"),
+    expected_version_required: t("Preview this profile again"), unsupported: t("This proxy type cannot be checked"),
+    cancelled: t("Not completed"), folder_access_denied: t("Folder access denied"),
+  };
+  return reasons[reason] || t("Check could not complete");
+}
 
 export function proxyScope(all: boolean, groups: string[], ids?: string[]): ProxyScope {
   return { ...(all ? { all: true } : { groups: [...new Set(groups)] }), ...(ids ? { ids: [...new Set(ids)] } : {}) };
@@ -71,29 +82,29 @@ function proxyRequest(path: string, body: unknown, signal?: AbortSignal): Promis
   });
 }
 
-async function previewResponse(response: Response): Promise<ProxyPreview> {
+async function previewResponse(response: Response, t: (key: string) => string): Promise<ProxyPreview> {
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new ProxyToolsError("You do not have access to this proxy operation.");
-    if (response.status === 404 || response.status === 501 || response.status === 503) throw new ProxyToolsError("Bulk proxy tools are not available on this server.");
-    throw new ProxyToolsError("Could not preview replacements. Check the input format and selected folders.");
+    if (response.status === 401 || response.status === 403) throw new ProxyToolsError(t("You do not have access to this proxy operation."));
+    if (response.status === 404 || response.status === 501 || response.status === 503) throw new ProxyToolsError(t("Bulk proxy tools are not available on this server."));
+    throw new ProxyToolsError(t("Could not preview replacements. Check the input format and selected folders."));
   }
   let body: ProxyPreview;
-  try { body = await response.json(); } catch { throw new ProxyToolsError("The proxy preview returned invalid data."); }
+  try { body = await response.json(); } catch { throw new ProxyToolsError(t("The proxy preview returned invalid data.")); }
   if (body?.ok !== true || typeof body.previewId !== "string" || !Array.isArray(body.rows) || !Number.isInteger(body.unusedProxies)) {
-    throw new ProxyToolsError("The proxy preview returned invalid data.");
+    throw new ProxyToolsError(t("The proxy preview returned invalid data."));
   }
   return body;
 }
 
-export async function requestProxyPreview(input: ProxyPreviewInput, signal?: AbortSignal): Promise<ProxyPreview> {
-  return previewResponse(await proxyRequest("preview", input, signal));
+export async function requestProxyPreview(input: ProxyPreviewInput, t: (key: string) => string, signal?: AbortSignal): Promise<ProxyPreview> {
+  return previewResponse(await proxyRequest("preview", input, signal), t);
 }
 
 export async function readProxyProgress(
-  response: Response, onEvent: (event: ProxyProgressEvent) => void, signal?: AbortSignal,
+  response: Response, onEvent: (event: ProxyProgressEvent) => void, t: (key: string) => string, signal?: AbortSignal,
 ): Promise<void> {
   if (!response.ok || !response.body || !response.headers.get("content-type")?.includes("application/x-ndjson")) {
-    throw new ProxyToolsError("The proxy operation could not start. Check your connection and server version.");
+    throw new ProxyToolsError(t("The proxy operation could not start. Check your connection and server version."));
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -104,24 +115,24 @@ export async function readProxyProgress(
   const accept = (line: string) => {
     if (!line.trim()) return;
     let event: ProxyProgressEvent;
-    try { event = JSON.parse(line); } catch { throw new ProxyToolsError("The proxy operation returned incomplete data."); }
-    if (!event || typeof event !== "object" || done) throw new ProxyToolsError("The proxy operation returned invalid data.");
+    try { event = JSON.parse(line); } catch { throw new ProxyToolsError(t("The proxy operation returned incomplete data.")); }
+    if (!event || typeof event !== "object" || done) throw new ProxyToolsError(t("The proxy operation returned invalid data."));
     switch (event.type) {
       case "progress":
-        if (!["loading", "checking", "applying"].includes(event.phase) || !Number.isFinite(event.completed) || !Number.isFinite(event.total)) throw new ProxyToolsError("Invalid proxy progress.");
+        if (!["loading", "checking", "applying"].includes(event.phase) || !Number.isFinite(event.completed) || !Number.isFinite(event.total)) throw new ProxyToolsError(t("Invalid proxy progress."));
         break;
       case "summary":
-        if (![event.selectedProfiles, event.uniqueProxies, event.duplicatesSkipped].every(Number.isFinite)) throw new ProxyToolsError("Invalid proxy summary.");
+        if (![event.selectedProfiles, event.uniqueProxies, event.duplicatesSkipped].every(Number.isFinite)) throw new ProxyToolsError(t("Invalid proxy summary."));
         break;
       case "check":
-        if (!event.row || !Object.hasOwn(CHECK_LABELS, event.row.status) || !Array.isArray(event.row.profiles)) throw new ProxyToolsError("Invalid proxy check result.");
+        if (!event.row || !(CHECK_STATUSES as readonly string[]).includes(event.row.status) || !Array.isArray(event.row.profiles)) throw new ProxyToolsError(t("Invalid proxy check result."));
         break;
       case "replacement":
-        if (!event.row || !Number.isInteger(event.row.index) || !["ready", "updated", "unchanged", "missing", "skipped", "failed"].includes(event.row.status)) throw new ProxyToolsError("Invalid proxy replacement result.");
+        if (!event.row || !Number.isInteger(event.row.index) || !["ready", "updated", "unchanged", "missing", "skipped", "failed"].includes(event.row.status)) throw new ProxyToolsError(t("Invalid proxy replacement result."));
         break;
       case "done": done = true; break;
-      case "error": throw new ProxyToolsError("The proxy operation failed. Completed results remain available.");
-      default: throw new ProxyToolsError("The proxy operation returned invalid data.");
+      case "error": throw new ProxyToolsError(t("The proxy operation failed. Completed results remain available."));
+      default: throw new ProxyToolsError(t("The proxy operation returned invalid data."));
     }
     onEvent(event);
   };
@@ -140,7 +151,7 @@ export async function readProxyProgress(
     }
     pending += decoder.decode();
     if (pending.trim()) accept(pending);
-    if (!done) throw new ProxyToolsError("The proxy operation was interrupted. Some rows were not completed.");
+    if (!done) throw new ProxyToolsError(t("The proxy operation was interrupted. Some rows were not completed."));
   } finally {
     signal?.removeEventListener("abort", abort);
     if (!done) await reader.cancel().catch(() => {});
@@ -149,22 +160,24 @@ export async function readProxyProgress(
 }
 
 function Pager({ page, pages, total, onPage }: { page: number; pages: number; total: number; onPage: (page: number) => void }) {
+  const { t } = useTranslation();
   return <div className="proxy-pager">
-    <span>{total.toLocaleString()} rows</span>
-    <button type="button" className="btn" disabled={page === 0} onClick={() => onPage(page - 1)}>Previous</button>
-    <span>Page {page + 1} / {pages}</span>
-    <button type="button" className="btn" disabled={page + 1 >= pages} onClick={() => onPage(page + 1)}>Next</button>
+    <span>{t("{total} rows", { total: total.toLocaleString() })}</span>
+    <button type="button" className="btn" disabled={page === 0} onClick={() => onPage(page - 1)}>{t("Previous")}</button>
+    <span>{t("Page {page} / {pages}", { page: page + 1, pages })}</span>
+    <button type="button" className="btn" disabled={page + 1 >= pages} onClick={() => onPage(page + 1)}>{t("Next")}</button>
   </div>;
 }
 
 function AffectedProfiles({ profiles }: { profiles: ProxyCheckView["profiles"] }) {
+  const { t } = useTranslation();
   const [page, setPage] = useState(0);
   const result = proxyResultPage(profiles, page);
-  const folders = [...new Set(profiles.map((profile) => profile.group || "Ungrouped"))];
+  const folders = [...new Set(profiles.map((profile) => profile.group || t("Ungrouped")))];
   return <details className="proxy-affected">
-    <summary>{profiles.length.toLocaleString()} profiles · {folders.length} folders</summary>
+    <summary>{t("{profiles} profiles · {folders} folders", { profiles: profiles.length.toLocaleString(), folders: folders.length })}</summary>
     <div>{folders.join(", ")}</div>
-    <ul>{result.items.map((profile) => <li key={profile.id}>{profile.name || profile.id} · {profile.group || "Ungrouped"}</li>)}</ul>
+    <ul>{result.items.map((profile) => <li key={profile.id}>{profile.name || profile.id} · {profile.group || t("Ungrouped")}</li>)}</ul>
     {result.pages > 1 && <Pager {...result} onPage={setPage} />}
   </details>;
 }
@@ -177,6 +190,7 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   /** Profiles with no proxy, or 0 when the count is unknown (Cloud mode). */
   profilesWithoutProxy?: number;
 }) {
+  const { t } = useTranslation();
   const [all, setAll] = useState(true);
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [task, setTask] = useState<"check" | "replace">("check");
@@ -226,9 +240,9 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
   const failed = (current: AbortController, operation: string, failure: unknown) => {
     if (controller.current !== current) return;
     // Raw fetch errors can include URLs. Only fixed client messages reach the page.
-    if (current.signal.aborted) setNotice("Cancelled. Completed results remain saved; some rows may be incomplete.");
+    if (current.signal.aborted) setNotice(t("Cancelled. Completed results remain saved; some rows may be incomplete."));
     else if (failure instanceof ProxyToolsError) setError(failure.message);
-    else setError(`${operation} failed. Check the input, folder access, and connection, then try again.`);
+    else setError(t("{operation} failed. Check the input, folder access, and connection, then try again.", { operation }));
   };
 
   const makePreview = async (retry = false) => {
@@ -236,11 +250,11 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
     if (!current) return;
     try {
       const next = retry && preview
-        ? await previewResponse(await proxyRequest("retry-preview", { previewId: preview.previewId, ids: retries }, current.signal))
-        : await requestProxyPreview({ scope, mode, input, ...(mode === "list" ? { profilesPerProxy: perProxy } : {}) }, current.signal);
+        ? await previewResponse(await proxyRequest("retry-preview", { previewId: preview.previewId, ids: retries }, current.signal), t)
+        : await requestProxyPreview({ scope, mode, input, ...(mode === "list" ? { profilesPerProxy: perProxy } : {}) }, t, current.signal);
       if (controller.current !== current || current.signal.aborted) return;
       setPreview(next); setReplacementPage(0); setReplacementFailures(false);
-      setNotice("Review these assignments before applying. Open profiles are skipped.");
+      setNotice(t("Review these assignments before applying. Open profiles are skipped."));
     } catch (failure) { failed(current, "Preview", failure); }
     finally { finish(current); }
   };
@@ -257,12 +271,12 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
         if (event.type === "replacement") setPreview((previous) => previous && ({
           ...previous, rows: previous.rows.map((row) => row.index === event.row.index ? event.row : row),
         }));
-      }, current.signal);
-      if (controller.current === current) setNotice("Replacement run finished. Review the results for skipped or failed profiles.");
+      }, t, current.signal);
+      if (controller.current === current) setNotice(t("Replacement run finished. Review the results for skipped or failed profiles."));
     } catch (failure) { failed(current, "Replacement", failure); }
     finally {
       if (controller.current === current) {
-        try { await onChanged(); } catch { setError("Results are saved, but the profile list could not refresh."); }
+        try { await onChanged(); } catch { setError(t("Results are saved, but the profile list could not refresh.")); }
       }
       finish(current);
     }
@@ -281,8 +295,8 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
         if (event.type === "progress") setProgress(event);
         if (event.type === "summary") setCheckSummary(event);
         if (event.type === "check") setChecks((rows) => retry ? mergeProxyCheckResult(rows, event.row) : [...rows, event.row]);
-      }, current.signal);
-      if (controller.current === current) setNotice("Proxy checks finished. Unknown means the check could not establish a result.");
+      }, t, current.signal);
+      if (controller.current === current) setNotice(t("Proxy checks finished. Unknown means the check could not establish a result."));
     } catch (failure) { failed(current, "Proxy check", failure); }
     finally { finish(current); }
   };
@@ -294,107 +308,107 @@ export function ProxiesPage({ groups, folders = [], onChanged, active, profilesW
     try {
       const text = await file.text();
       if (controller.current === current && !current.signal.aborted) setInput(text);
-    } catch { if (controller.current === current) setError("The selected file could not be read."); }
+    } catch { if (controller.current === current) setError(t("The selected file could not be read.")); }
     finally { finish(current); }
   };
 
   const hasFailedChecks = !busy && checks.some((row) => row.status === "failed" || row.status === "unstable");
 
   return <div className="workspace proxy-page" hidden={!active}>
-    <div className="tools-intro"><div><span className="tools-eyebrow">PROXY TOOLS</span><h2>Keep your profiles connected.</h2><p>Check saved connections or replace proxies across entire folders.</p></div></div>
+    <div className="tools-intro"><div><span className="tools-eyebrow">{t("PROXY TOOLS")}</span><h2>{t("Keep your profiles connected.")}</h2><p>{t("Check saved connections or replace proxies across entire folders.")}</p></div></div>
     {profilesWithoutProxy > 0 && <ProxyProviderOffer placement="proxies-no-proxy" missing={profilesWithoutProxy} />}
-    <div className="tools-tabs" aria-label="Proxy tools">
-      <button className={task === "check" ? "selected" : ""} aria-pressed={task === "check"} onClick={() => setTask("check")}>Check proxies <small>Find connection problems</small></button>
-      <button className={task === "replace" ? "selected" : ""} aria-pressed={task === "replace"} onClick={() => setTask("replace")}>Replace proxies <small>Assign new connections</small></button>
+    <div className="tools-tabs" aria-label={t("Proxy tools")}>
+      <button className={task === "check" ? "selected" : ""} aria-pressed={task === "check"} onClick={() => setTask("check")}>{t("Check proxies")} <small>{t("Find connection problems")}</small></button>
+      <button className={task === "replace" ? "selected" : ""} aria-pressed={task === "replace"} onClick={() => setTask("replace")}>{t("Replace proxies")} <small>{t("Assign new connections")}</small></button>
     </div>
     <section className="tools-panel proxy-scope">
-      <div className="tools-panel-head"><div><h3>{task === "replace" && <span className="tools-step">1</span>}Choose folders</h3><p>Includes every profile in these folders, across all pages.</p></div><span className="tools-folder-tag">{all ? "All folders" : `${selectedGroups.length} selected`}</span></div>
+      <div className="tools-panel-head"><div><h3>{task === "replace" && <span className="tools-step">1</span>}{t("Choose folders")}</h3><p>{t("Includes every profile in these folders, across all pages.")}</p></div><span className="tools-folder-tag">{all ? t("All folders") : t("{count} selected", { count: selectedGroups.length })}</span></div>
       <div className="proxy-folder-list">
-        <label className={`folder-chip${all ? " selected" : ""}`}><input type="checkbox" checked={all} disabled={!!busy} onChange={(event) => { setAll(event.target.checked); setSelectedGroups([]); invalidateScope(); }} />All folders</label>
+        <label className={`folder-chip${all ? " selected" : ""}`}><input type="checkbox" checked={all} disabled={!!busy} onChange={(event) => { setAll(event.target.checked); setSelectedGroups([]); invalidateScope(); }} />{t("All folders")}</label>
         {folderNames.map((name) => <label className={`folder-chip${!all && selectedGroups.includes(name) ? " selected" : ""}`} key={name}>
           <input type="checkbox" checked={all || selectedGroups.includes(name)} disabled={!!busy} onChange={(event) => {
             const branch = new Set([name, ...folderScope(folders, name)]);
             const current = all ? folderNames : selectedGroups;
             setSelectedGroups(event.target.checked ? [...new Set([...current, ...branch])] : current.filter((group) => !branch.has(group)));
             setAll(false); invalidateScope();
-          }} />{name || "Ungrouped"}
+          }} />{name || t("Ungrouped")}
         </label>)}
       </div>
-      {!scopeReady && <p className="tools-hint">Select at least one folder to continue.</p>}
+      {!scopeReady && <p className="tools-hint">{t("Select at least one folder to continue.")}</p>}
     </section>
     {error && <div className="tools-alert" role="alert">{error}</div>}
     {notice && <div className="tools-notice" role="status">{notice}</div>}
     {busy && <div className="tools-progress" role="status">
-      <div className="proxy-actions"><strong>{progress ? `${progress.phase === "loading" ? "Loading profiles" : progress.phase === "checking" ? "Checking proxies" : "Applying changes"}: ${progress.completed.toLocaleString()} / ${progress.total.toLocaleString()}` : "Preparing…"}</strong>
-        <button type="button" className="btn" onClick={() => controller.current?.abort()}>Cancel</button></div>
-      <progress aria-label="Proxy operation progress" {...(progress && progress.total > 0 ? { value: progress.completed, max: progress.total } : {})} />
+      <div className="proxy-actions"><strong>{progress ? `${progress.phase === "loading" ? t("Loading profiles") : progress.phase === "checking" ? t("Checking proxies") : t("Applying changes")}: ${progress.completed.toLocaleString()} / ${progress.total.toLocaleString()}` : t("Preparing…")}</strong>
+        <button type="button" className="btn" onClick={() => controller.current?.abort()}>{t("Cancel")}</button></div>
+      <progress aria-label={t("Proxy operation progress")} {...(progress && progress.total > 0 ? { value: progress.completed, max: progress.total } : {})} />
     </div>}
     {task === "check" ? <>
       <section className="tools-panel">
-        <div className="tools-panel-head"><div><h3>Check your connections</h3><p>Shared proxies are checked once. No browsers open and no settings change.</p></div>
-          <button type="button" className="btn primary" disabled={!!busy || !scopeReady} onClick={() => void runChecks()}>{busy === "check" ? "Checking…" : "Check proxies"}</button></div>
+        <div className="tools-panel-head"><div><h3>{t("Check your connections")}</h3><p>{t("Shared proxies are checked once. No browsers open and no settings change.")}</p></div>
+          <button type="button" className="btn primary" disabled={!!busy || !scopeReady} onClick={() => void runChecks()}>{busy === "check" ? t("Checking…") : t("Check proxies")}</button></div>
         {checkSummary && <div className="tools-stats">
-          <div><strong>{checkSummary.selectedProfiles.toLocaleString()}</strong><span>Profiles included</span></div>
-          <div><strong>{checkSummary.uniqueProxies.toLocaleString()}</strong><span>Unique proxies</span></div>
-          <div><strong>{checkSummary.duplicatesSkipped.toLocaleString()}</strong><span>Duplicate checks avoided</span></div>
-          <div><strong>{checks.filter((row) => row.status === "working").length.toLocaleString()}</strong><span>Alive</span></div>
+          <div><strong>{checkSummary.selectedProfiles.toLocaleString()}</strong><span>{t("Profiles included")}</span></div>
+          <div><strong>{checkSummary.uniqueProxies.toLocaleString()}</strong><span>{t("Unique proxies")}</span></div>
+          <div><strong>{checkSummary.duplicatesSkipped.toLocaleString()}</strong><span>{t("Duplicate checks avoided")}</span></div>
+          <div><strong>{checks.filter((row) => row.status === "working").length.toLocaleString()}</strong><span>{t("Alive")}</span></div>
         </div>}
         {checks.length > 0 ? <>
-          <div className="tools-result-bar"><h3>Check results</h3><div className="proxy-actions">
-            <label className="proxy-choice"><input type="checkbox" checked={checkFailures} onChange={(event) => { setCheckFailures(event.target.checked); setCheckPage(0); }} />Only problems</label>
-            <button type="button" className="btn" disabled={!!busy || !failedChecks.length} onClick={() => void runChecks(true)}>Retry failed checks</button>
+          <div className="tools-result-bar"><h3>{t("Check results")}</h3><div className="proxy-actions">
+            <label className="proxy-choice"><input type="checkbox" checked={checkFailures} onChange={(event) => { setCheckFailures(event.target.checked); setCheckPage(0); }} />{t("Only problems")}</label>
+            <button type="button" className="btn" disabled={!!busy || !failedChecks.length} onClick={() => void runChecks(true)}>{t("Retry failed checks")}</button>
           </div></div>
-          <div className="proxy-table-wrap"><table className="profile-table proxy-table"><thead><tr><th>Proxy address</th><th>Connection</th><th>Exit IP</th><th>Used by</th><th>Checked</th></tr></thead>
+          <div className="proxy-table-wrap"><table className="profile-table proxy-table"><thead><tr><th>{t("Proxy address")}</th><th>{t("Connection")}</th><th>{t("Exit IP")}</th><th>{t("Used by")}</th><th>{t("Checked")}</th></tr></thead>
             <tbody>{checkResults.items.map((row) => <tr key={`${row.key}-${row.profiles[0]?.id}`}>
-              <td className="tools-mono">{row.proxy || "No proxy assigned"}</td><td><span className={`tools-status ${row.status}`}>{CHECK_LABELS[row.status]}</span><small>{row.reason ? REASONS[row.reason] || "Check could not complete" : ""}</small></td>
+              <td className="tools-mono">{row.proxy || t("No proxy assigned")}</td><td><span className={`tools-status ${row.status}`}>{getCheckLabel(t, row.status)}</span><small>{row.reason ? getReasonLabel(t, row.reason || "") : ""}</small></td>
               <td className="tools-mono">{row.ip || "—"}{row.country && <small>{row.country}</small>}</td><td><AffectedProfiles profiles={row.profiles} /></td>
               <td>{new Date(row.checkedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}</td>
             </tr>)}</tbody></table></div>
-          {!checkResults.total && <p className="tools-hint tools-result-empty">No problems found in the completed checks.</p>}
+          {!checkResults.total && <p className="tools-hint tools-result-empty">{t("No problems found in the completed checks.")}</p>}
           <Pager {...checkResults} onPage={setCheckPage} />
-        </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↗</span><h3>{busy === "check" ? "Checking selected folders…" : "Ready when you are"}</h3><p>Choose your folders above, then check which proxies are alive, dead, or need attention.</p></div>}
+        </> : <div className="tools-empty"><span className="tools-empty-symbol" aria-hidden="true">↗</span><h3>{busy === "check" ? t("Checking selected folders…") : t("Ready when you are")}</h3><p>{t("Choose your folders above, then check which proxies are alive, dead, or need attention.")}</p></div>}
       </section>
       {(hasFailedChecks || profilesWithoutProxy === 0) && <ProxyProviderOffer placement={hasFailedChecks ? "proxies-check-failed" : "proxies-check"} replacement={hasFailedChecks} />}
-      <p className="tools-footnote">Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.</p>
+      <p className="tools-footnote">{t("Supports HTTP and SOCKS5. HTTPS checks are not supported. Unknown means a result could not be confirmed.")}</p>
     </> : <>
       <section className="tools-panel proxy-input-panel">
-        <div className="tools-panel-head"><div><h3><span className="tools-step">2</span>Add replacement proxies</h3><p>Nothing changes until you review and apply the assignments.</p></div></div>
+        <div className="tools-panel-head"><div><h3><span className="tools-step">2</span>{t("Add replacement proxies")}</h3><p>{t("Nothing changes until you review and apply the assignments.")}</p></div></div>
         <div className="tools-panel-body">
           <ProxyProviderOffer placement="proxies-replace" replacement />
-          <label className="fld"><span>Assignment method</span><select value={mode} disabled={!!busy} onChange={(event) => { setMode(event.target.value as ProxyReplacementMode); invalidatePreview(); }}>
-            <option value="list">Paste a proxy list</option><option value="profileId">Match specific profile IDs — CSV</option><option value="oldProxy">Replace matching old proxies — CSV</option>
+          <label className="fld"><span>{t("Assignment method")}</span><select value={mode} disabled={!!busy} onChange={(event) => { setMode(event.target.value as ProxyReplacementMode); invalidatePreview(); }}>
+            <option value="list">{t("Paste a proxy list")}</option><option value="profileId">{t("Match specific profile IDs — CSV")}</option><option value="oldProxy">{t("Replace matching old proxies — CSV")}</option>
           </select></label>
-          <p className="tools-hint">{mode === "profileId" ? <>Include a header row: <code>profileId,type,host,port,user,pass</code>.</>
-            : mode === "oldProxy" ? <>Include a header row: <code>oldProxy,newProxy</code>. Each old proxy is replaced wherever it appears in the selected folders.</>
-            : "Paste one proxy per line. We match them to profiles in profile-ID order. Each proxy is used for the number of profiles you set below. You will see every assignment next."}</p>
-          {mode === "list" && <label className="fld"><span>Profiles per proxy</span><input type="number" aria-label="Profiles per proxy" min={1} step={1} value={perProxy} disabled={!!busy} onChange={(event) => { setPerProxy(Math.max(1, Math.floor(Number(event.target.value)) || 1)); invalidatePreview(); }} /></label>}
-          <label className="fld"><span>{mode === "list" ? "Your new proxy list" : "Your replacement CSV"}</span><textarea aria-label="Replacement input" rows={5} value={input} disabled={!!busy} spellCheck={false} autoComplete="off" placeholder={mode === "list" ? "proxy.example.com:8080:username:password\nsocks5://username:password@proxy.example.com:1080" : mode === "profileId" ? "profileId,type,host,port,user,pass" : "oldProxy,newProxy"} onChange={(event) => { setInput(event.target.value); invalidatePreview(); }} /></label>
-          <div className="tools-result-bar"><label className="proxy-upload">Or upload a file<input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>
-            <button type="button" className="btn primary" disabled={!!busy || !scopeReady || !input.trim()} onClick={() => void makePreview()}>{busy === "preview" ? "Preparing preview…" : "Preview changes"}</button></div>
+          <p className="tools-hint">{mode === "profileId" ? <>{t("Include a header row:")} <code>profileId,type,host,port,user,pass</code>.</>
+            : mode === "oldProxy" ? <>{t("Include a header row:")} <code>oldProxy,newProxy</code>. {t("Each old proxy is replaced wherever it appears in the selected folders.")}</>
+            : t("Paste one proxy per line. We match them to profiles in profile-ID order. Each proxy is used for the number of profiles you set below. You will see every assignment next.")}</p>
+          {mode === "list" && <label className="fld"><span>{t("Profiles per proxy")}</span><input type="number" aria-label={t("Profiles per proxy")} min={1} step={1} value={perProxy} disabled={!!busy} onChange={(event) => { setPerProxy(Math.max(1, Math.floor(Number(event.target.value)) || 1)); invalidatePreview(); }} /></label>}
+          <label className="fld"><span>{mode === "list" ? t("Your new proxy list") : t("Your replacement CSV")}</span><textarea aria-label={t("Replacement input")} rows={5} value={input} disabled={!!busy} spellCheck={false} autoComplete="off" placeholder={mode === "list" ? "proxy.example.com:8080:username:password\nsocks5://username:password@proxy.example.com:1080" : mode === "profileId" ? "profileId,type,host,port,user,pass" : "oldProxy,newProxy"} onChange={(event) => { setInput(event.target.value); invalidatePreview(); }} /></label>
+          <div className="tools-result-bar"><label className="proxy-upload">{t("Or upload a file")}<input type="file" accept=".csv,.txt,text/csv,text/plain" disabled={!!busy} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void loadFile(file); }} /></label>
+            <button type="button" className="btn primary" disabled={!!busy || !scopeReady || !input.trim()} onClick={() => void makePreview()}>{busy === "preview" ? t("Preparing preview…") : t("Preview changes")}</button></div>
         </div>
       </section>
       <section className="tools-panel">
-        <div className="tools-panel-head"><div><h3><span className="tools-step">3</span>Review changes</h3><p>Check the old and new proxy for each profile. Open profiles are skipped.</p></div>
-          {preview && <button type="button" className="btn primary" disabled={!!busy || !ready} onClick={() => void apply()}>{busy === "apply" ? "Applying…" : `Apply ${ready.toLocaleString()} changes`}</button>}</div>
+        <div className="tools-panel-head"><div><h3><span className="tools-step">3</span>{t("Review changes")}</h3><p>{t("Check the old and new proxy for each profile. Open profiles are skipped.")}</p></div>
+          {preview && <button type="button" className="btn primary" disabled={!!busy || !ready} onClick={() => void apply()}>{busy === "apply" ? t("Applying…") : t("Apply {count} changes", { count: ready.toLocaleString() })}</button>}</div>
         {preview ? <>
           <div className="tools-stats">
-            <div><strong>{ready.toLocaleString()}</strong><span>Ready to apply</span></div>
-            <div><strong>{preview.rows.filter((row) => row.status === "updated").length.toLocaleString()}</strong><span>Updated</span></div>
-            <div><strong>{preview.rows.filter((row) => ["skipped", "failed", "missing"].includes(row.status)).length.toLocaleString()}</strong><span>Need attention</span></div>
-            <div><strong>{preview.rows.filter((row) => row.status === "unchanged").length.toLocaleString()}</strong><span>Unchanged</span></div>
+            <div><strong>{ready.toLocaleString()}</strong><span>{t("Ready to apply")}</span></div>
+            <div><strong>{preview.rows.filter((row) => row.status === "updated").length.toLocaleString()}</strong><span>{t("Updated")}</span></div>
+            <div><strong>{preview.rows.filter((row) => ["skipped", "failed", "missing"].includes(row.status)).length.toLocaleString()}</strong><span>{t("Need attention")}</span></div>
+            <div><strong>{preview.rows.filter((row) => row.status === "unchanged").length.toLocaleString()}</strong><span>{t("Unchanged")}</span></div>
           </div>
-          <div className="tools-result-bar"><span className="tools-hint">{preview.rows.length.toLocaleString()} assignments · {preview.unusedProxies.toLocaleString()} unused proxies</span><div className="proxy-actions">
-            <label className="proxy-choice"><input type="checkbox" checked={replacementFailures} onChange={(event) => { setReplacementFailures(event.target.checked); setReplacementPage(0); }} />Only problems</label>
-            <button type="button" className="btn" disabled={!!busy || !retries.length} onClick={() => void makePreview(true)}>Preview failed rows again</button>
+          <div className="tools-result-bar"><span className="tools-hint">{t("{assignments} assignments · {unused} unused proxies", { assignments: preview.rows.length.toLocaleString(), unused: preview.unusedProxies.toLocaleString() })}</span><div className="proxy-actions">
+            <label className="proxy-choice"><input type="checkbox" checked={replacementFailures} onChange={(event) => { setReplacementFailures(event.target.checked); setReplacementPage(0); }} />{t("Only problems")}</label>
+            <button type="button" className="btn" disabled={!!busy || !retries.length} onClick={() => void makePreview(true)}>{t("Preview failed rows again")}</button>
           </div></div>
-          <div className="proxy-table-wrap"><table className="profile-table proxy-table"><thead><tr><th>Profile</th><th>Folder</th><th>Current proxy</th><th>New proxy</th><th>Status</th></tr></thead>
+          <div className="proxy-table-wrap"><table className="profile-table proxy-table"><thead><tr><th>{t("Profile")}</th><th>{t("Folder")}</th><th>{t("Current proxy")}</th><th>{t("New proxy")}</th><th>{t("Status")}</th></tr></thead>
             <tbody>{replacements.items.map((row) => <tr key={row.index}>
-              <td><strong>{row.name || row.profileId || `Input row ${row.index + 1}`}</strong><small className="tools-mono">{row.name ? row.profileId : ""}</small></td>
-              <td>{row.group === undefined ? "—" : row.group || "Ungrouped"}</td><td className="tools-mono">{row.previousProxy || "—"}</td><td className="tools-mono">{row.proxy || "—"}</td>
-              <td><span className={`tools-status ${row.status}`}>{REPLACEMENT_LABELS[row.status]}</span><small>{row.code ? REASONS[row.code] || "Could not apply this row" : ""}</small></td>
+              <td><strong>{row.name || row.profileId || t("Input row {index}", { index: row.index + 1 })}</strong><small className="tools-mono">{row.name ? row.profileId : ""}</small></td>
+              <td>{row.group === undefined ? "—" : row.group || t("Ungrouped")}</td><td className="tools-mono">{row.previousProxy || "—"}</td><td className="tools-mono">{row.proxy || "—"}</td>
+              <td><span className={`tools-status ${row.status}`}>{getReplacementLabel(t, row.status)}</span><small>{row.code ? getReasonLabel(t, row.code || "") : ""}</small></td>
             </tr>)}</tbody></table></div>
           <Pager {...replacements} onPage={setReplacementPage} />
-        </> : <div className="tools-empty compact"><p>Your preview will appear here. Saved sessions and fingerprints stay unchanged.</p></div>}
+        </> : <div className="tools-empty compact"><p>{t("Your preview will appear here. Saved sessions and fingerprints stay unchanged.")}</p></div>}
       </section>
     </>}
   </div>;

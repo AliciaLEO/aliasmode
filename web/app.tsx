@@ -4800,10 +4800,10 @@ function App() {
                 {t("Anything chosen above overrides that field on every imported record, including provider exports that already carry a group.")}
               </p>
               <p className="formnote">
-                An AliasMode export also carries <code>seed</code>, <code>timezone</code> and{" "}
-                <code>platform_os</code>, which recreate the exact browser fingerprint. Its{" "}
-                <code>fp_*</code> columns are a <b>record</b> of the fingerprint that was measured,
-                not settings — they are checked after the browser opens, never applied to it.
+                {t("An AliasMode export also carries")} <code>seed</code>, <code>timezone</code> {t("and")}{" "}
+                <code>platform_os</code>{t(", which recreate the exact browser fingerprint. Its")}{" "}
+                <code>fp_*</code> {t("columns are a")} <b>{t("record")}</b>{" "}
+                {t("of the fingerprint that was measured, not settings \u2014 they are checked after the browser opens, never applied to it.")}
               </p>
             </div>
             <div className="modal-foot">

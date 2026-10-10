@@ -725,7 +725,7 @@ function FingerprintSettings({
   return (
     <details className="fingerprint-settings">
       <summary>
-        <span>{"Fingerprint settings"}</span>
+        <span>{t("Fingerprint settings")}</span>
         <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
       </summary>
       <div className="fingerprint-grid">
@@ -4601,7 +4601,7 @@ function App() {
                     <label className="fld grow">
                       <span>Proxy</span>
                       <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
-                      <small>Leave blank to launch on a direct connection.</small>
+                      <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>
                   </div>
                   <div className="proxy-check-actions">
@@ -4675,7 +4675,7 @@ function App() {
                     </div>
                   )}
                   <p className="formnote">
-                    Cookies and locked fingerprint values are preserved. Only editable fields change.
+                    {t("Cookies and locked fingerprint values are preserved. Only editable fields change.")}
                     {editEngine === "chromium" && t(" Extensions load when the browser opens.")}
                   </p>
                 </>

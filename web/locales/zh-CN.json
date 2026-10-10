@@ -469,5 +469,9 @@
   ", which recreate the exact browser fingerprint. Its": "，它们能重建精确的浏览器指纹。其",
   "columns are a": "列是",
   "record": "记录",
-  "of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.": "实测指纹的，而非设置——它们在浏览器打开后校验，从不应用于浏览器。"
+  "of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.": "实测指纹的，而非设置——它们在浏览器打开后校验，从不应用于浏览器。",
+  "(种子)": "（种子）",
+  "(时区)": "（时区）",
+  " and ": " 和 ",
+  "(操作系统)": "（操作系统）"
 }

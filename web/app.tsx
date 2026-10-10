@@ -761,7 +761,7 @@ function FingerprintSettings({
         {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
           <label className="fld" key={label}>
             <span>{t(label)}</span>
-            <input value={value} readOnly tabIndex={-1} className="ro" />
+            <input value={t(value)} readOnly tabIndex={-1} className="ro" />
           </label>
         ))}
         <div className="hint">{disabled

@@ -456,5 +456,12 @@
   "Applying changes": "正在应用更改",
   "More than one profile matched": "匹配到多个配置文件",
   "{total} rows": "{total} 行",
-  "Each old proxy is replaced wherever it appears in the selected folders.": "每个旧代理将在所选文件夹中出现的位置被替换。"
+  "Each old proxy is replaced wherever it appears in the selected folders.": "每个旧代理将在所选文件夹中出现的位置被替换。",
+  "User agent": "用户代理",
+  "Browser version": "浏览器版本",
+  "Fingerprint seed": "指纹种子",
+  "Automatic · latest installed": "自动 · 已安装最新版",
+  "Automatic · unique and stable": "自动 · 唯一且稳定",
+  "Automatic · proxy-aware": "自动 · 代理感知",
+  "Stored · set from connection on request": "已存储 · 按需从连接获取"
 }

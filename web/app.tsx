@@ -730,7 +730,7 @@ function FingerprintSettings({
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
-          <span>Browser</span>
+          <span>{t("Browser")}</span>
           <input value={engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly tabIndex={-1} className="ro" />
         </label>
         {engine === "chromium" && (
@@ -740,7 +740,7 @@ function FingerprintSettings({
           </label>
         )}
         <label className="fld">
-          <span>{"Operating system"}</span>
+          <span>{t("Operating system")}</span>
           {onPlatformOsChange ? (
             <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
               <option value="">{"Automatic — match this computer"}</option>
@@ -754,26 +754,26 @@ function FingerprintSettings({
         </label>
         {onTimezoneChange && (
           <label className="fld">
-            <span>{"Timezone"}</span>
+            <span>{t("Timezone")}</span>
             <input value={timezone ?? ""} disabled={disabled} placeholder={"Automatic · e.g. Europe/Paris"} onChange={(event) => onTimezoneChange(event.target.value)} />
           </label>
         )}
         {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
           <label className="fld" key={label}>
-            <span>{label}</span>
+            <span>{t(label)}</span>
             <input value={value} readOnly tabIndex={-1} className="ro" />
           </label>
         ))}
         <div className="hint">{disabled
-          ? "Close the browser before changing fingerprint settings."
+          ? t("Close the browser before changing fingerprint settings.")
           : onTimezoneChange
             ? engine === "firefox"
-              ? "Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated."
-              : "Screen, operating system, and timezone can be changed. CloakBrowser controls the other values."
+              ? t("Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated.")
+              : t("Screen, operating system, and timezone can be changed. CloakBrowser controls the other values.")
             : engine === "firefox"
-              ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-              : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
-        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{"Undo fingerprint edits"}</button>}
+              ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
+              : t("CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
+        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{t("Undo fingerprint edits")}</button>}
       </div>
     </details>
   );
@@ -4406,11 +4406,11 @@ function App() {
               </div>
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>Folder</span>
+                  <span>{t("Folder")}</span>
                   <GroupPicker value={form.group} onChange={(v) => setF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
-                  <span>Platform</span>
+                  <span>{t("Platform")}</span>
                   <PlatformPicker value={form.platform} onChange={(v) => setF("platform", v)} />
                 </label>
               </div>
@@ -4505,7 +4505,7 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="edit-profile-title">
-              <Icon name="edit" />Edit profile<span className="mono muted">{editId}</span>
+              <Icon name="edit" />{t("Edit profile")}<span className="mono muted">{editId}</span>
               <button type="button" className="modal-close" aria-label="Close" onClick={closeEdit}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
@@ -4539,7 +4539,7 @@ function App() {
                   )}
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Name</span>
+                      <span>{t("Name")}</span>
                       <input value={editForm.name ?? ""} onChange={(e) => setEF("name", e.target.value)} />
                     </label>
                     {!isCloudMode && (
@@ -4558,13 +4558,13 @@ function App() {
                   </div>
                   <div className="fld-row">
                     <label className="fld grow">
-                      <span>Folder</span>
+                      <span>{t("Folder")}</span>
                       {canEditGroup(profiles.find((profile) => profile.id === editId)?.group ?? "")
                         ? <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
                         : <input value={editForm.group ?? ""} readOnly />}
                     </label>
                     <label className="fld grow">
-                      <span>Platform</span>
+                      <span>{t("Platform")}</span>
                       <PlatformPicker value={editForm.platform ?? ""} onChange={(v) => setEF("platform", v)} />
                     </label>
                   </div>
@@ -4579,14 +4579,14 @@ function App() {
                     </div>
                   )}
                   <label className="fld">
-                    <span>Browser</span>
+                    <span>{t("Browser")}</span>
                     <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
                     <small>{editEngine === "firefox"
                       ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
                       : t("CDP, PDF, and Chrome extensions are available.")}</small>
                   </label>
                   <label className="fld">
-                    <span>Tags <span className="muted">{t("(comma-separated)")}</span></span>
+                    <span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span>
                     <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
                   </label>
                   <div className="fld-row">

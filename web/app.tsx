@@ -4492,7 +4492,7 @@ function App() {
               </div>
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeCreate}>Cancel</button>
+              <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>
               <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? t("Creating…") : t("Create profile")}</button>
             </div>
           </div>
@@ -4682,7 +4682,7 @@ function App() {
               )}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={closeEdit}>Cancel</button>
+              <button className="btn ghost" onClick={closeEdit}>{t("Cancel")}</button>
               <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? t("Saving…") : t("Save changes")}</button>
             </div>
           </div>

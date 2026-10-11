@@ -985,11 +985,13 @@ async function searchProvider(chromium, payload) {
       }
       if (!duck) throw new Error("Chromium did not save DuckDuckGo");
 
+      // Chrome 146 identifies an engine by `modelIndex`; Chromium 155 renamed it to `id`.
       const modelIndex = (engine) => {
-        if (!Number.isInteger(engine.modelIndex) || engine.modelIndex < 0) {
+        const index = Number.isInteger(engine.modelIndex) ? engine.modelIndex : engine.id;
+        if (!Number.isInteger(index) || index < 0) {
           throw new Error("Chromium search engine model index was unavailable");
         }
-        return engine.modelIndex;
+        return index;
       };
       if (duck.canBeActivated) {
         globalThis.chrome.send("setIsActiveSearchEngine", [modelIndex(duck), true]);

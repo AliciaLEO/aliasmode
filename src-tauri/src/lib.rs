@@ -667,21 +667,17 @@ pub fn run() {
         tauri::RunEvent::ExitRequested {
             code: Some(code), ..
         } => exit_code.store(code, Ordering::Release),
-        // Cmd+Q must take the same safe shutdown path as closing the window.
-        #[cfg(target_os = "macos")]
-        tauri::RunEvent::ExitRequested {
-            code: None, api, ..
-        } => {
-            if let Some(window) = app.get_webview_window("main") {
-                api.prevent_exit();
-                let _ = window.close();
-            }
-        }
         tauri::RunEvent::Exit => {
             if let Some(runtime) = app.try_state::<runtime_descriptor::RuntimeDescriptorState>() {
                 let _ = runtime.remove_owned();
             }
             if let Some(sidecar) = app.try_state::<sidecar::SidecarSupervisor>() {
+                // Cmd+Q and the Dock's Quit end the app without a close request, so
+                // save sessions and close browsers here before the sidecar stops.
+                #[cfg(target_os = "macos")]
+                let _ = tauri::async_runtime::block_on(shutdown::graceful_sidecar_cleanup(
+                    sidecar.inner(),
+                ));
                 let _ = sidecar.kill_owned();
             }
         }

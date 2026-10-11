@@ -87,32 +87,23 @@ jobs:
           screencapture -x "$RUNNER_TEMP/evidence/chromium-profile.png"
           "$helper" browser close --profile "$chromium" | jq -e '.ok'
 
-          # Cmd+Q with a browser still open must ask first, then close the browser and stop the sidecar.
+          # Cmd+Q with a browser still open must close that browser and stop the sidecar.
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
           sidecar="$(jq -er .sidecarPid "$data/agent-runtime.json")"
+          pgrep -f "$profile" >/dev/null
           osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $desktop)
             set frontmost to true
             keystroke \"q\" using command down
-          end tell"
-          sleep 5
-          screencapture -x "$RUNNER_TEMP/evidence/quit-dialog.png"
-          kill -0 "$desktop"
-          osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $desktop)
-            repeat with candidate in windows
-              if exists button \"Yes\" of candidate then
-                click button \"Yes\" of candidate
-                return
-              end if
-            end repeat
-            error \"quit confirmation was not shown\"
           end tell"
           for attempt in $(seq 1 90); do
             kill -0 "$desktop" 2>/dev/null || break
             sleep 1
           done
+          screencapture -x "$RUNNER_TEMP/evidence/after-quit.png"
           ! kill -0 "$desktop" 2>/dev/null
           ! kill -0 "$sidecar" 2>/dev/null
           test ! -f "$data/agent-runtime.json"
+          ! pgrep -f "$profile" >/dev/null
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Collect logs

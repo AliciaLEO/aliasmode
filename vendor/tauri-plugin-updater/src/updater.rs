@@ -1335,7 +1335,14 @@ impl Update {
                 std::fs::remove_dir_all(&self.extract_path)?;
             }
             // Move the new app to the target path
-            std::fs::rename(tmp_extract_dir.path(), &self.extract_path)?;
+            if let Err(err) = std::fs::rename(tmp_extract_dir.path(), &self.extract_path) {
+                // Put the current app back, so a failed swap never leaves the user without an app.
+                let _ = std::fs::rename(
+                    tmp_backup_dir.path().join("current_app"),
+                    &self.extract_path,
+                );
+                return Err(err.into());
+            }
         }
 
         let _ = std::process::Command::new("touch")

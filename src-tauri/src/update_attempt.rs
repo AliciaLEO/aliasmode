@@ -484,14 +484,17 @@ pub fn reconcile_after_startup(
     let current_executable =
         std::env::current_exe().map_err(|_| UpdateAttemptError::RunningPath)?;
     // macOS has no installer marker or registry: the proof is the same bundle path
-    // now running the expected version.
+    // now running the expected version. An unchanged version means nothing was installed.
     #[cfg(target_os = "macos")]
     let (marker_matches, registration_matches) = {
         let same_bundle = fs::canonicalize(&current_executable)
             .ok()
             .and_then(|executable| macos_bundle(&executable))
             .is_some_and(|bundle| bundle == attempt.expected_root);
-        (same_bundle, same_bundle)
+        (
+            same_bundle && env!("CARGO_PKG_VERSION") == attempt.expected_version,
+            same_bundle,
+        )
     };
     #[cfg(not(target_os = "macos"))]
     let marker_matches =

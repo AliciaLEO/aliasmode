@@ -12,6 +12,7 @@ import {
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
 import { buildNewProfile } from "./create.ts";
+import { parseExport, serializeAdsTxt, serializeXlsxRows } from "./parse.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { ProfileStore } from "./store.ts";
 
@@ -92,4 +93,16 @@ test("new profiles keep their Chromium runtime fixed locally and in Cloud payloa
     .toThrow("unsupported portable profile payload");
   expect(() => decodePortableProfile({ ...standardPayload, schemaVersion: 3 } as any)).toThrow("unsupported portable profile payload");
   store.close();
+});
+
+test("exports keep the Chrome version so a re-import cannot downgrade it", () => {
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const standard = buildNewProfile({}, () => false);
+  const text = serializeAdsTxt([beta, standard]);
+  expect(text.match(/^chromium_runtime=aliasmode$/gm)).toHaveLength(1);
+  const imported = parseExport(text).profiles;
+  expect(imported.find((profile) => profile.id === beta.id)?.chromiumRuntime).toBe("aliasmode");
+  expect(imported.find((profile) => profile.id === standard.id)?.chromiumRuntime).toBeUndefined();
+  expect(serializeXlsxRows([beta, standard]).headers).toContain("chromium_runtime");
+  expect(serializeXlsxRows([standard]).headers).not.toContain("chromium_runtime");
 });

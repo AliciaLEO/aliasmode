@@ -294,7 +294,7 @@ function normalizeRecord(
   const extensionText = list(extensions.value);
   if (extensions.present && extensionText !== undefined) output.extensions = extensionText;
 
-  for (const field of ["engine", "firefox_config"] as const) {
+  for (const field of ["engine", "firefox_config", "chromium_runtime"] as const) {
     const found = find(index, [normalizedKey(field)]);
     const value = scalar(found.value);
     if (found.present && value !== undefined) output[field] = value;

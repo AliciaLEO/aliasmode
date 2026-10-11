@@ -21,8 +21,8 @@
  * and dropping AdsPower's own extension cookies.
  */
 
-import { normalizeProfileEngine } from "./firefox-config.ts";
-import type { CookieRecord, Profile, ProxySpec } from "./types.ts";
+import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import type { ChromiumRuntime, CookieRecord, Profile, ProxySpec } from "./types.ts";
 import { deterministicSeed, parseResolution, platformFromUA } from "./fingerprint.ts";
 import { normalizeProxyType, parseProxySpec, proxyLegacyString } from "./proxy.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
@@ -391,9 +391,13 @@ export function recordToProfile(
   catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const fpExpected = expectationFromRecord(rec);
   const browser = parseFirefoxExport(rec, validationErrors);
+  let chromiumRuntime: ChromiumRuntime | undefined;
+  try { chromiumRuntime = normalizeChromiumRuntime(rec.chromium_runtime?.trim(), browser.engine ?? "chromium"); }
+  catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const profile: Profile = {
     id,
     ...browser,
+    ...(chromiumRuntime ? { chromiumRuntime } : {}),
     accId: (rec.acc_id ?? "").trim(),
     name: (rec.name ?? "").trim(),
     group: (rec.group ?? "").trim(),
@@ -697,6 +701,7 @@ function profileFields(p: ProfileExport): Record<string, string> {
     tags: (p.tags ?? []).join(","),
     engine: p.engine ?? "chromium",
     firefox_config: p.firefox ? JSON.stringify(p.firefox) : "",
+    chromium_runtime: p.chromiumRuntime ?? "",
     // Attested fields: a photograph of the identity, never an input to one.
     ...attestationFields(fp),
   };
@@ -732,7 +737,8 @@ const FIREFOX_XLSX_COLUMNS = [...XLSX_COLUMNS, ...FIREFOX_EXPORT_KEYS] as const;
 export function serializeAdsTxt(profiles: ProfileExport[]): string {
   const blocks = profiles.map((p) => {
     const f = profileFields(p);
-    const keys = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS] : TXT_KEYS;
+    const keys: readonly string[] = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
+      : p.chromiumRuntime ? [...TXT_KEYS, "chromium_runtime"] : TXT_KEYS;
     return [...keys.map((k) => `${k}=${f[k]}`), "******************"].join("\n");
   });
   return blocks.join("\n") + (blocks.length ? "\n" : "");
@@ -744,7 +750,10 @@ export function serializeAdsTxt(profiles: ProfileExport[]): string {
  * the sheet and the .txt block stay one decision, not two.
  */
 export function serializeXlsxRows(profiles: ProfileExport[]): { headers: string[]; rows: string[][] } {
-  const columns = profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS;
+  const columns: readonly string[] = [
+    ...(profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS),
+    ...(profiles.some((profile) => profile.chromiumRuntime) ? ["chromium_runtime"] : []),
+  ];
   return {
     headers: [...columns],
     rows: profiles.map((p) => {

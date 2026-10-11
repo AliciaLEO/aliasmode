@@ -227,6 +227,9 @@ export async function importBuffers(
         problems.push(`${entry.source}: profile ${entry.profile.id}: Firefox config cannot change through import`);
       }
     }
+    if (present.has("chromium_runtime") && (entry.profile.chromiumRuntime ?? "") !== (existing.chromiumRuntime ?? "")) {
+      problems.push(`${entry.source}: profile ${entry.profile.id}: Chrome version cannot change through import`);
+    }
     if (present.has("proxy") && !entry.profile.proxy && (existing.proxy || existing.proxyError)) {
       problems.push(`${entry.source}: profile ${entry.profile.id}: blank proxy would erase the stored proxy; use profile edit to remove it explicitly`);
     }

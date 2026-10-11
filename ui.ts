@@ -1212,9 +1212,7 @@ export async function handleUiRequest(
     // Create a new profile: unique id → unique seed → unique fingerprint/UA.
     try {
       const input = (await req.json()) as NewProfileInput;
-      if ((remote || options.cloudBrowser) && input.chromiumRuntime) {
-        throw new Error("Chromium 155 beta profiles are local-only for now");
-      }
+      if (remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
       if (remote) {
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
@@ -1227,13 +1225,11 @@ export async function handleUiRequest(
         await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
         syncFirefoxTimezone(profile);
       }
-      if (options.cloudBrowser) {
-        return Response.json({ ok: true, ...await options.cloudBrowser.create(profile) });
-      }
-      store.upsertProfile(profile);
+      const created = options.cloudBrowser ? await options.cloudBrowser.create(profile) : undefined;
+      if (!created) store.upsertProfile(profile);
       // Start the one-time beta download now so the first open is not waiting on it.
       if (profile.chromiumRuntime) launcher.prepareChromiumRuntime();
-      return Response.json({ ok: true, id: profile.id });
+      return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });
     }

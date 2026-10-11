@@ -302,7 +302,16 @@ export interface PortableProfileV2 {
   session: PortableSessionV1;
 }
 
-export type PortableProfile = PortableProfileV1 | PortableProfileV2;
+/** Chromium on the opt-in AliasMode Chromium runtime. Older clients reject it instead of opening it on CloakBrowser. */
+export interface PortableProfileV3 {
+  schemaVersion: 3;
+  profile: PortableProfileV1["profile"] & {
+    chromiumRuntime: "aliasmode";
+  };
+  session: PortableSessionV1;
+}
+
+export type PortableProfile = PortableProfileV1 | PortableProfileV2 | PortableProfileV3;
 
 export interface CloudProfileSummary {
   id: string;

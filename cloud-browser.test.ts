@@ -344,13 +344,16 @@ const VALID_DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 const TEST_BINARY = "approved test browser binary";
 const TEST_BINARY_SHA256 = createHash("sha256").update(TEST_BINARY).digest("hex");
 
-type CloudTestEngine = "chromium" | "firefox";
+type CloudTestEngine = "chromium" | "firefox" | "chromium155";
 
 function productionCloudPayload(engine: CloudTestEngine, profileId: string): OpenProfileResponse["payload"] {
   const base = payload();
   base.profile.id = profileId;
   base.profile.ua = VALID_DESKTOP_UA;
   if (engine === "chromium") return base;
+  if (engine === "chromium155") {
+    return { schemaVersion: 3, profile: { ...base.profile, chromiumRuntime: "aliasmode" }, session: base.session };
+  }
   return {
     schemaVersion: 2,
     profile: {
@@ -468,6 +471,19 @@ test("dashboard Cloud preflight distinguishes missing engine pins before native 
     }
   }
 }, 30_000);
+
+test("Cloud opens a Chromium 155 beta payload on the beta runtime, never CloakBrowser", async () => {
+  // The macOS host proves routing: CloakBrowser would reach the spawn boundary,
+  // while the beta runtime stops at its Windows-only preflight.
+  const beta = await runProductionCloudPreflight("chromium155", TEST_BINARY_SHA256);
+  try {
+    expect(beta.status).toBe(500);
+    expect(beta.result.error).toContain(new BrowserLaunchError("preflight", "chromium155_host").guidance!);
+    expect(beta.boundaryCalls).toBe(0);
+  } finally {
+    beta.cleanup();
+  }
+});
 
 test("legacy Chromium and native Firefox Cloud profiles preflight independently", async () => {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-cloud-two-engine-"));

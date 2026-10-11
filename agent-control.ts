@@ -387,7 +387,7 @@ export class AgentControlSession {
     const input = object(params.input ?? {});
     const temporary = params.temporary === true;
     let id: string;
-    if (this.deps.remote && input.chromiumRuntime) throw new Error("Chromium 155 beta profiles are local-only for now");
+    if (this.deps.remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
     if (this.deps.remote) {
       id = (await this.deps.remote.createProfile(input as NewProfileInput)).id;
     } else {

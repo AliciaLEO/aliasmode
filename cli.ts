@@ -376,6 +376,8 @@ function makeLauncher(
   remoteMode = false,
   defaultDataRoot = "profiles",
   ensureSearchProvider = ensureDuckDuckGoDefault,
+  // Local and Cloud profiles share one downloaded Chromium 155 runtime.
+  chromiumRuntimeRoot?: string,
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
   const autofill = new AutofillBridge(store);
@@ -384,6 +386,7 @@ function makeLauncher(
     store,
     autofill,
     dataRoot: defaultDataRoot,
+    ...(chromiumRuntimeRoot ? { chromiumRuntimeRoot } : {}),
     headless: has(rest, "headless"),
     // Explicit canary-only escape hatch for constrained test hosts where a
     // full browser identity probe cannot complete. Never enable in production.
@@ -2374,6 +2377,8 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     rest,
     true,
     paths.cloudProfiles,
+    undefined,
+    join(paths.root, "runtimes"),
   );
   const profile = smokeProfile(
     profileId,
@@ -2385,6 +2390,7 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     profile.engine = engine;
     profile.firefox = createFirefoxProfileConfig(profile.screenWidth, profile.screenHeight);
   }
+  if (flag(rest, "chromium-runtime") === "aliasmode") profile.chromiumRuntime = "aliasmode";
   let payload = encodePortableProfile(profile, JSON.stringify({
     cookies: [{
       name: "auth_token",
@@ -2418,6 +2424,9 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     },
     async closeOpen(_registrationId: string, request: { expectedVersion: number; payload: typeof payload }) {
       if (request.expectedVersion !== version) throw new Error("Cloud launcher smoke received a stale close");
+      if (request.payload.schemaVersion !== payload.schemaVersion) {
+        throw new Error("Cloud launcher smoke close changed the profile's browser runtime");
+      }
       if (!request.payload.session.cookies.some((cookie) =>
         cookie.name === "auth_token" && cookie.value === "aliasmode-smoke"
       )) {
@@ -2710,7 +2719,7 @@ async function main() {
         // attributes locks to this id; a per-operator token overrides it.
         const owner = defaultOperatorName(identityDbPath);
         console.log(`local instance "${owner}" (hub lock attribution: this box's operator id)`);
-        const launcher = makeLauncher(store, rest, true, profileDataRoot);
+        const launcher = makeLauncher(store, rest, true, profileDataRoot, undefined, join(paths.root, "runtimes"));
         await launcher.reconcileOrphans();
         const coord = new RemoteCoordinator({
           hub: new HubClient(hubUrl, password, owner),
@@ -2810,7 +2819,7 @@ async function main() {
       // stale crash row rejects startup before it can be proven dead.
       console.log(`${configuredMode.mode} mode: preparing browser recovery`);
       console.log("startup: initializing autofill bridge");
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot);
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"));
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
       await launcher.reconcileOrphans();
       if (savedMode.mode !== "cloud") {
@@ -2920,7 +2929,7 @@ async function main() {
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot);
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"));
       await launcher.reconcileOrphans();
       if (savedMode.mode !== "cloud") await launcher.certifySurvivors();
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);

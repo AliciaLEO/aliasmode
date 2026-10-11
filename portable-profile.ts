@@ -1,6 +1,6 @@
-import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableSessionV1 } from "./contracts/cloud-v1.ts";
-import type { FirefoxProfileConfig, Profile } from "./types.ts";
-import { normalizeProfileEngine } from "./firefox-config.ts";
+import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableProfileV3, PortableSessionV1 } from "./contracts/cloud-v1.ts";
+import type { ChromiumRuntime, FirefoxProfileConfig, Profile } from "./types.ts";
+import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { normalizeBundle } from "./session.ts";
 
@@ -21,12 +21,10 @@ export function encodePortableProfile(
   profile: Profile & { engine: "firefox"; firefox: FirefoxProfileConfig },
   sessionBundle?: string,
 ): PortableProfileV2;
-export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1;
+export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1 | PortableProfileV3;
 export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfile {
   assertValidProfile(profile);
   const engine = normalizeProfileEngine(profile.engine, profile.firefox);
-  // Cloud payloads cannot carry the runtime yet; never sync it as CloakBrowser.
-  if (profile.chromiumRuntime) throw new Error("Chromium 155 beta profiles are local-only for now");
   let session: PortableSessionV1;
   if (sessionBundle === undefined) {
     session = portableSession({ cookies: profile.cookies });
@@ -71,6 +69,9 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
       session,
     };
   }
+  // A new schema version, so older clients reject it instead of opening it on CloakBrowser.
+  const chromiumRuntime = normalizeChromiumRuntime(profile.chromiumRuntime, engine.engine);
+  if (chromiumRuntime) return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime }, session };
   return { schemaVersion: 1, profile: portableProfile, session };
 }
 
@@ -82,13 +83,18 @@ export function decodePortableProfile(payload: PortableProfile): {
   const portableProfile = payload.profile as PortableProfileV1["profile"] & {
     engine?: unknown;
     firefox?: unknown;
+    chromiumRuntime?: unknown;
   };
   let engine;
-  if (payload.schemaVersion === 1) {
+  let chromiumRuntime: ChromiumRuntime | undefined;
+  if (payload.schemaVersion === 1 || payload.schemaVersion === 3) {
     if (portableProfile.engine !== undefined || portableProfile.firefox !== undefined) {
       throw new Error("portable Chromium profile cannot include a Firefox config");
     }
     engine = normalizeProfileEngine(undefined, undefined);
+    chromiumRuntime = normalizeChromiumRuntime(portableProfile.chromiumRuntime, engine.engine);
+    // V1 never carries a runtime; V3 always does.
+    if (payload.schemaVersion === 1 ? chromiumRuntime : !chromiumRuntime) throw new Error("unsupported portable profile payload");
   } else if (payload.schemaVersion === 2) {
     if (portableProfile.engine !== "firefox") throw new Error("unsupported portable profile payload");
     engine = normalizeProfileEngine(portableProfile.engine, portableProfile.firefox);
@@ -100,6 +106,7 @@ export function decodePortableProfile(payload: PortableProfile): {
   const profile: Profile = {
     id: portableProfile.id,
     engine: engine.engine,
+    ...(chromiumRuntime ? { chromiumRuntime } : {}),
     ...(engine.firefox ? { firefox: engine.firefox } : {}),
     accId: portableProfile.accId,
     name: portableProfile.name,

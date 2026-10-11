@@ -12,7 +12,7 @@ import {
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
 import { buildNewProfile } from "./create.ts";
-import { encodePortableProfile } from "./portable-profile.ts";
+import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { ProfileStore } from "./store.ts";
 
 /** Fake archive whose files carry their pinned hashes by content. */
@@ -61,7 +61,7 @@ test("rejects an archive or executable that does not match its pin", async () =>
   }
 });
 
-test("new profiles keep their Chromium runtime fixed and local-only", () => {
+test("new profiles keep their Chromium runtime fixed locally and in Cloud payloads", () => {
   const store = new ProfileStore(":memory:");
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
   const standard = buildNewProfile({}, () => false);
@@ -78,7 +78,18 @@ test("new profiles keep their Chromium runtime fixed and local-only", () => {
     .toThrow("Chromium runtime cannot change in place");
   expect(store.getProfile(standard.id)!.chromiumRuntime).toBeUndefined();
 
-  // Cloud cannot carry the runtime yet, so it must never sync as CloakBrowser.
-  expect(() => encodePortableProfile(beta)).toThrow("local-only");
+  // Cloud carries the runtime in schema V3, which older clients reject
+  // instead of opening it on CloakBrowser. Default profiles stay V1.
+  const payload = encodePortableProfile(beta);
+  expect(payload.schemaVersion).toBe(3);
+  expect(payload.profile).toMatchObject({ chromiumRuntime: "aliasmode" });
+  expect(decodePortableProfile(payload).profile.chromiumRuntime).toBe("aliasmode");
+  const standardPayload = encodePortableProfile(standard);
+  expect(standardPayload.schemaVersion).toBe(1);
+  expect("chromiumRuntime" in standardPayload.profile).toBe(false);
+  expect(decodePortableProfile(standardPayload).profile.chromiumRuntime).toBeUndefined();
+  expect(() => decodePortableProfile({ ...standardPayload, profile: { ...standardPayload.profile, chromiumRuntime: "aliasmode" } } as any))
+    .toThrow("unsupported portable profile payload");
+  expect(() => decodePortableProfile({ ...standardPayload, schemaVersion: 3 } as any)).toThrow("unsupported portable profile payload");
   store.close();
 });

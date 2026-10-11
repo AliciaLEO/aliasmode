@@ -480,6 +480,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           return {
             id: profile.id,
             ...(cached?.engine === "firefox" ? { engine: "firefox" as const } : {}),
+            ...(cached?.chromiumRuntime ? { chromiumRuntime: cached.chromiumRuntime } : {}),
             name: profile.name,
             group: profile.group,
             platform: profile.platform,

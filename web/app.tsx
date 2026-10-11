@@ -2466,7 +2466,7 @@ function App() {
       const r = await createProfile({
         name: form.name,
         engine: form.engine,
-        ...(form.engine === "chromium" && form.chromiumRuntime && !isCloudMode ? { chromiumRuntime: form.chromiumRuntime } : {}),
+        ...(form.engine === "chromium" && form.chromiumRuntime && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime } : {}),
         group: form.group,
         platform: form.platform,
         screen: form.screen,
@@ -4489,7 +4489,7 @@ function App() {
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} chromiumRuntime={isCloudMode ? "" : form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
+              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
@@ -4511,14 +4511,14 @@ function App() {
                   </div>
                 ))}
               </div>
-              {form.engine === "chromium" && !isCloudMode && (
+              {form.engine === "chromium" && !appMode?.legacyRemote && (
                 <label className="fld">
                   <span>{t("Chrome version")}</span>
                   <select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
                     <option value="">{t("146 (default)")}</option>
                     <option value="aliasmode">{t("155 beta")}</option>
                   </select>
-                  {form.chromiumRuntime && <small>{t("Beta. Downloads once (about 190 MB). Local profiles only.")}</small>}
+                  {form.chromiumRuntime && <small>{t("Beta. Downloads once (about 190 MB) on each computer that opens it.")}</small>}
                 </label>
               )}
             </div>

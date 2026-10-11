@@ -1,0 +1,185 @@
+# Temporary investigation workflow for the macOS port. Delete before merging to main.
+name: macOS diagnostics
+
+on:
+  push:
+    branches:
+      - feat/macos-desktop
+    paths:
+      - .github/workflows/macos-diagnostics.yml
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - run: bun install --frozen-lockfile
+      - name: Fetch the latest built app
+        shell: bash
+        run: |
+          set -euo pipefail
+          run="$(gh run list --workflow macos-desktop.yml --branch feat/macos-desktop --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          gh run download "$run" -n aliasmode-macos-arm64 -D "$RUNNER_TEMP/dmg"
+          hdiutil attach -nobrowse -mountpoint "$RUNNER_TEMP/mnt" "$RUNNER_TEMP"/dmg/*.dmg
+          mkdir -p "$RUNNER_TEMP/Applications" "$RUNNER_TEMP/out"
+          ditto "$RUNNER_TEMP/mnt/AliasMode.app" "$RUNNER_TEMP/Applications/AliasMode.app"
+          hdiutil detach "$RUNNER_TEMP/mnt"
+          xattr -l "$RUNNER_TEMP/Applications/AliasMode.app" || true
+      - name: Arabic text with different font lists
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/out"
+          engine="$RUNNER_TEMP/Applications/AliasMode.app/Contents/Resources/firefox/AliasMode.app/Contents/MacOS/aliasmode"
+          cat > "$out/arabic.html" <<'HTML'
+          <!doctype html><meta charset="utf-8"><body style="font-size:28px;margin:16px">
+          <p>default: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:serif">serif: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:sans-serif">sans-serif: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:'Geeza Pro'">Geeza Pro: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:system-ui">system-ui: مرحبا بالعالم — هذا نص عربي</p>
+          <p>עברית שלום · हिन्दी नमस्ते · ไทย สวัสดี · 한국어 안녕하세요</p>
+          HTML
+          bun -e '
+            import fonts from "camoufox-js/dist/mappings/fonts.config.js";
+            import { createFirefoxProfileConfig } from "./firefox-config.ts";
+            import { writeFileSync } from "node:fs";
+            const out = process.argv[1];
+            const mac = [...fonts.mac];
+            const full = createFirefoxProfileConfig(1280, 800, "macos").config;
+            const { fonts: _fonts, ...withoutFonts } = full;
+            const variants = {
+              "a-no-config": null,
+              "b-mac-fonts": { fonts: mac },
+              "c-mac-fonts-no-dot": { fonts: mac.filter((name) => !name.startsWith(".")) },
+              "d-mac-fonts-no-pua": { fonts: mac.filter((name) => !/PUA/.test(name)) },
+              "e-full-profile-config": full,
+              "f-full-config-without-fonts": withoutFonts,
+            };
+            for (const [name, config] of Object.entries(variants)) writeFileSync(`${out}/${name}.json`, JSON.stringify(config));
+            console.log("mac fonts", mac.length, "arabic-capable present:", ["Geeza Pro", "Al Nile", "Baghdad", "Damascus", "Arial Unicode MS", "Arial", "Tahoma", "Times New Roman"].filter((name) => mac.includes(name)));
+            console.log("dot or PUA fonts:", mac.filter((name) => name.startsWith(".") || /PUA/.test(name)));
+            console.log("full config keys:", Object.keys(full).sort().join(", "));
+          ' "$out"
+          for file in "$out"/?-*.json; do
+            name="$(basename "$file" .json)"
+            profile="$(mktemp -d)"
+            (
+              for key in $(env | grep -o '^CAMOU_CONFIG[^=]*' || true); do unset "$key"; done
+              if [[ "$(cat "$file")" != "null" ]]; then
+                index=1
+                while IFS= read -r chunk; do
+                  export "CAMOU_CONFIG_$index=$chunk"
+                  index=$((index + 1))
+                done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8"); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' "$file")
+              fi
+              "$engine" --headless -profile "$profile" --window-size=900,520 --screenshot "$out/arabic-$name.png" "file://$out/arabic.html" > "$out/arabic-$name.log" 2>&1 &
+              pid=$!
+              for attempt in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+              kill "$pid" 2>/dev/null || true
+            )
+            ls -la "$out/arabic-$name.png" 2>/dev/null || { echo "no screenshot for $name"; tail -5 "$out/arabic-$name.log"; }
+          done
+      - name: Chromium 155 search engine settings page
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/out"
+          app="$RUNNER_TEMP/Applications/AliasMode.app"
+          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          mkdir -p "$data"
+          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
+          open -n "$app"
+          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
+          helper="$app/Contents/MacOS/aliasmode-mcp"
+          created="$("$helper" profiles create --name diag-chromium --temporary)"
+          profile="$(jq -er '.result.id' <<<"$created")"
+          opened="$("$helper" browser open --profile "$profile")"
+          echo "$opened"
+          port="$(jq -er '.result.port' <<<"$opened")"
+          sleep 20
+          cat > "$out/settings-probe.mjs" <<'JS'
+          import { chromium } from "playwright-core";
+          const browser = await chromium.connectOverCDP(`http://127.0.0.1:${process.argv[2]}`);
+          const context = browser.contexts()[0];
+          console.log("version", browser.version(), "pages", context.pages().map((page) => page.url()));
+          const page = await context.newPage();
+          for (const url of ["chrome://version/", "chrome://settings/", "chrome://settings/searchEngines"]) {
+            try {
+              await page.goto(url, { waitUntil: "domcontentloaded", timeout: 10_000 });
+              console.log("goto ok", url, "->", page.url(), "title:", await page.title());
+            } catch (error) {
+              console.log("goto failed", url, String(error).slice(0, 600));
+            }
+          }
+          try {
+            console.log("cr.js", await page.evaluate(async () => {
+              const { sendWithPromise } = await import("chrome://resources/js/cr.js");
+              const list = await sendWithPromise("getSearchEnginesList");
+              return { defaults: list.defaults?.map((engine) => engine.name), others: list.others?.length, hasAddButton: !!document.querySelector("settings-ui") };
+            }));
+          } catch (error) {
+            console.log("evaluate failed", String(error).slice(0, 800));
+          }
+          await page.close();
+          await browser.close();
+          JS
+          cp "$out/settings-probe.mjs" "$app/Contents/Resources/playwright/settings-probe.mjs"
+          (cd "$app/Contents/Resources/playwright" && ./node/node settings-probe.mjs "$port") 2>&1 | tee "$out/settings-probe.log"
+          screencapture -x "$out/chromium-settings.png"
+          cp "$data"/logs/*.log "$out/" 2>/dev/null || true
+          "$helper" browser close --profile "$profile" || true
+          pkill -x aliasmode || true
+      - name: Quarantined helpers and engines inside a clean app
+        shell: bash
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/out"
+          clean="$RUNNER_TEMP/Applications/AliasMode.app"
+          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          pkill -x aliasmode || true
+          sleep 5
+          rm -f "$data/agent-runtime.json"
+          app="$RUNNER_TEMP/Quarantined/AliasMode.app"
+          mkdir -p "$RUNNER_TEMP/Quarantined"
+          ditto "$clean" "$app"
+          stamp="0081;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)"
+          xattr -w com.apple.quarantine "$stamp" "$app/Contents/MacOS/aliasmode-sidecar" "$app/Contents/MacOS/aliasmode-mcp"
+          find "$app/Contents/Resources" -exec xattr -w com.apple.quarantine "$stamp" {} +
+          xattr -l "$app/Contents/MacOS/aliasmode-sidecar"
+          open -n "$app"
+          started=no
+          for attempt in $(seq 1 60); do [[ -f "$data/agent-runtime.json" ]] && { started=yes; break; }; sleep 1; done
+          echo "sidecar started with quarantined helpers: $started" | tee "$out/quarantine-result.txt"
+          screencapture -x "$out/quarantine-start.png"
+          if [[ "$started" == yes ]]; then
+            helper="$clean/Contents/MacOS/aliasmode-mcp"
+            created="$("$helper" profiles create --name diag-firefox --temporary --engine firefox)"
+            profile="$(jq -er '.result.id' <<<"$created")"
+            echo "firefox open: $("$helper" browser open --profile "$profile" --url https://example.com/)" | tee -a "$out/quarantine-result.txt"
+            sleep 10
+            screencapture -x "$out/quarantine-firefox.png"
+            created="$("$helper" profiles create --name diag-chromium --temporary)"
+            profile="$(jq -er '.result.id' <<<"$created")"
+            echo "chromium open: $("$helper" browser open --profile "$profile" --url https://example.com/)" | tee -a "$out/quarantine-result.txt"
+            sleep 10
+            screencapture -x "$out/quarantine-chromium.png"
+          fi
+          echo "quarantined helper run: $("$app/Contents/MacOS/aliasmode-mcp" version 2>&1 | head -3)" | tee -a "$out/quarantine-result.txt"
+          log show --last 4m --style compact --predicate 'subsystem == "com.apple.syspolicy.exec" OR process == "syspolicyd"' 2>/dev/null | tail -60 > "$out/quarantine-syspolicy.log" || true
+          pkill -x aliasmode || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliasmode-macos-diagnostics
+          path: ${{ runner.temp }}/out

@@ -207,12 +207,12 @@ async function installFirefoxRuntime(
 
 export const WINDOWS_SIDECAR_TARGET = "bun-windows-x64-baseline";
 
-async function compileSidecar(cwd: string, output: string): Promise<void> {
+export async function compileSidecar(cwd: string, output: string, target = WINDOWS_SIDECAR_TARGET): Promise<void> {
   const child = Bun.spawn([
     process.execPath,
     "build",
     "--compile",
-    `--target=${WINDOWS_SIDECAR_TARGET}`,
+    `--target=${target}`,
     "--define=ALIASMODE_COMPILED=true",
     "--external=playwright-core",
     "--external=chromium-bidi",
@@ -225,12 +225,12 @@ async function compileSidecar(cwd: string, output: string): Promise<void> {
   if (code !== 0) throw new Error(`sidecar compilation exited with code ${code}`);
 }
 
-async function compileAgent(cwd: string, output: string): Promise<void> {
+export async function compileAgent(cwd: string, output: string, target = WINDOWS_SIDECAR_TARGET): Promise<void> {
   const child = Bun.spawn([
     process.execPath,
     "build",
     "--compile",
-    `--target=${WINDOWS_SIDECAR_TARGET}`,
+    `--target=${target}`,
     "agent/aliasmode-mcp.ts",
     "--outfile",
     output,
@@ -279,6 +279,36 @@ function copyRuntimePackage(
       continue;
     }
     copyRuntimePackage(cwd, destinationRoot, dependency, copied);
+  }
+}
+
+/** Copies the worker scripts, agent files and their Node packages; every desktop bundle needs them. */
+export function stageAgentRuntime(cwd: string, playwrightRoot: string): void {
+  cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "worker.mjs"));
+  cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "playwright-worker.mjs"));
+  cpSync(join(cwd, "firefox-worker.mjs"), join(playwrightRoot, "firefox-worker.mjs"));
+
+  const agentRoot = join(playwrightRoot, "agent");
+  mkdirSync(agentRoot, { recursive: true });
+  for (const file of [
+    "mcp-host.mjs",
+    "playwright-proxy.mjs",
+    "playwright-runner.mjs",
+    "script-runner.mjs",
+    "script-runner.py",
+    "runtime-client.mjs",
+  ]) {
+    cpSync(join(cwd, "agent", file), join(agentRoot, file));
+  }
+  const copied = new Set<string>();
+  for (const dependency of [
+    "playwright-core",
+    "ws",
+    "@modelcontextprotocol/sdk",
+    "@playwright/mcp",
+    "playwright",
+  ]) {
+    copyRuntimePackage(cwd, playwrightRoot, dependency, copied);
   }
 }
 
@@ -357,32 +387,7 @@ export async function prepareWindowsBundle(
   if (!statSync(join(playwrightRoot, "python", "Lib", "site-packages", "playwright", "driver", "node.exe"), { throwIfNoEntry: false })?.isFile()) {
     throw new Error("official Python Playwright wheel is incomplete");
   }
-  cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "worker.mjs"));
-  cpSync(join(cwd, "playwright-worker.mjs"), join(playwrightRoot, "playwright-worker.mjs"));
-  cpSync(join(cwd, "firefox-worker.mjs"), join(playwrightRoot, "firefox-worker.mjs"));
-
-  const agentRoot = join(playwrightRoot, "agent");
-  mkdirSync(agentRoot, { recursive: true });
-  for (const file of [
-    "mcp-host.mjs",
-    "playwright-proxy.mjs",
-    "playwright-runner.mjs",
-    "script-runner.mjs",
-    "script-runner.py",
-    "runtime-client.mjs",
-  ]) {
-    cpSync(join(cwd, "agent", file), join(agentRoot, file));
-  }
-  const copied = new Set<string>();
-  for (const dependency of [
-    "playwright-core",
-    "ws",
-    "@modelcontextprotocol/sdk",
-    "@playwright/mcp",
-    "playwright",
-  ]) {
-    copyRuntimePackage(cwd, playwrightRoot, dependency, copied);
-  }
+  stageAgentRuntime(cwd, playwrightRoot);
 
   const installed = await (options.installBrowser ?? ((dir, cacheDir) => installCloakBrowser({ cwd: dir, cacheDir })))(
     staging,

@@ -33,11 +33,15 @@ function has(args: string[], name: string): boolean {
 
 function runtimeRoot(): string {
   if (process.env.ALIASMODE_PLAYWRIGHT_RUNTIME) return resolve(process.env.ALIASMODE_PLAYWRIGHT_RUNTIME);
-  return join(dirname(process.execPath), "playwright");
+  // The macOS bundle keeps resources in Contents/Resources, next to Contents/MacOS.
+  return process.platform === "darwin"
+    ? join(dirname(process.execPath), "..", "Resources", "playwright")
+    : join(dirname(process.execPath), "playwright");
 }
 
 function desktopExecutable(): string {
-  return process.env.ALIASMODE_DESKTOP_EXE || join(dirname(process.execPath), "AliasMode.exe");
+  return process.env.ALIASMODE_DESKTOP_EXE
+    || join(dirname(process.execPath), process.platform === "win32" ? "AliasMode.exe" : "aliasmode");
 }
 
 function nodeExecutable(root: string): string {

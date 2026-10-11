@@ -455,11 +455,17 @@ pub fn run() {
             }
             fs::create_dir_all(data_dir.join("profiles"))?;
             fs::create_dir_all(data_dir.join("inbox"))?;
+            #[cfg(not(windows))]
+            credentials::set_secret_dir(&data_dir);
 
             let resource_dir = app.path().resource_dir()?;
-            let mut browser = browser::verify_browser_resource(&resource_dir).map_err(boxed)?;
+            let browser = browser::verify_browser_resource(&resource_dir)
+                .map_err(boxed)?
+                .map(|mut browser| {
+                    browser.executable = cli_compatible_windows_path(&browser.executable);
+                    browser
+                });
             let mut firefox = browser::verify_firefox_resource(&resource_dir).map_err(boxed)?;
-            browser.executable = cli_compatible_windows_path(&browser.executable);
             firefox.executable = cli_compatible_windows_path(&firefox.executable);
             let playwright_runtime = cli_compatible_windows_path(
                 &resource_dir
@@ -475,7 +481,11 @@ pub fn run() {
                 .join("node_modules")
                 .join("playwright-core")
                 .join("package.json");
-            let node_executable = playwright_runtime.join("node").join("node.exe");
+            let node_executable = playwright_runtime.join("node").join(if cfg!(windows) {
+                "node.exe"
+            } else {
+                "node"
+            });
             let worker_script = playwright_runtime.join("worker.mjs");
             let firefox_worker_script = playwright_runtime.join("firefox-worker.mjs");
             let playwright_worker_script = playwright_runtime.join("playwright-worker.mjs");
@@ -508,7 +518,11 @@ pub fn run() {
                 let helper = std::env::current_exe()?
                     .parent()
                     .ok_or_else(|| boxed("AliasMode installation directory is unavailable"))?
-                    .join("aliasmode-mcp.exe");
+                    .join(if cfg!(windows) {
+                        "aliasmode-mcp.exe"
+                    } else {
+                        "aliasmode-mcp"
+                    });
                 if !helper.is_file() {
                     return Err(boxed("installed AliasMode agent helper is unavailable"));
                 }
@@ -519,7 +533,7 @@ pub fn run() {
             let (sidecar, port) = tauri::async_runtime::block_on(sidecar::launch_and_verify(
                 &handle,
                 &data_dir,
-                &browser,
+                browser.as_ref(),
                 &firefox,
                 &playwright_runtime,
                 &nonce,
@@ -653,6 +667,16 @@ pub fn run() {
         tauri::RunEvent::ExitRequested {
             code: Some(code), ..
         } => exit_code.store(code, Ordering::Release),
+        // Cmd+Q must take the same safe shutdown path as closing the window.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::ExitRequested {
+            code: None, api, ..
+        } => {
+            if let Some(window) = app.get_webview_window("main") {
+                api.prevent_exit();
+                let _ = window.close();
+            }
+        }
         tauri::RunEvent::Exit => {
             if let Some(runtime) = app.try_state::<runtime_descriptor::RuntimeDescriptorState>() {
                 let _ = runtime.remove_owned();

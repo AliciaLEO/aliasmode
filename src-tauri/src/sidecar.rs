@@ -390,14 +390,14 @@ fn should_present_unexpected_exit(shutting_down: bool) -> bool {
 pub async fn launch_and_verify(
     app: &AppHandle,
     data_dir: &Path,
-    browser: &BrowserRuntime,
+    browser: Option<&BrowserRuntime>,
     firefox: &FirefoxRuntime,
     playwright_runtime: &Path,
     nonce: &str,
     agent_nonce: &str,
     background: bool,
 ) -> Result<(SidecarSupervisor, u16), String> {
-    let command = scrubbed_sidecar_command(app)?
+    let mut command = scrubbed_sidecar_command(app)?
         .args(command_args(data_dir))
         .current_dir(data_dir)
         .env("ALIASMODE_DESKTOP_NONCE", nonce)
@@ -405,10 +405,13 @@ pub async fn launch_and_verify(
         .env("ALIASMODE_BACKGROUND", if background { "1" } else { "0" })
         .env("ALIASMODE_DESKTOP_VERSION", VERSION)
         .env("ALIASMODE_PLAYWRIGHT_RUNTIME", playwright_runtime)
-        .env("CLOAKBROWSER_BINARY_PATH", &browser.executable)
-        .env("CLOAKBROWSER_BINARY_SHA256", &browser.sha256)
         .env("ALIASMODE_FIREFOX_BINARY_PATH", &firefox.executable)
         .env("ALIASMODE_FIREFOX_BINARY_SHA256", &firefox.sha256);
+    if let Some(browser) = browser {
+        command = command
+            .env("CLOAKBROWSER_BINARY_PATH", &browser.executable)
+            .env("CLOAKBROWSER_BINARY_SHA256", &browser.sha256);
+    }
 
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.pid();

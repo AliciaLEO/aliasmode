@@ -1,0 +1,114 @@
+name: macOS desktop build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/macos-desktop
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS arm64 app and smoke test
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      BUNDLE: src-tauri/target/aarch64-apple-darwin/release/bundle
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Build the app bundle
+        run: bun run desktop:build:macos
+      - name: Verify bundle layout and signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$BUNDLE/macos/AliasMode.app"
+          ls -la "$app/Contents/MacOS" "$app/Contents/Resources"
+          for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
+            test -x "$app/Contents/MacOS/$file"
+          done
+          test -x "$app/Contents/Resources/playwright/node/node"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --deep --strict --verbose=2 "$app/Contents/Resources/firefox/AliasMode.app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E "Signature|flags|Identifier"
+          # An ad-hoc signature has no notarization, so Gatekeeper is expected to reject it.
+          spctl --assess --type execute -vv "$app" || true
+          ls -la "$BUNDLE/dmg"
+      - name: Start the app and open a Firefox profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/Applications/AliasMode.app"
+          mkdir -p "$RUNNER_TEMP/Applications" "$RUNNER_TEMP/evidence"
+          ditto "$BUNDLE/macos/AliasMode.app" "$app"
+          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          mkdir -p "$data"
+          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
+          helper="$app/Contents/MacOS/aliasmode-mcp"
+
+          open -n "$app"
+          for attempt in $(seq 1 120); do
+            [[ -f "$data/agent-runtime.json" ]] && break
+            sleep 1
+          done
+          test -f "$data/agent-runtime.json"
+          port="$(jq -er .port "$data/agent-runtime.json")"
+          curl --fail --silent --show-error "http://127.0.0.1:$port/ui/api/health" | jq -e '.ok == true'
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/evidence/dashboard.png"
+
+          created="$("$helper" profiles create --name ci-firefox --temporary --engine firefox)"
+          profile="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
+          "$helper" browser open --profile "$profile" --url https://example.com/ | jq -e '.ok and .result.engine == "firefox"'
+          sleep 10
+          screencapture -x "$RUNNER_TEMP/evidence/firefox-profile.png"
+          "$helper" browser status --profile "$profile" | tee "$RUNNER_TEMP/evidence/status.json" | jq -e '.ok'
+          "$helper" browser close --profile "$profile" | jq -e '.ok'
+
+          # Quit through the application menu path; the shell must stop the sidecar itself.
+          desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
+          sidecar="$(jq -er .sidecarPid "$data/agent-runtime.json")"
+          osascript -e 'tell application id "com.aliasmode.desktop" to quit'
+          for attempt in $(seq 1 60); do
+            kill -0 "$desktop" 2>/dev/null || break
+            sleep 1
+          done
+          ! kill -0 "$desktop" 2>/dev/null
+          ! kill -0 "$sidecar" 2>/dev/null
+          test ! -f "$data/agent-runtime.json"
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Collect logs
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidence/logs"
+          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/evidence/logs/" 2>/dev/null || true
+          screencapture -x "$RUNNER_TEMP/evidence/final.png" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliasmode-macos-evidence
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aliasmode-macos-arm64
+          path: ${{ env.BUNDLE }}/dmg/*.dmg
+          if-no-files-found: error

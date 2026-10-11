@@ -14,6 +14,8 @@ const STARTUP_WAIT_MS = 180_000;
 // Replies can be much larger than requests, e.g. a profile list for a large Cloud workspace.
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
+// Windows and Linux report a tick count. macOS reports the `ps -o lstart=` date.
+const START_IDENTITY = /^(?:\d+|[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]\d \d\d:\d\d:\d\d \d{4})$/;
 
 function validNonce(value) {
   return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -30,7 +32,7 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
     !Number.isInteger(value.port) || value.port < 1 || value.port > 65_535 ||
     !Number.isInteger(value.desktopPid) || value.desktopPid < 1 ||
     !Number.isInteger(value.sidecarPid) || value.sidecarPid < 1 ||
-    typeof value.desktopStartedAt !== "string" || !/^\d+$/.test(value.desktopStartedAt) ||
+    typeof value.desktopStartedAt !== "string" || !START_IDENTITY.test(value.desktopStartedAt) ||
     !ready.has(value.readiness) ||
     !Number.isInteger(value.createdAt) || value.createdAt < 1
   ) {
@@ -41,6 +43,10 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
 
 export function defaultRuntimeDescriptorPath(env = process.env) {
   if (env.ALIASMODE_RUNTIME_DESCRIPTOR) return env.ALIASMODE_RUNTIME_DESCRIPTOR;
+  if (process.platform === "darwin") {
+    if (!env.HOME) throw new Error("HOME is required to discover AliasMode");
+    return join(env.HOME, "Library", "Application Support", "com.aliasmode.desktop", "agent-runtime.json");
+  }
   if (!env.APPDATA) throw new Error("APPDATA is required to discover AliasMode");
   return join(env.APPDATA, "com.aliasmode.desktop", "agent-runtime.json");
 }
@@ -71,6 +77,17 @@ async function processStartIdentity(pid) {
     );
     const value = stdout.trim();
     if (!/^\d+$/.test(value)) throw new Error("desktop process identity is invalid");
+    return value;
+  }
+  if (process.platform === "darwin") {
+    // Keep in step with current_process_start_identity in src-tauri/src/runtime_descriptor.rs.
+    const { stdout } = await execFileAsync(
+      "/bin/ps",
+      ["-o", "lstart=", "-p", String(pid)],
+      { env: { LC_ALL: "C", TZ: "UTC" }, timeout: 5_000, maxBuffer: 1024 },
+    );
+    const value = stdout.trim();
+    if (!START_IDENTITY.test(value)) throw new Error("desktop process identity is invalid");
     return value;
   }
   const stat = await readFile(`/proc/${pid}/stat`, "utf8");
@@ -262,6 +279,7 @@ async function connectAgent(descriptor) {
 
 function defaultDesktopExecutable(env = process.env) {
   if (env.ALIASMODE_DESKTOP_EXE) return env.ALIASMODE_DESKTOP_EXE;
+  if (process.platform === "darwin") return "/Applications/AliasMode.app/Contents/MacOS/aliasmode";
   if (!env.LOCALAPPDATA) throw new Error("LOCALAPPDATA is required to start AliasMode");
   return join(env.LOCALAPPDATA, "AliasMode", "AliasMode.exe");
 }

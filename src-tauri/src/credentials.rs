@@ -193,19 +193,78 @@ fn delete_secret(key: CredentialKey) -> Result<(), String> {
     }
 }
 
+// Outside Windows the app is not publisher-signed, so a system keychain would ask
+// for access again after every update. Secrets live in owner-only files beside
+// the profile data they protect.
 #[cfg(not(windows))]
-fn read_secret(_key: CredentialKey) -> Result<Option<String>, String> {
-    Ok(None)
+static SECRET_DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+#[cfg(not(windows))]
+pub(crate) fn set_secret_dir(data_dir: &std::path::Path) {
+    let _ = SECRET_DIR.set(data_dir.join("credentials"));
 }
 
 #[cfg(not(windows))]
-fn write_secret(_key: CredentialKey, _bytes: &[u8]) -> Result<(), String> {
-    Err("Windows Credential Manager is unavailable on this platform".to_owned())
+fn secret_path(key: CredentialKey) -> Result<std::path::PathBuf, String> {
+    SECRET_DIR
+        .get()
+        .map(|directory| directory.join(key.target().trim_start_matches("AliasMode/")))
+        .ok_or_else(|| "credential store is unavailable".to_owned())
 }
 
 #[cfg(not(windows))]
-fn delete_secret(_key: CredentialKey) -> Result<(), String> {
-    Err("Windows Credential Manager is unavailable on this platform".to_owned())
+fn read_secret(key: CredentialKey) -> Result<Option<String>, String> {
+    match std::fs::read(secret_path(key)?) {
+        Ok(bytes) => String::from_utf8(bytes).map(Some).map_err(|error| {
+            let mut bytes = error.into_bytes();
+            bytes.zeroize();
+            "credential store returned an invalid AliasMode credential".to_owned()
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("credential store could not read the requested credential".to_owned()),
+    }
+}
+
+#[cfg(not(windows))]
+fn write_secret(key: CredentialKey, bytes: &[u8]) -> Result<(), String> {
+    use std::{
+        fs,
+        io::Write,
+        os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    };
+
+    let path = secret_path(key)?;
+    let temporary = path.with_extension("tmp");
+    (|| {
+        if let Some(directory) = path.parent() {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(directory)?;
+        }
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)
+    })()
+    .map_err(|_: std::io::Error| {
+        let _ = fs::remove_file(&temporary);
+        "credential store could not store the requested credential".to_owned()
+    })
+}
+
+#[cfg(not(windows))]
+fn delete_secret(key: CredentialKey) -> Result<(), String> {
+    match std::fs::remove_file(secret_path(key)?) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("credential store could not delete the requested credential".to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +297,28 @@ mod tests {
         assert!(CredentialKey::parse("AliasMode/arbitrary").is_err());
         assert!(CredentialKey::parse("*").is_err());
         assert!(delete_cloud_credential("remote_mcp_connector").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn stores_secrets_in_owner_only_files() {
+        use super::{delete_secret, read_secret, secret_path, set_secret_dir, write_secret};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        set_secret_dir(root.path());
+        let key = CredentialKey::RefreshToken;
+        assert_eq!(read_secret(key).unwrap(), None);
+        write_secret(key, b"secret").unwrap();
+        assert_eq!(read_secret(key).unwrap().as_deref(), Some("secret"));
+        let mode = std::fs::metadata(secret_path(key).unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        delete_secret(key).unwrap();
+        delete_secret(key).unwrap();
+        assert_eq!(read_secret(key).unwrap(), None);
     }
 
     #[test]

@@ -15,6 +15,8 @@
     "docs:public:check": "bun scripts/generate-public-docs.mjs --check",
     "desktop:prepare": "bun scripts/prepare-windows-bundle.ts",
     "desktop:build:nsis": "bun run desktop:prepare && tauri build --bundles nsis --no-sign",
+    "desktop:prepare:macos": "bun scripts/prepare-macos-bundle.ts",
+    "desktop:build:macos": "bun run desktop:prepare:macos && tauri build --target aarch64-apple-darwin --bundles app,dmg",
     "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "i18n:locales": "bun scripts/generate-locale-registry.mjs",

@@ -306,6 +306,9 @@ pub async fn check_for_updates(
     app: AppHandle,
     coordinator: tauri::State<'_, UpdateCoordinator>,
 ) -> Result<UpdateStatus, String> {
+    if !cfg!(target_os = "windows") {
+        return Err("AliasMode updates are available only in the Windows desktop app.".to_owned());
+    }
     let _guard = coordinator
         .0
         .try_lock()

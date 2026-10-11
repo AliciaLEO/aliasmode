@@ -197,7 +197,23 @@ fn current_process_start_identity() -> Result<String, String> {
     Ok(((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)).to_string())
 }
 
-#[cfg(not(windows))]
+// Keep in step with processStartIdentity in agent/runtime-client.mjs.
+#[cfg(target_os = "macos")]
+fn current_process_start_identity() -> Result<String, String> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-o", "lstart=", "-p", &std::process::id().to_string()])
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .output()
+        .map_err(|error| error.to_string())?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if !output.status.success() || value.is_empty() {
+        return Err("process start identity is unavailable".to_owned());
+    }
+    Ok(value)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn current_process_start_identity() -> Result<String, String> {
     let stat = fs::read_to_string("/proc/self/stat").map_err(|error| error.to_string())?;
     let end = stat

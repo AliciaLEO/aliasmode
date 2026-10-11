@@ -104,7 +104,8 @@ export function resolvePlaywrightRuntime(
     return {
       kind: "packaged",
       root: packagedRoot,
-      nodeExecutable: join(packagedRoot, "node", "node.exe"),
+      // Only the macOS bundle ships a Node binary without the Windows file name.
+      nodeExecutable: join(packagedRoot, "node", process.platform === "darwin" ? "node" : "node.exe"),
       workerPath: join(packagedRoot, "worker.mjs"),
     };
   }

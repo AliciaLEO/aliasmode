@@ -8,14 +8,27 @@ use std::{
 
 const CLOAKBROWSER_WRAPPER_VERSION: &str = "0.4.11";
 const FIREFOX_VERSION: &str = "152.0.4-beta.30";
+const FIREFOX_EXECUTABLE_NAME: &str = if cfg!(windows) {
+    "aliasmode.exe"
+} else {
+    "aliasmode"
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserMetadata {
+    /// Present only on Windows, where CloakBrowser ships in the installer.
+    #[serde(flatten)]
+    cloakbrowser: Option<CloakBrowserMetadata>,
+    firefox: FirefoxMetadata,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CloakBrowserMetadata {
     executable: String,
     sha256: String,
     wrapper_version: String,
-    firefox: FirefoxMetadata,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,8 +118,10 @@ fn verify_resource(
     Ok((executable, actual))
 }
 
-pub fn verify_browser_resource(resource_dir: &Path) -> Result<BrowserRuntime, String> {
-    let metadata = embedded_metadata()?;
+pub fn verify_browser_resource(resource_dir: &Path) -> Result<Option<BrowserRuntime>, String> {
+    let Some(metadata) = embedded_metadata()?.cloakbrowser else {
+        return Ok(None);
+    };
     if metadata.wrapper_version != CLOAKBROWSER_WRAPPER_VERSION || !is_sha256(&metadata.sha256) {
         return Err("packaged CloakBrowser metadata is not approved".to_owned());
     }
@@ -117,7 +132,7 @@ pub fn verify_browser_resource(resource_dir: &Path) -> Result<BrowserRuntime, St
         &metadata.sha256,
         "CloakBrowser",
     )?;
-    Ok(BrowserRuntime { executable, sha256 })
+    Ok(Some(BrowserRuntime { executable, sha256 }))
 }
 
 pub fn verify_firefox_resource(resource_dir: &Path) -> Result<FirefoxRuntime, String> {
@@ -125,7 +140,7 @@ pub fn verify_firefox_resource(resource_dir: &Path) -> Result<FirefoxRuntime, St
     if metadata.firefox.version != FIREFOX_VERSION
         || Path::new(&metadata.firefox.executable)
             .file_name()
-            .is_none_or(|name| name != "aliasmode.exe")
+            .is_none_or(|name| name != FIREFOX_EXECUTABLE_NAME)
         || !is_sha256(&metadata.firefox.sha256)
         || !is_sha256(&metadata.firefox.archive_sha256)
     {

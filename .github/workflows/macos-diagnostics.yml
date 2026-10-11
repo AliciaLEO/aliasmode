@@ -35,66 +35,84 @@ jobs:
           ditto "$RUNNER_TEMP/mnt/AliasMode.app" "$RUNNER_TEMP/Applications/AliasMode.app"
           hdiutil detach "$RUNNER_TEMP/mnt"
           xattr -l "$RUNNER_TEMP/Applications/AliasMode.app" || true
-      - name: example.com in Firefox with and without the profile configuration
+      - name: Arabic text with the exact configuration of an app-launched profile
         shell: bash
         run: |
           set -uo pipefail
           out="$RUNNER_TEMP/out"
-          engine="$RUNNER_TEMP/Applications/AliasMode.app/Contents/Resources/firefox/AliasMode.app/Contents/MacOS/aliasmode"
-          curl -sS -D "$out/example-headers.txt" -o "$out/example.html" https://example.com/
-          head -c 3000 "$out/example.html"
-          bun -e '
-            import { createFirefoxProfileConfig } from "./firefox-config.ts";
-            import { writeFileSync } from "node:fs";
-            const out = process.argv[1];
-            const full = createFirefoxProfileConfig(1280, 800, "macos").config;
-            const { fonts: _fonts, ...withoutFonts } = full;
-            const variants = { "a-no-config": null, "e-full-profile-config": full, "f-full-config-without-fonts": withoutFonts };
-            for (const [name, config] of Object.entries(variants)) writeFileSync(`${out}/${name}.json`, JSON.stringify(config));
-            console.log(JSON.stringify(withoutFonts).slice(0, 1500));
-          ' "$out"
-          for file in "$out"/?-*.json; do
+          app="$RUNNER_TEMP/Applications/AliasMode.app"
+          engine="$app/Contents/Resources/firefox/AliasMode.app/Contents/MacOS/aliasmode"
+          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          mkdir -p "$data"
+          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
+          # Diagnostic copy only: save the configuration that the worker hands to the engine.
+          worker="$app/Contents/Resources/playwright/firefox-worker.mjs"
+          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify(config);\n  try { process.getBuiltinModule("node:fs").writeFileSync("\/tmp\/aliasmode-camou-config.json", serialized); } catch {}/' "$worker"
+          grep -c "aliasmode-camou-config" "$worker"
+          open -n "$app"
+          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
+          helper="$app/Contents/MacOS/aliasmode-mcp"
+          created="$("$helper" profiles create --name diag-firefox --temporary --engine firefox)"
+          profile="$(jq -er '.result.id' <<<"$created")"
+          "$helper" browser open --profile "$profile" --url https://example.com/
+          sleep 12
+          screencapture -x "$out/real-flow.png"
+          "$helper" browser close --profile "$profile" || true
+          cp /tmp/aliasmode-camou-config.json "$out/exact.json"
+          jq -r 'keys | join(", ")' "$out/exact.json" | cut -c1-2500
+          jq 'del(.fonts)' "$out/exact.json" > "$out/v-no-fonts.json"
+          jq 'with_entries(select(.key | startswith("fonts:") | not))' "$out/exact.json" > "$out/v-no-font-options.json"
+          jq '{fonts}' "$out/exact.json" > "$out/v-only-fonts.json"
+          jq 'with_entries(select(.key | test("^(locale|navigator\\.language|intl|headers)") | not))' "$out/exact.json" > "$out/v-no-locale.json"
+          cp "$out/exact.json" "$out/v-exact.json"
+          for file in "$out"/v-*.json; do
             name="$(basename "$file" .json)"
-            profile="$(mktemp -d)"
+            scratch="$(mktemp -d)"
             (
-              if [[ "$(cat "$file")" != "null" ]]; then
-                index=1
-                while IFS= read -r chunk; do
-                  export "CAMOU_CONFIG_$index=$chunk"
-                  index=$((index + 1))
-                done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8"); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' "$file")
-              fi
-              "$engine" --headless -profile "$profile" --window-size=1000,760 --screenshot "$out/example-$name.png" "https://example.com/" > "$out/example-$name.log" 2>&1 &
+              index=1
+              while IFS= read -r chunk; do
+                export "CAMOU_CONFIG_$index=$chunk"
+                index=$((index + 1))
+              done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8").trim(); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' "$file")
+              "$engine" -profile "$scratch" -no-remote --window-size=1000,760 "https://example.com/" > "$out/$name.log" 2>&1 &
               pid=$!
-              for attempt in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+              sleep 14
+              screencapture -x "$out/headed-$name.png"
               kill "$pid" 2>/dev/null || true
+              sleep 2
             )
-            ls -la "$out/example-$name.png" 2>/dev/null || { echo "no screenshot for $name"; tail -5 "$out/example-$name.log"; }
           done
-      - name: Real error of the search engine setup
+          pkill -x aliasmode || true
+          sleep 3
+      - name: Chromium 155 search engine entry shape
         shell: bash
         run: |
           set -uo pipefail
           out="$RUNNER_TEMP/out"
           app="$RUNNER_TEMP/Applications/AliasMode.app"
           data="$HOME/Library/Application Support/com.aliasmode.desktop"
-          mkdir -p "$data"
-          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
-          # Diagnostic copy only: record the error that the worker normally replaces with a fixed text.
-          for worker in worker.mjs playwright-worker.mjs; do
-            perl -0pi -e 's/exitCode = 1;\n    const code = error\?\.code/exitCode = 1;\n    try { (await import("node:fs")).appendFileSync("\/tmp\/aliasmode-worker-errors.log", new Date().toISOString() + " " + String(error?.stack || error) + "\\n"); } catch {}\n    const code = error?.code/' "$app/Contents/Resources/playwright/$worker"
-            grep -c "aliasmode-worker-errors" "$app/Contents/Resources/playwright/$worker"
-          done
+          rm -f "$data/agent-runtime.json"
           open -n "$app"
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           helper="$app/Contents/MacOS/aliasmode-mcp"
           created="$("$helper" profiles create --name diag-chromium --temporary)"
           profile="$(jq -er '.result.id' <<<"$created")"
-          "$helper" browser open --profile "$profile"
-          for second in 2 5 8; do sleep 3; screencapture -x "$out/chromium-after-open-$second.png"; done
-          sleep 25
-          cat /tmp/aliasmode-worker-errors.log | cut -c1-1500 | tee "$out/worker-errors.log"
-          cp "$data"/logs/*.log "$out/" 2>/dev/null || true
+          port="$("$helper" browser open --profile "$profile" | jq -er '.result.port')"
+          sleep 20
+          cat > "$app/Contents/Resources/playwright/engine-probe.mjs" <<'JS'
+          import { chromium } from "playwright-core";
+          const browser = await chromium.connectOverCDP(`http://127.0.0.1:${process.argv[2]}`);
+          const page = await browser.contexts()[0].newPage();
+          await page.goto("chrome://settings/searchEngines", { waitUntil: "domcontentloaded", timeout: 10_000 });
+          console.log(JSON.stringify(await page.evaluate(async () => {
+            const { sendWithPromise } = await import("chrome://resources/js/cr.js");
+            const list = await sendWithPromise("getSearchEnginesList");
+            return { listKeys: Object.keys(list), engines: Object.values(list).filter(Array.isArray).flat().slice(0, 3) };
+          }), null, 1));
+          await page.close();
+          await browser.close();
+          JS
+          (cd "$app/Contents/Resources/playwright" && ./node/node engine-probe.mjs "$port") 2>&1 | tee "$out/engine-probe.log"
           "$helper" browser close --profile "$profile" || true
           pkill -x aliasmode || true
       - uses: actions/upload-artifact@v4

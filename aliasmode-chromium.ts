@@ -36,6 +36,11 @@ const VERSION_MANIFEST = "<assembly\r\n  xmlns='urn:schemas-microsoft-com:asm.v1
   `  <assemblyIdentity\r\n      name='${ALIASMODE_CHROMIUM_VERSION}'\r\n      version='${ALIASMODE_CHROMIUM_VERSION}'\r\n` +
   "      type='win32'/>\r\n  <file name='chrome_elf.dll'/>\r\n</assembly>\r\n";
 
+/** macOS has no CloakBrowser build, so Chromium profiles there use this runtime unless a binary is configured. */
+export function hostChromiumRuntime(platform = process.platform, env = process.env): "aliasmode" | undefined {
+  return platform === "darwin" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;
+}
+
 export interface AliasmodeChromiumDeps {
   download?: (url: string, output: string) => Promise<void>;
   extract?: (archive: string, directory: string) => Promise<void>;

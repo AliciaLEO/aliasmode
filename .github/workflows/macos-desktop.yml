@@ -80,7 +80,8 @@ jobs:
           screencapture -x "$RUNNER_TEMP/evidence/firefox-profile.png"
           "$helper" browser status --profile "$profile" | tee "$RUNNER_TEMP/evidence/status.json" | jq -e '.ok'
 
-          created="$("$helper" profiles create --name ci-chromium --temporary --chromium-runtime aliasmode)"
+          # No runtime flag: on macOS a Chromium profile must default to the 155 runtime.
+          created="$("$helper" profiles create --name ci-chromium --temporary)"
           chromium="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
           "$helper" browser open --profile "$chromium" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
           sleep 5

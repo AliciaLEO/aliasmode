@@ -275,7 +275,7 @@ test("dashboard selects browser for new profiles", () => {
   expect(editModal).not.toContain('setEF("engine"');
   expect(editModal).not.toContain('setEF("chromiumRuntime"');
   // Chrome version: 146 stays the default; 155 beta works in Local and Cloud, not legacy Remote.
-  expect(createModal).toContain('{form.engine === "chromium" && !appMode?.legacyRemote && (');
+  expect(createModal).toContain('{form.engine === "chromium" && !appMode?.legacyRemote && !appMode?.chromiumRuntime && (');
   expect(createModal).toContain('<option value="">{t("146 (default)")}</option>');
   expect(createModal).toContain('<option value="aliasmode">{t("155 beta")}</option>');
   expect(app).toContain('chromiumRuntime: "" as "" | "aliasmode"');

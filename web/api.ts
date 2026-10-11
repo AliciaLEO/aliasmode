@@ -107,6 +107,8 @@ export interface AppModeConfig {
   localAnalytics: boolean;
   restartRequired?: boolean;
   legacyRemote?: boolean;
+  /** Set when this host runs every Chromium profile on one runtime, so there is no version to choose. */
+  chromiumRuntime?: "aliasmode";
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {

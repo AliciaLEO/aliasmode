@@ -395,8 +395,9 @@ async function runProductionCloudPreflight(
     expectedBinarySha256: engine === "chromium" ? pin : TEST_BINARY_SHA256,
     expectedFirefoxBinarySha256: engine === "firefox" ? pin : TEST_BINARY_SHA256,
     dataRoot: join(root, "profiles"),
-    hostPlatform: "darwin",
-    hostArch: "arm64",
+    // Linux has no Chromium 155 build, so that payload must stop at the host preflight.
+    hostPlatform: engine === "chromium155" ? "linux" : "darwin",
+    hostArch: engine === "chromium155" ? "x64" : "arm64",
     spawn: failAtNativeBoundary,
     firefoxRuntime: {
       reserve: async () => failAtNativeBoundary(),
@@ -473,8 +474,8 @@ test("dashboard Cloud preflight distinguishes missing engine pins before native 
 }, 30_000);
 
 test("Cloud opens a Chromium 155 beta payload on the beta runtime, never CloakBrowser", async () => {
-  // The macOS host proves routing: CloakBrowser would reach the spawn boundary,
-  // while the beta runtime stops at its Windows-only preflight.
+  // The Linux host proves routing: CloakBrowser would reach the spawn boundary,
+  // while the beta runtime stops at its host preflight.
   const beta = await runProductionCloudPreflight("chromium155", TEST_BINARY_SHA256);
   try {
     expect(beta.status).toBe(500);

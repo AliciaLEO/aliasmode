@@ -9,6 +9,7 @@ import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   aliasmodeChromiumExecutable,
   ensureAliasmodeChromium,
+  hostChromiumRuntime,
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
 import { buildNewProfile } from "./create.ts";
@@ -105,4 +106,11 @@ test("exports keep the Chrome version so a re-import cannot downgrade it", () =>
   expect(imported.find((profile) => profile.id === standard.id)?.chromiumRuntime).toBeUndefined();
   expect(serializeXlsxRows([beta, standard]).headers).toContain("chromium_runtime");
   expect(serializeXlsxRows([standard]).headers).not.toContain("chromium_runtime");
+});
+
+test("macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser binary is configured", () => {
+  expect(hostChromiumRuntime("darwin", {})).toBe("aliasmode");
+  expect(hostChromiumRuntime("darwin", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
+  expect(hostChromiumRuntime("win32", {})).toBeUndefined();
+  expect(hostChromiumRuntime("linux", {})).toBeUndefined();
 });

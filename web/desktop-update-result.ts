@@ -68,6 +68,11 @@ export function parseDesktopUpdateResult(value: unknown): DesktopUpdateResult | 
   throw new Error("AliasMode returned an invalid update result.");
 }
 
+// The recovery hints name what each system offers: the Start menu and offline installer, or Applications and the install command.
+const MAC = typeof navigator !== "undefined" && /Macintosh/.test(navigator.userAgent);
+const REOPEN = MAC ? "open it from the Applications folder" : "launch it from Windows Start";
+const REINSTALL = MAC ? "run the install command again" : "run the full offline installer without uninstalling";
+
 export function describeDesktopUpdateResult(result: DesktopUpdateResult): DesktopUpdateResultSummary {
   if (result.state === "succeeded") {
     return {
@@ -80,7 +85,7 @@ export function describeDesktopUpdateResult(result: DesktopUpdateResult): Deskto
     return {
       tone: "warning",
       title: `AliasMode ${result.version} is installed.`,
-      detail: "The automatic restart was not confirmed. Close AliasMode, then launch it from Windows Start.",
+      detail: `The automatic restart was not confirmed. Close AliasMode, then ${REOPEN}.`,
     };
   }
 
@@ -89,8 +94,8 @@ export function describeDesktopUpdateResult(result: DesktopUpdateResult): Deskto
     : result.reason === "installerLaunch"
       ? `AliasMode ${result.expectedVersion} could not start. AliasMode ${result.fromVersion} remains installed.`
       : result.reason === "startupMismatch"
-        ? `AliasMode could not verify ${result.expectedVersion} at the expected install location. Close AliasMode, then launch it from Windows Start.`
-        : `AliasMode could not confirm ${result.expectedVersion}. If the installed version did not change, run the full offline installer without uninstalling.`;
+        ? `AliasMode could not verify ${result.expectedVersion} at the expected install location. Close AliasMode, then ${REOPEN}.`
+        : `AliasMode could not confirm ${result.expectedVersion}. If the installed version did not change, ${REINSTALL}.`;
   return {
     tone: "error",
     title: "The last update did not finish.",

@@ -26,10 +26,15 @@ impl InstallerHandoff {
         let executable = std::env::current_exe().map_err(|_| UpdateAttemptError::RunningPath)?;
         let canonical_executable =
             fs::canonicalize(executable).map_err(|_| UpdateAttemptError::RunningPath)?;
+        // Windows updates an install directory; macOS replaces the whole app bundle.
+        #[cfg(not(target_os = "macos"))]
         let canonical_root = canonical_executable
             .parent()
             .ok_or(UpdateAttemptError::RunningPath)?
             .to_path_buf();
+        #[cfg(target_os = "macos")]
+        let canonical_root =
+            macos_bundle(&canonical_executable).ok_or(UpdateAttemptError::RunningPath)?;
         Ok(Self {
             id: hex::encode(rand::random::<[u8; 16]>()),
             nsis_root: normal_windows_path(&canonical_root),
@@ -47,6 +52,44 @@ impl InstallerHandoff {
             nsis_directory_argument(&self.nsis_root),
         ]
     }
+}
+
+/// The `.app` bundle that holds this executable (`AliasMode.app/Contents/MacOS/aliasmode`).
+/// A copy that macOS runs from a read-only translocated path cannot be replaced.
+#[cfg(target_os = "macos")]
+fn macos_bundle(executable: &Path) -> Option<PathBuf> {
+    let bundle = executable.ancestors().nth(3)?;
+    (bundle.extension() == Some(OsStr::new("app"))
+        && !bundle
+            .components()
+            .any(|part| part.as_os_str() == "AppTranslocation"))
+    .then(|| bundle.to_path_buf())
+}
+
+/// Starts a detached shell that opens the replaced bundle once this process is gone.
+/// The single-instance guard would hand an earlier relaunch to the old process.
+#[cfg(target_os = "macos")]
+pub fn spawn_relaunch_after_exit(
+    handoff: &InstallerHandoff,
+) -> std::io::Result<std::process::Child> {
+    use std::{
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open -n "$2" --args "$3""#,
+            "sh",
+        ])
+        .arg(std::process::id().to_string())
+        .arg(&handoff.canonical_root)
+        .arg(handoff.relaunch_argument())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
 }
 
 fn nsis_directory_argument(path: &Path) -> OsString {
@@ -438,10 +481,22 @@ pub fn reconcile_after_startup(
         return Ok(());
     }
 
-    let marker_matches =
-        read_marker(&attempt).is_ok_and(|version| version == attempt.expected_version);
     let current_executable =
         std::env::current_exe().map_err(|_| UpdateAttemptError::RunningPath)?;
+    // macOS has no installer marker or registry: the proof is the same bundle path
+    // now running the expected version.
+    #[cfg(target_os = "macos")]
+    let (marker_matches, registration_matches) = {
+        let same_bundle = fs::canonicalize(&current_executable)
+            .ok()
+            .and_then(|executable| macos_bundle(&executable))
+            .is_some_and(|bundle| bundle == attempt.expected_root);
+        (same_bundle, same_bundle)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let marker_matches =
+        read_marker(&attempt).is_ok_and(|version| version == attempt.expected_version);
+    #[cfg(not(target_os = "macos"))]
     let registration_matches = read_registration_snapshot()
         .and_then(|registration| {
             validate_registration_snapshot(

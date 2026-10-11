@@ -137,7 +137,10 @@ jobs:
           "$helper" browser open --profile "$chromium" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
           sleep 5
           screencapture -x "$RUNNER_TEMP/evidence/chromium-profile.png"
+          # Chromium 155 must accept the DuckDuckGo default search setup, which runs after launch.
+          sleep 10
           "$helper" browser close --profile "$chromium" | jq -e '.ok'
+          ! grep -q "search provider setup failed" "$data"/logs/*.log
 
           # The stdio MCP host must answer an agent client and list the AliasMode tools.
           {
@@ -187,3 +190,162 @@ jobs:
           name: aliasmode-macos-arm64
           path: ${{ runner.temp }}/release/v${{ steps.release.outputs.version }}/
           if-no-files-found: error
+
+  update:
+    name: macOS in-app update with a test key
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      BUNDLE: src-tauri/target/aarch64-apple-darwin/release/bundle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Build the current version with a throwaway update key
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          mkdir -p "$work"
+          bunx tauri signer generate --ci -p "" -w "$work/update.key" > /dev/null
+          jq -n --arg pubkey "$(cat "$work/update.key.pub")" '{plugins: {updater: {pubkey: $pubkey}}}' > "$work/test-key.json"
+          bun run desktop:prepare:macos
+          bunx tauri build --target aarch64-apple-darwin --bundles app --config "$work/test-key.json"
+          ditto "$BUNDLE/macos/AliasMode.app" /Applications/AliasMode.app
+      - name: Build and sign the successor version
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          current="$(jq -er .version src-tauri/tauri.conf.json)"
+          if [[ "$current" == *-* ]]; then
+            successor="$current.acceptance.1"
+          else
+            successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
+          fi
+          for file in package.json version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+            test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
+            CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
+          done
+          bun run desktop:prepare:macos
+          bunx tauri build --target aarch64-apple-darwin --bundles app --config "$work/test-key.json"
+          archive="AliasMode_${successor}_aarch64.app.tar.gz"
+          tar -czf "$work/$archive" -C "$BUNDLE/macos" AliasMode.app
+          TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
+          url="https://github.com/aliasmode/aliasmode/releases/download/v$successor/$archive"
+          jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" \
+            '{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}' > "$work/latest-macos.json"
+          {
+            echo "CURRENT=$current"
+            echo "SUCCESSOR=$successor"
+            echo "ARCHIVE=$archive"
+          } >> "$GITHUB_ENV"
+      - name: Serve the successor as a GitHub release on this machine
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          cd "$work"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=AliasMode update test CA" -keyout ca.key -out ca.pem
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=github.com" -keyout leaf.key -out leaf.csr
+          printf 'subjectAltName=DNS:github.com,DNS:api.github.com\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' > leaf.ext
+          openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile leaf.ext -out leaf.pem
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem
+          jq -n --arg version "$SUCCESSOR" --arg archive "$ARCHIVE" --arg work "$work" '{
+            candidateVersion: $version,
+            manifestName: "latest-macos.json",
+            installerName: $archive,
+            manifestUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/latest-macos.json",
+            installerUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/\($archive)",
+            manifestPath: "\($work)/latest-macos.json",
+            installerPath: "\($work)/\($archive)",
+            certificatePath: "\($work)/leaf.pem",
+            privateKeyPath: "\($work)/leaf.key",
+            statePath: "\($work)/fixture-state.json"
+          }' > fixture.json
+          sudo cp /etc/hosts "$work/hosts.backup"
+          echo "127.0.0.1 github.com api.github.com" | sudo tee -a /etc/hosts > /dev/null
+          sudo dscacheutil -flushcache
+          sudo killall -HUP mDNSResponder || true
+          sudo -b "$(command -v node)" "$GITHUB_WORKSPACE/scripts/windows-updater-https-fixture.mjs" "$work/fixture.json"
+          for attempt in $(seq 1 30); do [[ -f fixture-state.json ]] && break; sleep 1; done
+          curl --fail --silent --show-error --cacert ca.pem "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10" | jq -e --arg tag "v$SUCCESSOR" '.[0].tag_name == $tag'
+      - name: Update through the dashboard and verify the relaunched app
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          mkdir -p "$RUNNER_TEMP/update-evidence"
+          app="/Applications/AliasMode.app"
+          helper="$app/Contents/MacOS/aliasmode-mcp"
+          data="$HOME/Library/Application Support/com.aliasmode.desktop"
+          mkdir -p "$data"
+          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
+          open -n "$app"
+          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
+          test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$CURRENT"
+          old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
+          kept="$("$helper" profiles create --name keep-me | jq -er 'select(.ok) | .result.id')"
+          # The dashboard checks for updates by itself; wait until it has read the release feed.
+          for attempt in $(seq 1 60); do
+            [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break
+            sleep 1
+          done
+          sleep 3
+          screencapture -x "$RUNNER_TEMP/update-evidence/before-update.png"
+          osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $old_pid)
+            set frontmost to true
+            repeat with element in (entire contents of window 1)
+              try
+                if (class of element is button) and (name of element is \"Update now\") then
+                  click element
+                  return \"clicked\"
+                end if
+              end try
+            end repeat
+            error \"the Update now button was not found\"
+          end tell"
+          for attempt in $(seq 1 240); do
+            version="$(jq -r '.appVersion // empty' "$data/agent-runtime.json" 2>/dev/null || true)"
+            [[ "$version" == "$SUCCESSOR" ]] && break
+            sleep 1
+          done
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/update-evidence/after-update.png"
+          cp "$data/update-attempt.json" "$RUNNER_TEMP/update-evidence/" || true
+          test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$SUCCESSOR"
+          ! kill -0 "$old_pid" 2>/dev/null
+          jq -e --arg from "$CURRENT" --arg to "$SUCCESSOR" '.state == "succeeded" and .sourceVersion == $from and .expectedVersion == $to' "$data/update-attempt.json"
+          # The swapped bundle must keep a valid signature seal, and the profile data must survive.
+          codesign --verify --deep --strict "$app"
+          "$helper" profiles list | grep -q "\"$kept\""
+          sudo jq -e '.counts.installer >= 1 and .counts.rejected == 0' "$work/fixture-state.json"
+      - name: Restore name resolution and trust
+        if: always()
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/update"
+          [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
+          sudo dscacheutil -flushcache || true
+          sudo pkill -f windows-updater-https-fixture.mjs || true
+          [[ -f "$work/ca.pem" ]] && sudo security remove-trusted-cert -d "$work/ca.pem" || true
+          cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliasmode-macos-update-evidence
+          path: ${{ runner.temp }}/update-evidence
+          if-no-files-found: warn
+

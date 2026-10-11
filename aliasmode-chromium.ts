@@ -33,6 +33,20 @@ async function run(command: string[]): Promise<void> {
   if (await child.exited !== 0) throw new Error(`${command[0]} exited with code ${child.exitCode}`);
 }
 
+// Antivirus can briefly hold freshly extracted files open, so Windows refuses the rename.
+async function renameWhenUnlocked(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
+      await Bun.sleep(500);
+    }
+  }
+}
+
 export function aliasmodeChromiumExecutable(root: string): string {
   return join(root, RUNTIME_DIR, "chrome.exe");
 }
@@ -68,7 +82,7 @@ async function install(root: string, deps: AliasmodeChromiumDeps): Promise<strin
     }
     writeFileSync(join(runtime, `${ALIASMODE_CHROMIUM_VERSION}.manifest`), VERSION_MANIFEST);
     rmSync(target, { recursive: true, force: true });
-    renameSync(runtime, target);
+    await renameWhenUnlocked(runtime, target);
     return executable;
   } finally {
     rmSync(temp, { recursive: true, force: true });

@@ -15,6 +15,12 @@ test("the macOS installer, build and release workflows agree on the release file
   expect(build).toContain("SHA256SUMS-macos.txt");
   expect(release).toContain("AliasMode_${VERSION}_aarch64.app.tar.gz");
   expect(release).toContain("SHA256SUMS-macos.txt");
+  // The app reads this feed and archive name (src-tauri/src/releases.rs).
+  const updater = read("src-tauri/src/releases.rs");
+  expect(updater).toContain('const UPDATE_MANIFEST: &str = "latest-macos.json";');
+  expect(updater).toContain('format!("AliasMode_{version}_aarch64.app.tar.gz")');
+  expect(release).toContain("assets/latest-macos.json");
+  expect(release).toContain('{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}');
   // The Windows update feed accepts exactly one platform, so macOS files must never enter it.
   expect(release).not.toContain("latest-v2.json");
   expect(release).not.toContain("--clobber");

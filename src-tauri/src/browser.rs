@@ -165,7 +165,20 @@ fn is_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sha256, safe_relative_executable};
+    use super::{is_sha256, safe_relative_executable, BrowserMetadata};
+
+    #[test]
+    fn reads_cloakbrowser_metadata_only_when_the_bundle_ships_it() {
+        let firefox = r#""firefox":{"executable":"aliasmode","sha256":"aa","version":"1","archiveSha256":"bb"}"#;
+        let windows: BrowserMetadata = serde_json::from_str(&format!(
+            r#"{{"executable":"chrome.exe","sha256":"cc","wrapperVersion":"0.4.11",{firefox}}}"#
+        ))
+        .unwrap();
+        assert_eq!(windows.cloakbrowser.unwrap().executable, "chrome.exe");
+        let macos: BrowserMetadata = serde_json::from_str(&format!("{{{firefox}}}")).unwrap();
+        assert!(macos.cloakbrowser.is_none());
+        assert_eq!(macos.firefox.executable, "aliasmode");
+    }
 
     #[test]
     fn validates_hash_shape() {

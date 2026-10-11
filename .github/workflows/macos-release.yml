@@ -29,6 +29,8 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The update signing key lives in this environment, which is limited to main.
+    environment: windows-release
     permissions:
       contents: write
     env:
@@ -37,6 +39,16 @@ jobs:
       TAG: ${{ inputs.tag }}
       VERSION: ${{ needs.build.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - run: bun install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-macos-arm64
@@ -54,14 +66,41 @@ jobs:
           ls -la
           test "$(ls | sort | tr '\n' ' ')" = "AliasMode_${VERSION}_aarch64.app.tar.gz AliasMode_${VERSION}_aarch64.dmg SHA256SUMS-macos.txt "
           sha256sum --check --strict SHA256SUMS-macos.txt
+      - name: Sign the update archive and write the macOS update feed
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          archive="assets/AliasMode_${VERSION}_aarch64.app.tar.gz"
+          bunx tauri signer sign "$archive" > /dev/null
+          unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          pubkey="$(jq -er .plugins.updater.pubkey src-tauri/tauri.conf.json)"
+          check=(cargo run --quiet --locked --manifest-path scripts/updater-signature-check/Cargo.toml --)
+          "${check[@]}" "$archive" "$archive.sig" "$pubkey"
+          # A changed archive must fail the same check.
+          cp "$archive" corrupt.tar.gz
+          printf 'x' | dd of=corrupt.tar.gz bs=1 seek=4096 conv=notrunc status=none
+          if "${check[@]}" corrupt.tar.gz "$archive.sig" "$pubkey"; then
+            echo "a changed archive passed the signature check"
+            exit 1
+          fi
+          rm corrupt.tar.gz
+          jq -n --arg version "$VERSION" --arg signature "$(cat "$archive.sig")" \
+            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/AliasMode_${VERSION}_aarch64.app.tar.gz" \
+            '{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}' > assets/latest-macos.json
       - name: Upload the macOS assets
         shell: bash
         run: |
           set -euo pipefail
           gh release upload "$TAG" \
             "assets/AliasMode_${VERSION}_aarch64.app.tar.gz" \
+            "assets/AliasMode_${VERSION}_aarch64.app.tar.gz.sig" \
             "assets/AliasMode_${VERSION}_aarch64.dmg" \
             "assets/SHA256SUMS-macos.txt"
+          # The feed goes last: an installed app must never read it before the archive exists.
+          gh release upload "$TAG" "assets/latest-macos.json"
       - name: Verify the public downloads
         shell: bash
         run: |
@@ -73,3 +112,6 @@ jobs:
           done
           cmp SHA256SUMS-macos.txt ../assets/SHA256SUMS-macos.txt
           sha256sum --check --strict SHA256SUMS-macos.txt
+          for name in "AliasMode_${VERSION}_aarch64.app.tar.gz.sig" latest-macos.json; do
+            curl --fail --silent --show-error --location --retry 3 "https://github.com/$GH_REPO/releases/download/$TAG/$name" | cmp - "../assets/$name"
+          done

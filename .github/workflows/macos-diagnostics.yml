@@ -35,7 +35,7 @@ jobs:
           ditto "$RUNNER_TEMP/mnt/AliasMode.app" "$RUNNER_TEMP/Applications/AliasMode.app"
           hdiutil detach "$RUNNER_TEMP/mnt"
           xattr -l "$RUNNER_TEMP/Applications/AliasMode.app" || true
-      - name: Arabic text with the exact configuration of an app-launched profile
+      - name: Arabic text with the preferences of an app-launched profile
         shell: bash
         run: |
           set -uo pipefail
@@ -48,7 +48,6 @@ jobs:
           # Diagnostic copy only: save the configuration that the worker hands to the engine.
           worker="$app/Contents/Resources/playwright/firefox-worker.mjs"
           perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify(config);\n  try { process.getBuiltinModule("node:fs").writeFileSync("\/tmp\/aliasmode-camou-config.json", serialized); } catch {}/' "$worker"
-          grep -c "aliasmode-camou-config" "$worker"
           open -n "$app"
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           helper="$app/Contents/MacOS/aliasmode-mcp"
@@ -56,65 +55,41 @@ jobs:
           profile="$(jq -er '.result.id' <<<"$created")"
           "$helper" browser open --profile "$profile" --url https://example.com/
           sleep 12
-          screencapture -x "$out/real-flow.png"
+          ps -axww -o pid=,command= | grep -F "$profile" | grep -v grep | cut -c1-1200 > "$out/firefox-processes.txt"
+          find "$data" -name prefs.js -o -name user.js | tee "$out/pref-files.txt"
+          prefs="$(grep -F "$profile" "$out/pref-files.txt" | grep prefs.js | head -n 1)"
+          cp "$prefs" "$out/real-prefs.js"
+          cp "$(dirname "$prefs")/user.js" "$out/real-user.js" 2>/dev/null || true
           "$helper" browser close --profile "$profile" || true
-          cp /tmp/aliasmode-camou-config.json "$out/exact.json"
-          jq -r 'keys | join(", ")' "$out/exact.json" | cut -c1-2500
-          jq 'del(.fonts)' "$out/exact.json" > "$out/v-no-fonts.json"
-          jq 'with_entries(select(.key | startswith("fonts:") | not))' "$out/exact.json" > "$out/v-no-font-options.json"
-          jq '{fonts}' "$out/exact.json" > "$out/v-only-fonts.json"
-          jq 'with_entries(select(.key | test("^(locale|navigator\\.language|intl|headers)") | not))' "$out/exact.json" > "$out/v-no-locale.json"
-          cp "$out/exact.json" "$out/v-exact.json"
-          for file in "$out"/v-*.json; do
-            name="$(basename "$file" .json)"
+          pkill -x aliasmode || true
+          sleep 3
+          grep -ciE "font" "$out/real-prefs.js" "$out/real-user.js" 2>/dev/null
+          grep -iE "font|gfx|intl\.|lang" "$out/real-prefs.js" "$out/real-user.js" 2>/dev/null | cut -c1-220 | head -60
+          source_prefs="$out/real-user.js"
+          [[ -s "$source_prefs" ]] || source_prefs="$out/real-prefs.js"
+          cp "$source_prefs" "$out/p1-all.js"
+          grep -viE "font" "$source_prefs" > "$out/p2-no-font.js"
+          grep -viE "gfx" "$source_prefs" > "$out/p3-no-gfx.js"
+          grep -viE "intl|locale|lang" "$source_prefs" > "$out/p4-no-language.js"
+          grep -viE "privacy|resist|fingerprint" "$source_prefs" > "$out/p5-no-privacy.js"
+          : > "$out/p6-none.js"
+          for file in "$out"/p?-*.js; do
+            name="$(basename "$file" .js)"
             scratch="$(mktemp -d)"
+            cp "$file" "$scratch/user.js"
             (
               index=1
               while IFS= read -r chunk; do
                 export "CAMOU_CONFIG_$index=$chunk"
                 index=$((index + 1))
-              done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8").trim(); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' "$file")
-              "$engine" -profile "$scratch" -no-remote --window-size=1000,760 "https://example.com/" > "$out/$name.log" 2>&1 &
+              done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8").trim(); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' /tmp/aliasmode-camou-config.json)
+              "$engine" --headless -profile "$scratch" --window-size=1000,760 --screenshot "$out/prefs-$name.png" "https://example.com/" > "$out/prefs-$name.log" 2>&1 &
               pid=$!
-              sleep 14
-              screencapture -x "$out/headed-$name.png"
+              for attempt in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
               kill "$pid" 2>/dev/null || true
-              sleep 2
             )
+            ls -la "$out/prefs-$name.png" 2>/dev/null || { echo "no screenshot for $name"; tail -5 "$out/prefs-$name.log"; }
           done
-          pkill -x aliasmode || true
-          sleep 3
-      - name: Chromium 155 search engine entry shape
-        shell: bash
-        run: |
-          set -uo pipefail
-          out="$RUNNER_TEMP/out"
-          app="$RUNNER_TEMP/Applications/AliasMode.app"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
-          rm -f "$data/agent-runtime.json"
-          open -n "$app"
-          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
-          helper="$app/Contents/MacOS/aliasmode-mcp"
-          created="$("$helper" profiles create --name diag-chromium --temporary)"
-          profile="$(jq -er '.result.id' <<<"$created")"
-          port="$("$helper" browser open --profile "$profile" | jq -er '.result.port')"
-          sleep 20
-          cat > "$app/Contents/Resources/playwright/engine-probe.mjs" <<'JS'
-          import { chromium } from "playwright-core";
-          const browser = await chromium.connectOverCDP(`http://127.0.0.1:${process.argv[2]}`);
-          const page = await browser.contexts()[0].newPage();
-          await page.goto("chrome://settings/searchEngines", { waitUntil: "domcontentloaded", timeout: 10_000 });
-          console.log(JSON.stringify(await page.evaluate(async () => {
-            const { sendWithPromise } = await import("chrome://resources/js/cr.js");
-            const list = await sendWithPromise("getSearchEnginesList");
-            return { listKeys: Object.keys(list), engines: Object.values(list).filter(Array.isArray).flat().slice(0, 3) };
-          }), null, 1));
-          await page.close();
-          await browser.close();
-          JS
-          (cd "$app/Contents/Resources/playwright" && ./node/node engine-probe.mjs "$port") 2>&1 | tee "$out/engine-probe.log"
-          "$helper" browser close --profile "$profile" || true
-          pkill -x aliasmode || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

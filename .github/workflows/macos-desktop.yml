@@ -2,9 +2,21 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, branch or tag to build
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: Version of the built app
+        value: ${{ jobs.build.outputs.version }}
   push:
     branches:
       - feat/macos-desktop
+    paths-ignore:
+      - .github/workflows/macos-diagnostics.yml
 
 permissions:
   contents: read
@@ -20,8 +32,12 @@ jobs:
     timeout-minutes: 45
     env:
       BUNDLE: src-tauri/target/aarch64-apple-darwin/release/bundle
+    outputs:
+      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.21
@@ -50,14 +66,48 @@ jobs:
           codesign --display --verbose=2 "$app" 2>&1 | grep -E "Signature|flags|Identifier"
           # An ad-hoc signature has no notarization, so Gatekeeper is expected to reject it.
           spctl --assess --type execute -vv "$app" || true
-          ls -la "$BUNDLE/dmg"
+      - name: Package the release files
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er .version src-tauri/tauri.conf.json)"
+          files="$RUNNER_TEMP/release/v$version"
+          mkdir -p "$files"
+          cp "$BUNDLE/dmg/AliasMode_${version}_aarch64.dmg" "$files/"
+          tar -czf "$files/AliasMode_${version}_aarch64.app.tar.gz" -C "$BUNDLE/macos" AliasMode.app
+          (cd "$files" && shasum -a 256 "AliasMode_${version}_aarch64.app.tar.gz" "AliasMode_${version}_aarch64.dmg" > SHA256SUMS-macos.txt)
+          cat "$files/SHA256SUMS-macos.txt"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install with the terminal installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          # A damaged download must be refused before anything is installed.
+          bad="$RUNNER_TEMP/bad-release/v$version"
+          mkdir -p "$bad"
+          cp "$RUNNER_TEMP/release/v$version/SHA256SUMS-macos.txt" "$bad/"
+          head -c 1000000 "$RUNNER_TEMP/release/v$version/AliasMode_${version}_aarch64.app.tar.gz" > "$bad/AliasMode_${version}_aarch64.app.tar.gz"
+          if ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/bad-release" bash scripts/install-macos.sh --version "$version"; then
+            echo "the installer accepted a damaged download"
+            exit 1
+          fi
+          test ! -e /Applications/AliasMode.app
+          export ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/release"
+          bash scripts/install-macos.sh --version "$version"
+          # A second run must find the installed version and change nothing.
+          before="$(stat -f %m /Applications/AliasMode.app)"
+          bash scripts/install-macos.sh --version "$version"
+          test "$before" = "$(stat -f %m /Applications/AliasMode.app)"
+          codesign --verify --deep --strict /Applications/AliasMode.app
+          test -z "$(xattr -p com.apple.quarantine /Applications/AliasMode.app 2>/dev/null)"
       - name: Start the app, open both engines and quit
         shell: bash
         run: |
           set -euo pipefail
-          app="$RUNNER_TEMP/Applications/AliasMode.app"
-          mkdir -p "$RUNNER_TEMP/Applications" "$RUNNER_TEMP/evidence"
-          ditto "$BUNDLE/macos/AliasMode.app" "$app"
+          app="/Applications/AliasMode.app"
+          mkdir -p "$RUNNER_TEMP/evidence"
           data="$HOME/Library/Application Support/com.aliasmode.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
@@ -88,6 +138,17 @@ jobs:
           sleep 5
           screencapture -x "$RUNNER_TEMP/evidence/chromium-profile.png"
           "$helper" browser close --profile "$chromium" | jq -e '.ok'
+
+          # The stdio MCP host must answer an agent client and list the AliasMode tools.
+          {
+            printf '%s\n' \
+              '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+              '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+              '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+            sleep 20
+          } | "$helper" serve > "$RUNNER_TEMP/evidence/mcp.jsonl"
+          grep -q '"aliasmode_profiles_list"' "$RUNNER_TEMP/evidence/mcp.jsonl"
+          grep -q '"aliasmode_browser_open"' "$RUNNER_TEMP/evidence/mcp.jsonl"
 
           # Cmd+Q with a browser still open must close that browser and stop the sidecar.
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
@@ -124,5 +185,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: aliasmode-macos-arm64
-          path: ${{ env.BUNDLE }}/dmg/*.dmg
+          path: ${{ runner.temp }}/release/v${{ steps.release.outputs.version }}/
           if-no-files-found: error

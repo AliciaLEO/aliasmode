@@ -66,6 +66,24 @@ bun run start
 
 Open `http://127.0.0.1:50400`, select AliasMode Cloud, and sign in. Source mode keeps Cloud refresh and device credentials in process memory, so sign in again after restarting AliasMode. It stores only the pending-sync encryption key in `pending-sync.key` with user-only permissions, allowing queued profile state to resume. Browser data and processes remain on the Mac.
 
+### macOS desktop beta
+
+The macOS app supports Apple Silicon Macs with macOS 13 or newer. Install it from Terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/install-macos.sh | bash
+```
+
+The script downloads the newest macOS build from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg`. The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
+
+Chromium profiles on macOS use Chromium 155. A profile made with Chrome 146 on Windows opens only on Windows, because a profile stays on the Chrome version it was made with. In-app updates are not available on macOS yet: run the install command again to update. Remote MCP hosting needs the Windows app.
+
+Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
+
+```sh
+bun run desktop:build:macos
+```
+
 ### Windows desktop beta
 
 Published installers support Windows 10 version 1809 or newer, Windows 11, and Windows Server 2019 or newer on x64 processors with SSE4.2. They install for the current user and remain unsigned while release signing is configured.
@@ -96,6 +114,8 @@ The Windows installer includes `aliasmode-mcp.exe`. It connects AI agents to the
 ```powershell
 & "$env:LOCALAPPDATA\AliasMode\aliasmode-mcp.exe" setup --client auto --yes --json
 ```
+
+On macOS the helper is `/Applications/AliasMode.app/Contents/MacOS/aliasmode-mcp`, and it takes the same commands. To install the app and connect the agent clients in one step, add `-s -- --agent-setup` after `bash` in the macOS install command.
 
 Setup configures Claude Code, Codex, OpenClaw, and Hermes when installed. Its JSON result also includes generic stdio MCP configuration. Restart an active agent harness after setup so it loads the new server.
 
@@ -130,7 +150,7 @@ The versioned bootstrap script tries winget first. It falls back to an exact Git
 ### Platform matrix
 
 - **Windows:** native installer, local dashboard, local stdio MCP, and Remote MCP host.
-- **macOS:** local dashboard from source with a supported, hash-pinned CloakBrowser binary. No installer.
+- **macOS:** native app for Apple Silicon (Terminal installer or `.dmg`), local dashboard, and local stdio MCP. Updates by running the installer again. The source run stays available.
 - **Linux:** no native app and no local dashboard. A Linux machine can drive a running Windows AliasMode through Remote MCP, with the Claude Code bearer path or OAuth web clients.
 
 ### Public documentation contracts

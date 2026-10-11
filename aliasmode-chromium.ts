@@ -8,11 +8,25 @@ import { join } from "node:path";
 import { sha256File } from "./browser-install.ts";
 
 export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
+const WINDOWS_BUILD = {
+  name: "windows-x64",
+  archiveSha256: "8e55e44fb7f58619461e1d42a947446dcc08a2b46493c420c8e62ae27ab9c7e5",
+  executable: "chrome.exe",
+  executableSha256: "5b4e065110a8a24bb35448d2716d26427a91618b0ee1f4b33723c4d25722de67",
+};
+const MACOS_BUILD = {
+  name: "macos-arm64",
+  archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
+  executable: "Chromium.app/Contents/MacOS/Chromium",
+  executableSha256: "2dfa8b148e6d06598981c4a1e1bc0d7c2c7860d74401ad0d934d21a10c7916d7",
+};
+// Apple Silicon macOS gets its own upstream build; every other host keeps the Windows pins.
+const BUILD = process.platform === "darwin" ? MACOS_BUILD : WINDOWS_BUILD;
+const ARCHIVE_ROOT = `apostate-${ALIASMODE_CHROMIUM_VERSION}-${BUILD.name}`;
 export const ALIASMODE_CHROMIUM_ARCHIVE_URL =
-  "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-windows-x64.zip";
-export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = "8e55e44fb7f58619461e1d42a947446dcc08a2b46493c420c8e62ae27ab9c7e5";
-export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = "5b4e065110a8a24bb35448d2716d26427a91618b0ee1f4b33723c4d25722de67";
-const ARCHIVE_ROOT = `apostate-${ALIASMODE_CHROMIUM_VERSION}-windows-x64`;
+  `https://github.com/heretic-tech/apostate/releases/download/v0.5.1/${ARCHIVE_ROOT}.zip`;
+export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
+export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
 const RUNTIME_DIR = `chromium-${ALIASMODE_CHROMIUM_VERSION}`;
 const TEMP_PREFIX = `.${RUNTIME_DIR}-`;
 
@@ -48,14 +62,15 @@ async function renameWhenUnlocked(from: string, to: string): Promise<void> {
 }
 
 export function aliasmodeChromiumExecutable(root: string): string {
-  return join(root, RUNTIME_DIR, "chrome.exe");
+  return join(root, RUNTIME_DIR, BUILD.executable);
 }
 
 async function install(root: string, deps: AliasmodeChromiumDeps): Promise<string> {
   const hashFile = deps.hashFile ?? sha256File;
   const target = join(root, RUNTIME_DIR);
-  const executable = join(target, "chrome.exe");
-  if (existsSync(join(target, `${ALIASMODE_CHROMIUM_VERSION}.manifest`)) && existsSync(executable) &&
+  const executable = join(target, BUILD.executable);
+  const windows = BUILD === WINDOWS_BUILD;
+  if ((!windows || existsSync(join(target, `${ALIASMODE_CHROMIUM_VERSION}.manifest`))) && existsSync(executable) &&
     await hashFile(executable) === ALIASMODE_CHROMIUM_EXECUTABLE_SHA256) {
     return executable;
   }
@@ -70,17 +85,20 @@ async function install(root: string, deps: AliasmodeChromiumDeps): Promise<strin
   mkdirSync(extracted, { recursive: true });
   try {
     await (deps.download ?? ((url, output) => run([
-      "curl.exe", "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors", "--output", output, url,
+      windows ? "curl.exe" : "curl", "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors", "--output", output, url,
     ])))(ALIASMODE_CHROMIUM_ARCHIVE_URL, archive);
     if (await hashFile(archive) !== ALIASMODE_CHROMIUM_ARCHIVE_SHA256) {
       throw new Error("Chromium 155 archive did not match its pinned SHA-256");
     }
-    await (deps.extract ?? ((file, directory) => run(["tar.exe", "-xf", file, "-C", directory])))(archive, extracted);
+    // ditto keeps the symlinks and code signature of the macOS app bundle.
+    await (deps.extract ?? ((file, directory) => run(windows
+      ? ["tar.exe", "-xf", file, "-C", directory]
+      : ["ditto", "-x", "-k", file, directory])))(archive, extracted);
     const runtime = join(extracted, ARCHIVE_ROOT);
-    if (await hashFile(join(runtime, "chrome.exe")) !== ALIASMODE_CHROMIUM_EXECUTABLE_SHA256) {
-      throw new Error("Chromium 155 archive contained an unexpected chrome.exe");
+    if (await hashFile(join(runtime, BUILD.executable)) !== ALIASMODE_CHROMIUM_EXECUTABLE_SHA256) {
+      throw new Error("Chromium 155 archive contained an unexpected executable");
     }
-    writeFileSync(join(runtime, `${ALIASMODE_CHROMIUM_VERSION}.manifest`), VERSION_MANIFEST);
+    if (windows) writeFileSync(join(runtime, `${ALIASMODE_CHROMIUM_VERSION}.manifest`), VERSION_MANIFEST);
     rmSync(target, { recursive: true, force: true });
     await renameWhenUnlocked(runtime, target);
     return executable;
@@ -91,7 +109,7 @@ async function install(root: string, deps: AliasmodeChromiumDeps): Promise<strin
 
 let installing: Promise<string> | undefined;
 
-/** Install the pinned runtime once per process and return its chrome.exe. */
+/** Install the pinned runtime once per process and return its executable. */
 export function ensureAliasmodeChromium(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
   installing ??= install(root, deps).finally(() => {
     installing = undefined;

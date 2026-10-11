@@ -4675,7 +4675,7 @@ test("Chromium 155 beta download failure is a public preflight error", async () 
   store.close();
 });
 
-test("Chromium 155 beta is refused outside Windows x64 before any download", async () => {
+test("Chromium 155 beta is refused on unsupported hosts before any download", async () => {
   const store = new ProfileStore(":memory:");
   const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
   store.upsertProfile(profile);
@@ -4683,8 +4683,8 @@ test("Chromium 155 beta is refused outside Windows x64 before any download", asy
   const launcher = new ProductionLauncher({
     store,
     dataRoot: testDataRoot(store),
-    hostPlatform: "darwin",
-    hostArch: "arm64",
+    hostPlatform: "linux",
+    hostArch: "x64",
     ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
     spawn: () => { throw new Error("must not spawn"); },
   });

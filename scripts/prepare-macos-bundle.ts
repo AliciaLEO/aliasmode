@@ -1,6 +1,7 @@
 /** Stages the macOS arm64 bundle inputs: sidecar, agent helper, AliasMode Firefox and the agent runtime. */
 import { cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { sha256File } from "../browser-install.ts";
 import { FIREFOX_RUNTIME_VERSION, firefoxBuildForHost, installFirefox } from "../firefox-install.ts";
 import { installSourceNode } from "../source-runtime.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
@@ -27,8 +28,15 @@ export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
 
   const build = firefoxBuildForHost();
   const firefox = await installFirefox({ cwd: staging, writeEnv: false });
-  // A rename keeps the engine's symlinks and code signature intact.
   renameSync(resolve(firefox.path, ...build.executablePath.split("/").map(() => "..")), firefoxRoot);
+  // The published engine bundle has no resource seal, so macOS reports its signature as broken.
+  // Seal it after the pinned hashes passed; the packaged hash below is the sealed executable.
+  const seal = Bun.spawn(["codesign", "--force", "--deep", "--sign", "-", join(firefoxRoot, "AliasMode.app")], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  if (await seal.exited !== 0) throw new Error("AliasMode Firefox could not be signed");
+  const firefoxSha256 = await sha256File(join(firefoxRoot, build.executablePath));
 
   cpSync(await installSourceNode(staging), join(playwrightRoot, "node", "node"));
   stageAgentRuntime(cwd, playwrightRoot);
@@ -36,7 +44,7 @@ export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
   const metadata = {
     firefox: {
       executable: build.executablePath,
-      sha256: firefox.sha256,
+      sha256: firefoxSha256,
       version: FIREFOX_RUNTIME_VERSION,
       archiveSha256: build.archiveSha256,
     },

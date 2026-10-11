@@ -50,7 +50,7 @@ jobs:
           # An ad-hoc signature has no notarization, so Gatekeeper is expected to reject it.
           spctl --assess --type execute -vv "$app" || true
           ls -la "$BUNDLE/dmg"
-      - name: Start the app and open a Firefox profile
+      - name: Start the app, open both engines and quit
         shell: bash
         run: |
           set -euo pipefail
@@ -79,13 +79,34 @@ jobs:
           sleep 10
           screencapture -x "$RUNNER_TEMP/evidence/firefox-profile.png"
           "$helper" browser status --profile "$profile" | tee "$RUNNER_TEMP/evidence/status.json" | jq -e '.ok'
-          "$helper" browser close --profile "$profile" | jq -e '.ok'
 
-          # Quit through the application menu path; the shell must stop the sidecar itself.
+          created="$("$helper" profiles create --name ci-chromium --temporary --chromium-runtime aliasmode)"
+          chromium="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
+          "$helper" browser open --profile "$chromium" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/evidence/chromium-profile.png"
+          "$helper" browser close --profile "$chromium" | jq -e '.ok'
+
+          # Cmd+Q with a browser still open must ask first, then close the browser and stop the sidecar.
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
           sidecar="$(jq -er .sidecarPid "$data/agent-runtime.json")"
-          osascript -e 'tell application id "com.aliasmode.desktop" to quit'
-          for attempt in $(seq 1 60); do
+          osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $desktop)
+            set frontmost to true
+            keystroke \"q\" using command down
+          end tell"
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/evidence/quit-dialog.png"
+          kill -0 "$desktop"
+          osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $desktop)
+            repeat with candidate in windows
+              if exists button \"Yes\" of candidate then
+                click button \"Yes\" of candidate
+                return
+              end if
+            end repeat
+            error \"quit confirmation was not shown\"
+          end tell"
+          for attempt in $(seq 1 90); do
             kill -0 "$desktop" 2>/dev/null || break
             sleep 1
           done

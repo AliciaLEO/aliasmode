@@ -84,6 +84,10 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
   writeFileSync(path, `${preserved}${preserved ? "\n" : ""}user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`);
 }
 
+function supportsChromium155Host(platform: NodeJS.Platform, arch: string): boolean {
+  return (platform === "win32" && arch === "x64") || (platform === "darwin" && arch === "arm64");
+}
+
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
   return (platform === "darwin" && arch === "arm64")
     || (platform === "linux" && arch === "x64")
@@ -128,7 +132,7 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
-  chromium155_host: "Chromium 155 beta requires Windows x64.",
+  chromium155_host: "Chromium 155 beta requires Windows x64 or Apple Silicon macOS.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
 } as const;
@@ -805,7 +809,7 @@ export class Launcher {
 
   /** Begin the one-time Chromium 155 beta download in the background. */
   prepareChromiumRuntime(): void {
-    if (this.hostPlatform !== "win32" || this.hostArch !== "x64") return;
+    if (!supportsChromium155Host(this.hostPlatform, this.hostArch)) return;
     this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot).catch((error) => {
       this.log(`Chromium 155 beta download failed: ${error instanceof Error ? error.message : String(error)}`);
     });
@@ -957,7 +961,7 @@ export class Launcher {
       return;
     }
     if (!this.enforceHostCompatibility) return;
-    if (profile.chromiumRuntime && (this.hostPlatform !== "win32" || this.hostArch !== "x64")) {
+    if (profile.chromiumRuntime && !supportsChromium155Host(this.hostPlatform, this.hostArch)) {
       throw new BrowserLaunchError("preflight", "chromium155_host");
     }
     if (isMobileUserAgent(profile.ua)) {

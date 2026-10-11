@@ -184,6 +184,9 @@ function scriptRunnerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJ
   return env;
 }
 
+// Only the macOS bundle ships the relocatable Unix layout of CPython.
+const PACKAGED_PYTHON = process.platform === "darwin" ? ["bin", "python3.13"] : ["python.exe"];
+
 function supportsSourceScripts(): boolean {
   return (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
 }
@@ -195,7 +198,7 @@ export function resolveScriptRunner(language: ScriptLanguage, runtime = resolveP
   return {
     executable: runtime.kind === "source"
       ? language === "python" ? "python3" : runtime.nodeExecutable
-      : language === "python" ? join(runtime.root, "python", "python.exe") : runtime.nodeExecutable,
+      : language === "python" ? join(runtime.root, "python", ...PACKAGED_PYTHON) : runtime.nodeExecutable,
     runner: join(runtime.root, "agent", language === "python" ? "script-runner.py" : "script-runner.mjs"),
   };
 }
@@ -238,7 +241,9 @@ export const executeScript: ScriptExecution = async ({ scriptPath, language, inp
   signal.throwIfAborted();
   const { executable, runner } = await verifyScriptRuntime(language);
   signal.throwIfAborted();
-  const child = spawn(executable, [...(language === "python" ? ["-u", "-X", "utf8"] : []), runner, scriptPath], {
+  // -B on macOS: bytecode files written into the app bundle would break its code signature seal.
+  const pythonArgs = ["-u", "-X", "utf8", ...(process.platform === "darwin" ? ["-B"] : [])];
+  const child = spawn(executable, [...(language === "python" ? pythonArgs : []), runner, scriptPath], {
     windowsHide: true, detached: process.platform !== "win32", env: scriptRunnerEnvironment(), stdio: ["pipe", logFd, logFd],
   });
   let termination: Promise<void> | undefined;

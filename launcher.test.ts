@@ -4675,6 +4675,25 @@ test("Chromium 155 beta download failure is a public preflight error", async () 
   store.close();
 });
 
+test("macOS refuses a Chrome 146 profile instead of opening it on another Chrome version", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({}, () => false);
+  store.upsertProfile(profile);
+  let downloads = 0;
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    hostPlatform: "darwin",
+    hostArch: "arm64",
+    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium146_host"));
+  expect(downloads).toBe(0);
+  store.close();
+});
+
 test("Chromium 155 beta is refused on unsupported hosts before any download", async () => {
   const store = new ProfileStore(":memory:");
   const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);

@@ -132,6 +132,7 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
+  chromium146_host: "This profile uses Chrome 146, which is not available on macOS. Open it in AliasMode on Windows.",
   chromium155_host: "Chromium 155 beta requires Windows x64 or Apple Silicon macOS.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
@@ -963,6 +964,10 @@ export class Launcher {
     if (!this.enforceHostCompatibility) return;
     if (profile.chromiumRuntime && !supportsChromium155Host(this.hostPlatform, this.hostArch)) {
       throw new BrowserLaunchError("preflight", "chromium155_host");
+    }
+    // A profile stays on the Chrome version it was made with; macOS never runs a 146 profile on 155.
+    if (!profile.chromiumRuntime && this.hostPlatform === "darwin" && !this.binaryPath) {
+      throw new BrowserLaunchError("preflight", "chromium146_host");
     }
     if (isMobileUserAgent(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_mobile");

@@ -44,6 +44,7 @@ jobs:
             test -x "$app/Contents/MacOS/$file"
           done
           test -x "$app/Contents/Resources/playwright/node/node"
+          "$app/Contents/Resources/playwright/python/bin/python3.13" -B -c "import greenlet, playwright.sync_api; print('python runtime ok')"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --verify --deep --strict --verbose=2 "$app/Contents/Resources/firefox/AliasMode.app"
           codesign --display --verbose=2 "$app" 2>&1 | grep -E "Signature|flags|Identifier"

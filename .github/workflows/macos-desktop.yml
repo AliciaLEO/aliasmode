@@ -15,8 +15,6 @@ on:
   push:
     branches:
       - feat/macos-desktop
-    paths-ignore:
-      - .github/workflows/macos-diagnostics.yml
 
 permissions:
   contents: read

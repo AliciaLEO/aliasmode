@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/in
 
 The script downloads the newest macOS build from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg`. The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
 
-Chromium profiles on macOS use Chromium 155. A profile made with Chrome 146 on Windows opens only on Windows, because a profile stays on the Chrome version it was made with. In-app updates are not available on macOS yet: run the install command again to update. Remote MCP hosting needs the Windows app.
+Chromium profiles on macOS use Chromium 155. A profile made with Chrome 146 on Windows opens only on Windows, because a profile stays on the Chrome version it was made with. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
 
 Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
 
@@ -150,7 +150,7 @@ The versioned bootstrap script tries winget first. It falls back to an exact Git
 ### Platform matrix
 
 - **Windows:** native installer, local dashboard, local stdio MCP, and Remote MCP host.
-- **macOS:** native app for Apple Silicon (Terminal installer or `.dmg`), local dashboard, and local stdio MCP. Updates by running the installer again. The source run stays available.
+- **macOS:** native app for Apple Silicon (Terminal installer or `.dmg`), local dashboard, in-app updates, and local stdio MCP. The source run stays available.
 - **Linux:** no native app and no local dashboard. A Linux machine can drive a running Windows AliasMode through Remote MCP, with the Claude Code bearer path or OAuth web clients.
 
 ### Public documentation contracts

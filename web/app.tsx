@@ -743,7 +743,7 @@ function FingerprintSettings({
           <span>{t("Operating system")}</span>
           {onPlatformOsChange ? (
             <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
-              <option value="">{"Automatic — match this computer"}</option>
+              <option value="">{t("Automatic — match this computer")}</option>
               <option value="windows">Windows</option>
               <option value="macos">macOS</option>
               <option value="linux">Linux</option>
@@ -1038,7 +1038,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
   return (
     <div className="proxy-check-result unavailable" role="status">
       <Icon name="activity" className="sm" />
-      <span>{"Proxy check is unavailable. Try again later."}</span>
+      <span>{t("Proxy check is unavailable. Try again later.")}</span>
     </div>
   );
 }
@@ -1048,12 +1048,12 @@ function GrantControl({ label, direct, inherited, busy, onChange }: {
 }) {
   const { t } = useTranslation();
   const effective = direct === "edit" || inherited === "edit" ? "edit" : direct || inherited;
-  const permissionLabel = (value: string) => value === "edit" ? "Edit" : value === "view" ? "View" : "No access";
+  const permissionLabel = (value: string) => value === "edit" ? t("Edit") : value === "view" ? t("View") : t("No access");
   return <label className="grant-control">
     <span>{label}</span>
     <select className="select" aria-label={label} value={direct} disabled={busy} onChange={(event) => onChange(event.target.value)}>
-      <option value="">{inherited ? t("Inherited: {permission}", { permission: permissionLabel(inherited) }) : "No access"}</option>
-      <option value="view">{"View"}</option><option value="edit">{"Edit"}</option>
+      <option value="">{inherited ? t("Inherited: {permission}", { permission: permissionLabel(inherited) }) : t("No access")}</option>
+      <option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option>
     </select>
     <small>{t("Effective access: {permission}", { permission: permissionLabel(effective) })}{inherited && direct ? ` · ${t("Inherited: {permission}", { permission: permissionLabel(inherited) })}` : ""}</small>
   </label>;
@@ -4800,10 +4800,10 @@ function App() {
                 {t("Anything chosen above overrides that field on every imported record, including provider exports that already carry a group.")}
               </p>
               <p className="formnote">
-                {t("An AliasMode export also carries")} <code>seed</code>{t("(种子)")}、<code>timezone</code>{t("(时区)")}{t(" and ")}{" "}
-                <code>platform_os</code>{t("(操作系统)")}{t(", which recreate the exact browser fingerprint. Its")}{" "}
+                {t("An AliasMode export also carries")} <code>seed</code>{t("(seed)")}、<code>timezone</code>{t("(timezone)")}{t(" and ")}{" "}
+                <code>platform_os</code>{t("(operating system)")}{t(", which recreate the exact browser fingerprint. Its")}{" "}
                 <code>fp_*</code> {t("columns are a")} <b>{t("record")}</b>{" "}
-                {t("of the fingerprint that was measured, not settings \u2014 they are checked after the browser opens, never applied to it.")}
+                {t("of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.")}
               </p>
             </div>
             <div className="modal-foot">

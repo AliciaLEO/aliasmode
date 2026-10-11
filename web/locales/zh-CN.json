@@ -345,7 +345,7 @@
   "columns are a": "列是",
   "record": "记录",
   "of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.": "实测指纹的，而非设置——它们在浏览器打开后校验，从不应用于浏览器。",
-  "(种子)": "（种子）",
-  "(时区)": "（时区）",
-  "(操作系统)": "（操作系统）"
+  "(seed)": "（种子）",
+  "(timezone)": "（时区）",
+  "(operating system)": "（操作系统）"
 }

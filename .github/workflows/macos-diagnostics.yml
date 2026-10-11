@@ -35,42 +35,41 @@ jobs:
           ditto "$RUNNER_TEMP/mnt/AliasMode.app" "$RUNNER_TEMP/Applications/AliasMode.app"
           hdiutil detach "$RUNNER_TEMP/mnt"
           xattr -l "$RUNNER_TEMP/Applications/AliasMode.app" || true
-      - name: Arabic text in app-launched profiles with filtered font lists
+      - name: Arabic text in a visible window, sealed engine against the published engine
         shell: bash
         run: |
           set -uo pipefail
           out="$RUNNER_TEMP/out"
-          app="$RUNNER_TEMP/Applications/AliasMode.app"
-          data="$HOME/Library/Application Support/com.aliasmode.desktop"
-          mkdir -p "$data"
-          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
-          worker="$app/Contents/Resources/playwright/firefox-worker.mjs"
-          cp "$worker" "$RUNNER_TEMP/firefox-worker.original.mjs"
-          open -n "$app"
-          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
-          helper="$app/Contents/MacOS/aliasmode-mcp"
-          shot() {
-            created="$("$helper" profiles create --name "diag-$1" --temporary --engine firefox)"
-            profile="$(jq -er '.result.id' <<<"$created")"
-            "$helper" browser open --profile "$profile" --url https://example.com/
-            sleep 12
-            screencapture -x "$out/fonts-$1.png"
-            "$helper" browser close --profile "$profile" || true
-            sleep 2
-          }
-          shot 1-unchanged
-          # Diagnostic copies only: drop hidden system fonts from the list that the engine receives.
-          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
-          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify({ ...config, fonts: (config.fonts || []).filter((name) => !name.startsWith(".")) });/' "$worker"
-          grep -c 'startsWith(".")' "$worker"
-          shot 2-no-dot-fonts
-          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
-          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify({ ...config, fonts: (config.fonts || []).filter((name) => !name.includes("PUA")) });/' "$worker"
-          shot 3-no-pua-fonts
-          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
-          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const { fonts: _fonts, ...rest } = config; const serialized = JSON.stringify(rest);/' "$worker"
-          shot 4-no-font-list
-          pkill -x aliasmode || true
+          sealed="$RUNNER_TEMP/Applications/AliasMode.app/Contents/Resources/firefox/AliasMode.app"
+          mkdir -p "$RUNNER_TEMP/published"
+          curl -sSfL -o "$RUNNER_TEMP/engine.zip" https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-152.0.4-beta.30-r4/aliasmode-152.0.4-beta.30-mac.arm64.zip
+          echo "a9847893bbe0472114cfc35b9f67ecb741f9a59002ac7d9e867634594792d320  $RUNNER_TEMP/engine.zip" | shasum -a 256 --check
+          ditto -x -k "$RUNNER_TEMP/engine.zip" "$RUNNER_TEMP/published"
+          published="$RUNNER_TEMP/published/AliasMode.app"
+          codesign -d --entitlements - "$published/Contents/MacOS/aliasmode" 2>&1 | head -20
+          codesign -d --entitlements - "$sealed/Contents/MacOS/aliasmode" 2>&1 | head -20
+          cat > "$out/arabic.html" <<'HTML'
+          <!doctype html><meta charset="utf-8"><body style="font-size:26px;margin:16px">
+          <p>default: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:serif">serif: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:sans-serif">sans-serif: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:'Geeza Pro'">Geeza Pro: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font-family:system-ui">system-ui: مرحبا بالعالم — هذا نص عربي</p>
+          <p style="font:16px/1.6 system-ui,sans-serif">page style: هذا النطاق مُخصص للاستخدام في أمثلة التوثيق</p>
+          HTML
+          for variant in sealed published; do
+            if [[ "$variant" == sealed ]]; then engine="$sealed"; else engine="$published"; fi
+            for page in "https://example.com/" "file://$out/arabic.html"; do
+              name="$variant-$(basename "$page" .html | tr -c 'a-z' '-' | cut -c1-12)"
+              scratch="$(mktemp -d)"
+              "$engine/Contents/MacOS/aliasmode" -no-remote -foreground -profile "$scratch" --window-size=1000,740 "$page" > "$out/visible-$name.log" 2>&1 &
+              pid=$!
+              sleep 16
+              screencapture -x "$out/visible-$name.png"
+              kill "$pid" 2>/dev/null || true
+              sleep 4
+            done
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

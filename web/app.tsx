@@ -1004,20 +1004,26 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
             ? "Proxy details are invalid. Check them and try again."
             : "Proxy check is unavailable. Try again later."}</span>
         </div>
-        {invalid && <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />}
+        {invalid
+          ? <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
+          : <ProxyProviderOffer placement="profile-dialog" />}
       </>
     );
   }
   const result = state.result;
-  if (!result) return null;
+  // A profile that already has a proxy keeps the offer, so it also shows in Edit profile.
+  if (!result) return <ProxyProviderOffer placement="profile-dialog" />;
   const location = [result.city, result.region, result.country].filter(Boolean).join(", ");
   const exit = [result.ip ? `Exit IP: ${result.ip}` : "", location].filter(Boolean).join(" · ");
   if (result.status === "working") {
     return (
-      <div className="proxy-check-result working" role="status">
-        <Icon name="check" className="sm" />
-        <span><strong>Proxy is working.</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
-      </div>
+      <>
+        <div className="proxy-check-result working" role="status">
+          <Icon name="check" className="sm" />
+          <span><strong>Proxy is working.</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
+        </div>
+        <ProxyProviderOffer placement="profile-dialog" />
+      </>
     );
   }
   if (result.status === "unstable") {
@@ -1043,10 +1049,13 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
     );
   }
   return (
-    <div className="proxy-check-result unavailable" role="status">
-      <Icon name="activity" className="sm" />
-      <span>{t("Proxy check is unavailable. Try again later.")}</span>
-    </div>
+    <>
+      <div className="proxy-check-result unavailable" role="status">
+        <Icon name="activity" className="sm" />
+        <span>{t("Proxy check is unavailable. Try again later.")}</span>
+      </div>
+      <ProxyProviderOffer placement="profile-dialog" />
+    </>
   );
 }
 
@@ -4913,7 +4922,14 @@ function App() {
   );
 }
 
-const root = createRoot(document.getElementById("root")!);
+const rootElement = document.getElementById("root")!;
+// The desktop shell opens outside links itself, from its allowlist. Its shell plugin also listens on
+// <body>: it cancels the click and asks for a command that AliasMode does not grant, so the link does
+// nothing. Stop the click here, so every outside link takes the allowlist path.
+rootElement.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest('a[target="_blank"]')) event.stopPropagation();
+});
+const root = createRoot(rootElement);
 root.render(
   <I18nProvider>
     <App />

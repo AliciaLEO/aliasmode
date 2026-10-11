@@ -214,6 +214,11 @@ test("New and Edit profile dialogs check proxies and show only relevant provider
   }
   expect(proxyOffer).toContain('target="_blank"');
   expect(proxyOffer).toContain('rel="noreferrer"');
+  // A profile that already has a proxy keeps the offer, so Edit profile shows it too.
+  expect(app).toContain('if (!result) return <ProxyProviderOffer placement="profile-dialog" />;');
+  // In the desktop app the shell plugin cancels outside-link clicks that reach <body>.
+  // The root stops them first, so the shell's allowlist opens the link.
+  expect(app).toContain(`if (event.target instanceof Element && event.target.closest('a[target="_blank"]')) event.stopPropagation();`);
   expect(proxyOffer).toContain('aria-label={t("Buy static residential proxies from NobleProxy at the AliasMode user price (opens externally)")}');
   expect(proxyOffer).toContain('replacement ? t("Buy Replacement Proxy") : t("Buy Static Residential Proxy")');
   // The offer is an AliasMode-only price, not a sale banner.

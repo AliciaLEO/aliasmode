@@ -174,7 +174,8 @@ export function deriveFingerprintFlags(profile: Profile): string[] {
   if (profile.locale) flags.push(`--fingerprint-locale=${profile.locale}`);
   // CloakBrowser's default ~500 MB storage quota is the classic incognito
   // signal, so Google treats the profile as private. Report a real-disk size.
-  flags.push(`--fingerprint-storage-quota=${100_000 + (profile.fingerprintSeed % 400_000)}`);
+  // The Chromium 155 runtime derives a real-disk quota from its own profile.
+  if (!profile.chromiumRuntime) flags.push(`--fingerprint-storage-quota=${100_000 + (profile.fingerprintSeed % 400_000)}`);
   return flags;
 }
 

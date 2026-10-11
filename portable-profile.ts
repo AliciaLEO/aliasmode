@@ -25,6 +25,8 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
 export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfile {
   assertValidProfile(profile);
   const engine = normalizeProfileEngine(profile.engine, profile.firefox);
+  // Cloud payloads cannot carry the runtime yet; never sync it as CloakBrowser.
+  if (profile.chromiumRuntime) throw new Error("Chromium 155 beta profiles are local-only for now");
   let session: PortableSessionV1;
   if (sessionBundle === undefined) {
     session = portableSession({ cookies: profile.cookies });

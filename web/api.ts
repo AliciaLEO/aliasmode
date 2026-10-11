@@ -24,6 +24,8 @@ export interface UiProfile {
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox";
+  /** "aliasmode" is the opt-in Chromium 155 beta; absent is CloakBrowser. */
+  chromiumRuntime?: "aliasmode";
   group: string;
   /** Canonical account platform domain, or "" (none). */
   platform: string;
@@ -643,6 +645,8 @@ export interface NewProfileInput {
   name?: string;
   /** Browser family selected for a new Local profile. */
   engine?: "chromium" | "firefox";
+  /** Opt-in Chromium 155 beta for a new Local Chromium profile. */
+  chromiumRuntime?: "aliasmode";
   group?: string;
   platform?: string;
   proxy?: ProxyCheckInput | null;
@@ -678,6 +682,7 @@ export interface EditProfile {
   id: string;
   name: string;
   engine: "chromium" | "firefox";
+  chromiumRuntime?: "aliasmode";
   group: string;
   platform: string;
   proxyType: string;

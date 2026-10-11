@@ -595,6 +595,7 @@ $checks = [ordered]@{
   playwrightWorkerProtocol = $false
   customScriptRunners = $false
   firefoxCliLifecycle = $false
+  chromiumBetaLifecycle = $false
   nativeNetworkObservation = $false
   browserMetadataHash = $false
   nativeHeadfulLaunch = $false
@@ -1155,6 +1156,34 @@ async def run(*, log, **_):
       $nativeNetworkObservationConfigPath = ""
       $checks.firefoxCliLifecycle = $true
       $checks.nativeNetworkObservation = $true
+
+      Set-AcceptanceStage "runtime-desktop-chromium-beta"
+      $betaProfile = (& $helper profiles create --name ci-chromium-beta --temporary --chromium-runtime aliasmode | ConvertFrom-Json)
+      if ($LASTEXITCODE -ne 0 -or -not $betaProfile.ok -or -not $betaProfile.result.id) {
+        throw "installed JSON CLI could not create a temporary Chromium 155 beta profile: $($betaProfile.error)"
+      }
+      $betaProfileId = $betaProfile.result.id
+      $betaOpened = (& $helper browser open --profile $betaProfileId --headless | ConvertFrom-Json)
+      if ($LASTEXITCODE -ne 0 -or -not $betaOpened.ok -or -not $betaOpened.result.port -or $betaOpened.result.alreadyOpen) {
+        throw "installed JSON CLI could not download and open Chromium 155 beta: $($betaOpened.error)"
+      }
+      $betaVersion = Invoke-RestMethod "http://127.0.0.1:$($betaOpened.result.port)/json/version" -TimeoutSec 10
+      if ($betaVersion.'User-Agent' -notmatch 'Chrome/155\.') {
+        throw "Chromium 155 beta reported an unexpected browser version: $($betaVersion.'User-Agent')"
+      }
+      $betaRuntime = Join-Path $appDataRoot "runtimes\chromium-155.0.8059.31"
+      if (-not (Test-Path -LiteralPath (Join-Path $betaRuntime "155.0.8059.31.manifest") -PathType Leaf)) {
+        throw "Chromium 155 beta runtime is missing its version manifest"
+      }
+      $betaHash = (Get-FileHash -LiteralPath (Join-Path $betaRuntime "chrome.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($betaHash -ne "5b4e065110a8a24bb35448d2716d26427a91618b0ee1f4b33723c4d25722de67") {
+        throw "Chromium 155 beta chrome.exe does not match its pin"
+      }
+      $betaClosed = (& $helper browser close --profile $betaProfileId | ConvertFrom-Json)
+      if ($LASTEXITCODE -ne 0 -or -not $betaClosed.ok -or -not $betaClosed.result.closed -or -not $betaClosed.result.deleted) {
+        throw "installed JSON CLI did not close and delete its temporary Chromium 155 beta profile: $($betaClosed.error)"
+      }
+      $checks.chromiumBetaLifecycle = $true
 
       Set-AcceptanceStage "runtime-desktop-descriptor"
       $descriptor = Read-ValidRuntimeDescriptor $descriptorPath $bundleVersion

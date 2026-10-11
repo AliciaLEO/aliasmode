@@ -700,8 +700,14 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
 
 const FINGERPRINT_EDIT_WARNING = "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?";
 
+function browserLabel(engine: "chromium" | "firefox", chromiumRuntime?: string): string {
+  if (engine === "firefox") return "AliasMode Firefox";
+  return chromiumRuntime ? "Chromium 155 beta" : "CloakBrowser";
+}
+
 function FingerprintSettings({
   engine,
+  chromiumRuntime,
   screen,
   onScreenChange,
   platformOs,
@@ -712,6 +718,7 @@ function FingerprintSettings({
   onUndo,
 }: {
   engine: "chromium" | "firefox";
+  chromiumRuntime?: string;
   screen: string;
   onScreenChange: (value: string) => void;
   platformOs: string;
@@ -731,7 +738,7 @@ function FingerprintSettings({
       <div className="fingerprint-grid">
         <label className="fld">
           <span>Browser</span>
-          <input value={engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly tabIndex={-1} className="ro" />
+          <input value={browserLabel(engine, chromiumRuntime)} readOnly tabIndex={-1} className="ro" />
         </label>
         {engine === "chromium" && (
           <label className="fld">
@@ -961,7 +968,7 @@ async function storeDesktopCloudCredentials(
 }
 
 const BLANK_FORM = {
-  name: "", engine: "chromium" as "chromium" | "firefox", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
+  name: "", engine: "chromium" as "chromium" | "firefox", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
   screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
@@ -1183,6 +1190,7 @@ function App() {
   // to Cloud with the running session — no expectedVersion handshake.
   const [editLive, setEditLive] = useState(false);
   const [editEngine, setEditEngine] = useState<"chromium" | "firefox">("chromium");
+  const [editChromiumRuntime, setEditChromiumRuntime] = useState("");
   const [timezoneBusy, setTimezoneBusy] = useState(false);
   const editFetchId = useRef<string | null>(null);
   const [editMobile, setEditMobile] = useState<NonNullable<EditProfile["desktopConversion"]> | null>(null);
@@ -2449,6 +2457,7 @@ function App() {
       const r = await createProfile({
         name: form.name,
         engine: form.engine,
+        ...(form.engine === "chromium" && form.chromiumRuntime && !isCloudMode ? { chromiumRuntime: form.chromiumRuntime } : {}),
         group: form.group,
         platform: form.platform,
         screen: form.screen,
@@ -2501,6 +2510,7 @@ function App() {
     setEditExpectedVersion(null);
     setEditLive(false);
     setEditEngine("chromium");
+    setEditChromiumRuntime("");
     setTimezoneBusy(false);
     setEditErr(null);
     setEditLoading(true);
@@ -2522,6 +2532,7 @@ function App() {
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
+        setEditChromiumRuntime(p.chromiumRuntime ?? "");
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
         setEditMobile(p.desktopConversion ?? null);
@@ -2541,6 +2552,7 @@ function App() {
     setEditExpectedVersion(null);
     setEditLive(false);
     setEditEngine("chromium");
+    setEditChromiumRuntime("");
     setTimezoneBusy(false);
     setEditLoading(false);
     setEditForm({});
@@ -3645,8 +3657,8 @@ function App() {
                         <span className="n">{p.name}<FingerprintBadge p={p} /></span>
                         <span className="sub">
                           {p.id}
-                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : "CloakBrowser · CDP, PDF, and Chrome extensions"}>
-                            {p.engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"}
+                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
+                            {browserLabel(p.engine, p.chromiumRuntime)}
                           </span>
                           {p.running && <span className="live"><StatusDot running />running</span>}
                           {p.lockedBy && (
@@ -4468,7 +4480,7 @@ function App() {
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
+              <FingerprintSettings engine={form.engine} chromiumRuntime={isCloudMode ? "" : form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
@@ -4490,6 +4502,16 @@ function App() {
                   </div>
                 ))}
               </div>
+              {form.engine === "chromium" && !isCloudMode && (
+                <label className="fld">
+                  <span>{t("Chrome version")}</span>
+                  <select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
+                    <option value="">{t("146 (default)")}</option>
+                    <option value="aliasmode">{t("155 beta")}</option>
+                  </select>
+                  {form.chromiumRuntime && <small>{t("Beta. Downloads once (about 190 MB). Local profiles only.")}</small>}
+                </label>
+              )}
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeCreate}>Cancel</button>
@@ -4580,7 +4602,7 @@ function App() {
                   )}
                   <label className="fld">
                     <span>Browser</span>
-                    <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
+                    <input value={browserLabel(editEngine, editChromiumRuntime)} readOnly className="ro" />
                     <small>{editEngine === "firefox"
                       ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
                       : t("CDP, PDF, and Chrome extensions are available.")}</small>
@@ -4655,7 +4677,7 @@ function App() {
                     </div>
                   )}
                   <FingerprintSettings
-                    engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
+                    engine={editEngine} chromiumRuntime={editChromiumRuntime} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
                     platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}

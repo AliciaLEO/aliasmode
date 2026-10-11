@@ -44,6 +44,7 @@ import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwne
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
 import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION } from "./firefox-config.ts";
+import { ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, ensureAliasmodeChromium } from "./aliasmode-chromium.ts";
 
 // Chromium ignores inline user:pass@ on --proxy-server. Rather than an MV3 extension answering
 // onAuthRequired (whose service worker can't answer reliably during a page-load burst), the browser
@@ -100,6 +101,13 @@ function firefoxHelperBinaryPaths(binaryPath: string): string[] {
   ];
 }
 
+/** Which pinned executable a profile launches. */
+type BinaryKind = "chromium" | "firefox" | "aliasmode";
+
+function binaryKind(profile: Profile): BinaryKind {
+  return profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "chromium";
+}
+
 export type BrowserLaunchFailure =
   | "preflight"
   | "mode_conflict"
@@ -120,6 +128,8 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
+  chromium155_host: "Chromium 155 beta requires Windows x64.",
+  chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
 } as const;
 
@@ -300,6 +310,10 @@ export interface LauncherOptions {
   expectedBinarySha256?: string;
   firefoxBinaryPath?: string;
   expectedFirefoxBinarySha256?: string;
+  /** Install root for the downloaded Chromium 155 beta. Defaults beside dataRoot. */
+  chromiumRuntimeRoot?: string;
+  /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
+  ensureAliasmodeChromium?: (root: string) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -614,6 +628,8 @@ export class Launcher {
   private expectedBinarySha256: string;
   private firefoxBinaryPath: string;
   private expectedFirefoxBinarySha256: string;
+  private chromiumRuntimeRoot: string;
+  private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -714,6 +730,8 @@ export class Launcher {
       if (launch.engine === "firefox" && launch.firefoxOwner) firefoxEndpoint(launch.firefoxOwner);
     }
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
+    this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
+    this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
@@ -785,8 +803,17 @@ export class Launcher {
     return dir;
   }
 
+  /** Begin the one-time Chromium 155 beta download in the background. */
+  prepareChromiumRuntime(): void {
+    if (this.hostPlatform !== "win32" || this.hostArch !== "x64") return;
+    this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot).catch((error) => {
+      this.log(`Chromium 155 beta download failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
   /** Validate the deployment pin without reading the configured binary. */
-  private approvedBinarySha256(engine: "chromium" | "firefox" = "chromium"): string {
+  private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
+    if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
     const expected = engine === "firefox" ? this.expectedFirefoxBinarySha256 : this.expectedBinarySha256;
     if (this.unsafeDisableIdentityGates) {
       return /^[a-f0-9]{64}$/.test(expected) ? expected : "0".repeat(64);
@@ -798,9 +825,17 @@ export class Launcher {
   }
 
   /** Hash and canonicalize the exact executable before every fresh generation. */
-  private async verifyConfiguredBinary(forceHash = false, engine: "chromium" | "firefox" = "chromium"): Promise<{ path: string; sha256: string }> {
+  private async verifyConfiguredBinary(forceHash = false, engine: BinaryKind = "chromium"): Promise<{ path: string; sha256: string }> {
     const expected = this.approvedBinarySha256(engine);
-    const binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
+    let binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
+    if (engine === "aliasmode") {
+      try {
+        binaryPath = await this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot);
+      } catch (error) {
+        this.log(`Chromium 155 beta install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "chromium155_download");
+      }
+    }
     if (this.unsafeDisableIdentityGates) return { path: binaryPath, sha256: expected };
     if (!binaryPath) throw new Error(`${engine} binary path is not configured`);
 
@@ -922,6 +957,9 @@ export class Launcher {
       return;
     }
     if (!this.enforceHostCompatibility) return;
+    if (profile.chromiumRuntime && (this.hostPlatform !== "win32" || this.hostArch !== "x64")) {
+      throw new BrowserLaunchError("preflight", "chromium155_host");
+    }
     if (isMobileUserAgent(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_mobile");
     }
@@ -1262,7 +1300,7 @@ export class Launcher {
       }
       this.assertHostCompatibility(profile);
       if (profile.engine === "firefox" && chromeArgs.length) throw new BrowserLaunchError("preflight", "firefox_arguments");
-      approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+      approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
     } catch (error) {
       return await this.rejectUnsafeExistingLaunch(profileId, "host/persona verification", error);
     }
@@ -1438,8 +1476,9 @@ export class Launcher {
     // been canonicalized and matched byte-for-byte against the deployment pin.
     let verifiedBinary: { path: string; sha256: string };
     try {
-      verifiedBinary = await this.verifyConfiguredBinary();
-    } catch {
+      verifiedBinary = await this.verifyConfiguredBinary(false, binaryKind(profile));
+    } catch (error) {
+      if (error instanceof BrowserLaunchError) throw error;
       throw new BrowserLaunchError("binary_verification");
     }
     const launchBinaryPath = verifiedBinary.path;
@@ -1548,7 +1587,7 @@ export class Launcher {
       // replacement cannot inherit the approval measured at launch start.
       let spawnVerifiedBinary: { path: string; sha256: string };
       try {
-        spawnVerifiedBinary = await this.verifyConfiguredBinary(true);
+        spawnVerifiedBinary = await this.verifyConfiguredBinary(true, binaryKind(profile));
       } catch {
         throw new BrowserLaunchError("binary_verification");
       }
@@ -3044,7 +3083,7 @@ export class Launcher {
     if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
     const snapshot = JSON.stringify(profile);
     this.assertHostCompatibility(profile);
-    const approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+    const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
     if (!(await this.active(profileId))) throw new Error(`cannot verify survivor ${profileId}: browser identity/CDP is unavailable`);
 
     const launch = this.store.getLaunch(profileId);
@@ -3084,7 +3123,7 @@ export class Launcher {
       const profile = this.store.getProfile(profileId);
       if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
       this.assertHostCompatibility(profile);
-      const approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+      const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
       const launch = this.store.getLaunch(profileId);
       if (!launch || `${launch.debugPort}:${launch.startedAt}` !== generation) return null;
       this.assertStoredLaunchPersona(profile, launch, approvedBinarySha256);

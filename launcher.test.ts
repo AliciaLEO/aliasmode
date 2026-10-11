@@ -38,6 +38,7 @@ import {
 } from "./launcher.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { parseExport } from "./parse.ts";
+import { buildNewProfile } from "./create.ts";
 import { SessionRestoreError } from "./session.ts";
 
 const linuxTest = process.platform === "win32" ? test.skip : test;
@@ -4625,5 +4626,70 @@ test("a launch verifies the profile against an imported attestation", async () =
   const verdict = store.getProfile("k1d0cd11")!.fpVerdict!;
   expect(verdict.verdict).toBe("mismatch");
   expect(verdict.differences[0]!.field).toBe("canvas");
+  store.close();
+});
+
+test("Chromium 155 beta profiles launch the installed beta runtime without CloakBrowser-only flags", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const roots: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async (root) => {
+      roots.push(root);
+      return "/fake/runtimes/chromium-155/chrome.exe";
+    },
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(roots).toEqual(["/fake/runtimes", "/fake/runtimes"]);
+  expect(binaries).toEqual(["/fake/runtimes/chromium-155/chrome.exe"]);
+  expect(spawnedArgs[0]).toContain(`--fingerprint=${profile.fingerprintSeed}`);
+  expect(spawnedArgs[0]!.some((arg) => arg.startsWith("--fingerprint-storage-quota="))).toBe(false);
+  expect(store.getLaunch(profile.id)?.binaryPath).toBe("/fake/runtimes/chromium-155/chrome.exe");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("Chromium 155 beta download failure is a public preflight error", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  const spawnedArgs: string[][] = [];
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    ensureAliasmodeChromium: async () => { throw new Error("offline"); },
+  });
+  const error = await launcher.start(profile.id).catch((caught) => caught);
+  expect(error).toEqual(new BrowserLaunchError("preflight", "chromium155_download"));
+  expect(error.guidance).toContain("could not be downloaded");
+  expect(spawnedArgs).toEqual([]);
+  store.close();
+});
+
+test("Chromium 155 beta is refused outside Windows x64 before any download", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  let downloads = 0;
+  const launcher = new ProductionLauncher({
+    store,
+    dataRoot: testDataRoot(store),
+    hostPlatform: "darwin",
+    hostArch: "arm64",
+    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium155_host"));
+  launcher.prepareChromiumRuntime();
+  expect(downloads).toBe(0);
   store.close();
 });

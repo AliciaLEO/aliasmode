@@ -330,5 +330,9 @@
   "➕ New platform…": "➕ 新建网站/平台…",
   "Destination folder": "目标文件夹",
   "Assign to group": "分配到分组",
-  "Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers": "可读的 TXT、CSV、JSON 或 XLSX 导出文件，来自 AdsPower、GoLogin、Multilogin、Dolphin Anty、HideMyAcc、Incogniton、Donut 及类似浏览器"
+  "Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers": "可读的 TXT、CSV、JSON 或 XLSX 导出文件，来自 AdsPower、GoLogin、Multilogin、Dolphin Anty、HideMyAcc、Incogniton、Donut 及类似浏览器",
+  "Chrome version": "Chrome 版本",
+  "146 (default)": "146（默认）",
+  "155 beta": "155 测试版",
+  "Beta. Downloads once (about 190 MB). Local profiles only.": "测试版。首次使用时下载一次（约 190 MB）。仅限本地配置文件。"
 }

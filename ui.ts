@@ -30,7 +30,7 @@ import {
 } from "./cloud-profile-editor.ts";
 import type { PendingSyncRuntime } from "./pending-sync.ts";
 import type { StatePaths } from "./paths.ts";
-import type { FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
+import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
@@ -73,6 +73,8 @@ export interface UiProfile {
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox";
+  /** Present only for the opt-in Chromium 155 beta. */
+  chromiumRuntime?: ChromiumRuntime;
   group: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
   platform: string;
@@ -144,6 +146,7 @@ export function listUiProfiles(store: ProfileStore): UiProfile[] {
       id: p.id,
       name: p.name,
       engine: profileEngine(p),
+      ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
       group: p.group,
       platform: p.platform ?? "",
       tags: p.tags ?? [],
@@ -413,7 +416,8 @@ function profileEditView(p: Profile) {
   const proxy = px ? proxyLegacyString(px) : "";
   const conversion = isMobileUserAgent(p.ua) ? convertMobilePersonaToDesktop(p) : null;
   return {
-    id: p.id, name: p.name, engine: profileEngine(p), group: p.group, platform: p.platform ?? "",
+    id: p.id, name: p.name, engine: profileEngine(p), ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
+    group: p.group, platform: p.platform ?? "",
     proxyType: px?.type ?? "http", proxy,
     ...(p.proxyError ? { proxyError: p.proxyError } : {}),
     username: p.username, password: p.password,
@@ -1208,6 +1212,9 @@ export async function handleUiRequest(
     // Create a new profile: unique id → unique seed → unique fingerprint/UA.
     try {
       const input = (await req.json()) as NewProfileInput;
+      if ((remote || options.cloudBrowser) && input.chromiumRuntime) {
+        throw new Error("Chromium 155 beta profiles are local-only for now");
+      }
       if (remote) {
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
@@ -1224,6 +1231,8 @@ export async function handleUiRequest(
         return Response.json({ ok: true, ...await options.cloudBrowser.create(profile) });
       }
       store.upsertProfile(profile);
+      // Start the one-time beta download now so the first open is not waiting on it.
+      if (profile.chromiumRuntime) launcher.prepareChromiumRuntime();
       return Response.json({ ok: true, id: profile.id });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });

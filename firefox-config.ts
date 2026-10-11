@@ -4,7 +4,7 @@ import fingerprintNetworkDefinitionPath from "./node_modules/fingerprint-generat
 import inputNetworkDefinitionPath from "./node_modules/header-generator/data_files/input-network-definition.zip" with { type: "file" };
 // @ts-expect-error Bun embeds this package data in compiled sidecars.
 import headerNetworkDefinitionPath from "./node_modules/header-generator/data_files/header-network-definition.zip" with { type: "file" };
-import type { FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
+import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { platformFromUA } from "./fingerprint.ts";
 import { localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
@@ -127,6 +127,14 @@ export function normalizeProfileEngine(value: unknown, firefox: unknown): {
   }
   if (firefox !== undefined) throw new Error("Chromium profiles cannot include a Firefox config");
   return { engine };
+}
+
+/** Absent or empty means the default CloakBrowser runtime. */
+export function normalizeChromiumRuntime(value: unknown, engine: ProfileEngine): ChromiumRuntime | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value !== "aliasmode") throw new Error("unsupported Chromium runtime");
+  if (engine !== "chromium") throw new Error("only Chromium profiles can choose a Chromium runtime");
+  return value;
 }
 
 function normalizeJsonRecord(value: Record<string, unknown>): Record<string, JsonValue> {

@@ -330,5 +330,9 @@
   "➕ New platform…": "➕ Новая платформа…",
   "Destination folder": "Папка назначения",
   "Assign to group": "Назначить группу",
-  "Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers": "Читаемые экспорты TXT, CSV, JSON или XLSX из AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut и похожих браузеров"
+  "Readable TXT, CSV, JSON, or XLSX exports from AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut, and similar browsers": "Читаемые экспорты TXT, CSV, JSON или XLSX из AdsPower, GoLogin, Multilogin, Dolphin Anty, HideMyAcc, Incogniton, Donut и похожих браузеров",
+  "Chrome version": "Версия Chrome",
+  "146 (default)": "146 (по умолчанию)",
+  "155 beta": "155 бета",
+  "Beta. Downloads once (about 190 MB). Local profiles only.": "Бета-версия. Загружается один раз (около 190 МБ). Только для локальных профилей."
 }

@@ -11,7 +11,7 @@
  */
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
-import { completeProfileFingerprint, createFirefoxProfileConfig } from "./firefox-config.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime } from "./firefox-config.ts";
 import { deterministicSeed, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
@@ -19,6 +19,8 @@ import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./p
 export interface NewProfileInput {
   /** Browser identity engine. Defaults to Chromium for compatibility. */
   engine?: ProfileEngine;
+  /** Opt-in Chromium runtime. Omitted means CloakBrowser. */
+  chromiumRuntime?: string;
   name?: string;
   group?: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
@@ -75,6 +77,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     })();
   const engine = input.engine === undefined ? "chromium" : input.engine;
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  const chromiumRuntime = normalizeChromiumRuntime(input.chromiumRuntime, engine);
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
     ? createFirefoxProfileConfig(selected.width, selected.height, platformOs)
@@ -87,6 +90,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
   return completeProfileFingerprint({
     id,
     engine,
+    ...(chromiumRuntime ? { chromiumRuntime } : {}),
     ...(firefox ? { firefox } : {}),
     accId: "",
     name: (input.name || "").trim() || id, // AdsPower auto-names blank profiles after the id

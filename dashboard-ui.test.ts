@@ -266,8 +266,14 @@ test("dashboard selects browser for new profiles", () => {
   expect(styles).toContain('.browser-card:has(input:checked) { background: var(--browser-selected);');
   expect(styles).not.toContain('.browser-option:has(input:checked) { color: var(--browser-surface); }');
   expect(app).toContain("engine: form.engine,");
-  expect(editModal).toContain('value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly');
+  expect(editModal).toContain("value={browserLabel(editEngine, editChromiumRuntime)} readOnly");
   expect(editModal).not.toContain('setEF("engine"');
+  expect(editModal).not.toContain('setEF("chromiumRuntime"');
+  // Chrome version: 146 stays the default; 155 beta is Local-only.
+  expect(createModal).toContain('{form.engine === "chromium" && !isCloudMode && (');
+  expect(createModal).toContain('<option value="">{t("146 (default)")}</option>');
+  expect(createModal).toContain('<option value="aliasmode">{t("155 beta")}</option>');
+  expect(app).toContain('chromiumRuntime: "" as "" | "aliasmode"');
   expect(app).toContain('Native Firefox profile · no CDP, PDF, or Chrome extensions');
   expect(app).toContain('{p.engine === "chromium" && <>');
   expect(app).toContain('selectedProfilesSupportChromeExtensions');

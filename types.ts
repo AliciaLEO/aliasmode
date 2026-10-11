@@ -27,6 +27,9 @@ export type ProxyType = "http" | "https" | "socks5";
 /** Browser engine that owns this profile's identity. Missing legacy values mean Chromium. */
 export type ProfileEngine = "chromium" | "firefox";
 
+/** Opt-in Chromium runtime. Missing means the default CloakBrowser runtime. */
+export type ChromiumRuntime = "aliasmode";
+
 /** JSON-safe values persisted in Camoufox's normalized configuration. */
 export type JsonValue =
   | null
@@ -66,6 +69,8 @@ export interface Profile {
   id: string;
   /** Browser engine. Missing values in pre-engine profiles mean Chromium. */
   engine?: ProfileEngine;
+  /** Chromium runtime fixed at creation: "aliasmode" is the Chromium 155 beta. */
+  chromiumRuntime?: ChromiumRuntime;
   /**
    * Firefox's complete Camoufox identity. It is generated once on creation and
    * must accompany every Firefox profile; Chromium profiles must not carry it.

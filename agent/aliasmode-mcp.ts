@@ -139,6 +139,7 @@ async function profiles(args: string[]): Promise<unknown> {
       ...(value(rest, "group") ? { group: value(rest, "group") } : {}),
       ...(value(rest, "platform") ? { platform: value(rest, "platform") } : {}),
       ...(value(rest, "engine") ? { engine: value(rest, "engine") } : {}),
+      ...(value(rest, "chromium-runtime") ? { chromiumRuntime: value(rest, "chromium-runtime") } : {}),
       ...(value(rest, "screen") ? { screen: value(rest, "screen") } : {}),
     };
     return await withRuntime((client) => client.call("profiles.create", {

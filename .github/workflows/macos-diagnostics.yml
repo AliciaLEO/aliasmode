@@ -35,61 +35,42 @@ jobs:
           ditto "$RUNNER_TEMP/mnt/AliasMode.app" "$RUNNER_TEMP/Applications/AliasMode.app"
           hdiutil detach "$RUNNER_TEMP/mnt"
           xattr -l "$RUNNER_TEMP/Applications/AliasMode.app" || true
-      - name: Arabic text with the preferences of an app-launched profile
+      - name: Arabic text in app-launched profiles with filtered font lists
         shell: bash
         run: |
           set -uo pipefail
           out="$RUNNER_TEMP/out"
           app="$RUNNER_TEMP/Applications/AliasMode.app"
-          engine="$app/Contents/Resources/firefox/AliasMode.app/Contents/MacOS/aliasmode"
           data="$HOME/Library/Application Support/com.aliasmode.desktop"
           mkdir -p "$data"
           printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
-          # Diagnostic copy only: save the configuration that the worker hands to the engine.
           worker="$app/Contents/Resources/playwright/firefox-worker.mjs"
-          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify(config);\n  try { process.getBuiltinModule("node:fs").writeFileSync("\/tmp\/aliasmode-camou-config.json", serialized); } catch {}/' "$worker"
+          cp "$worker" "$RUNNER_TEMP/firefox-worker.original.mjs"
           open -n "$app"
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           helper="$app/Contents/MacOS/aliasmode-mcp"
-          created="$("$helper" profiles create --name diag-firefox --temporary --engine firefox)"
-          profile="$(jq -er '.result.id' <<<"$created")"
-          "$helper" browser open --profile "$profile" --url https://example.com/
-          sleep 12
-          ps -axww -o pid=,command= | grep -F "$profile" | grep -v grep | cut -c1-1200 > "$out/firefox-processes.txt"
-          find "$data" -name prefs.js -o -name user.js | tee "$out/pref-files.txt"
-          prefs="$(grep -F "$profile" "$out/pref-files.txt" | grep prefs.js | head -n 1)"
-          cp "$prefs" "$out/real-prefs.js"
-          cp "$(dirname "$prefs")/user.js" "$out/real-user.js" 2>/dev/null || true
-          "$helper" browser close --profile "$profile" || true
+          shot() {
+            created="$("$helper" profiles create --name "diag-$1" --temporary --engine firefox)"
+            profile="$(jq -er '.result.id' <<<"$created")"
+            "$helper" browser open --profile "$profile" --url https://example.com/
+            sleep 12
+            screencapture -x "$out/fonts-$1.png"
+            "$helper" browser close --profile "$profile" || true
+            sleep 2
+          }
+          shot 1-unchanged
+          # Diagnostic copies only: drop hidden system fonts from the list that the engine receives.
+          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
+          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify({ ...config, fonts: (config.fonts || []).filter((name) => !name.startsWith(".")) });/' "$worker"
+          grep -c 'startsWith(".")' "$worker"
+          shot 2-no-dot-fonts
+          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
+          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const serialized = JSON.stringify({ ...config, fonts: (config.fonts || []).filter((name) => !name.includes("PUA")) });/' "$worker"
+          shot 3-no-pua-fonts
+          cp "$RUNNER_TEMP/firefox-worker.original.mjs" "$worker"
+          perl -0pi -e 's/const serialized = JSON\.stringify\(config\);/const { fonts: _fonts, ...rest } = config; const serialized = JSON.stringify(rest);/' "$worker"
+          shot 4-no-font-list
           pkill -x aliasmode || true
-          sleep 3
-          grep -ciE "font" "$out/real-prefs.js" "$out/real-user.js" 2>/dev/null
-          grep -iE "font|gfx|intl\.|lang" "$out/real-prefs.js" "$out/real-user.js" 2>/dev/null | cut -c1-220 | head -60
-          source_prefs="$out/real-user.js"
-          [[ -s "$source_prefs" ]] || source_prefs="$out/real-prefs.js"
-          cp "$source_prefs" "$out/p1-all.js"
-          grep -viE "font" "$source_prefs" > "$out/p2-no-font.js"
-          grep -viE "gfx" "$source_prefs" > "$out/p3-no-gfx.js"
-          grep -viE "intl|locale|lang" "$source_prefs" > "$out/p4-no-language.js"
-          grep -viE "privacy|resist|fingerprint" "$source_prefs" > "$out/p5-no-privacy.js"
-          : > "$out/p6-none.js"
-          for file in "$out"/p?-*.js; do
-            name="$(basename "$file" .js)"
-            scratch="$(mktemp -d)"
-            cp "$file" "$scratch/user.js"
-            (
-              index=1
-              while IFS= read -r chunk; do
-                export "CAMOU_CONFIG_$index=$chunk"
-                index=$((index + 1))
-              done < <(bun -e 'const text = require("node:fs").readFileSync(process.argv[1], "utf8").trim(); for (let offset = 0; offset < text.length; offset += 2047) console.log(text.slice(offset, offset + 2047));' /tmp/aliasmode-camou-config.json)
-              "$engine" --headless -profile "$scratch" --window-size=1000,760 --screenshot "$out/prefs-$name.png" "https://example.com/" > "$out/prefs-$name.log" 2>&1 &
-              pid=$!
-              for attempt in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-              kill "$pid" 2>/dev/null || true
-            )
-            ls -la "$out/prefs-$name.png" 2>/dev/null || { echo "no screenshot for $name"; tail -5 "$out/prefs-$name.log"; }
-          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

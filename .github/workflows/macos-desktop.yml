@@ -281,6 +281,7 @@ jobs:
           for attempt in $(seq 1 30); do [[ -f fixture-state.json ]] && break; sleep 1; done
           curl --fail --silent --show-error --cacert ca.pem "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10" | jq -e --arg tag "v$SUCCESSOR" '.[0].tag_name == $tag'
       - name: Update through the dashboard and verify the relaunched app
+        timeout-minutes: 15
         shell: bash
         run: |
           set -euo pipefail
@@ -303,18 +304,20 @@ jobs:
           done
           sleep 3
           screencapture -x "$RUNNER_TEMP/update-evidence/before-update.png"
-          osascript -e "tell application \"System Events\" to tell (first application process whose unix id is $old_pid)
-            set frontmost to true
-            repeat with element in (entire contents of window 1)
-              try
-                if (class of element is button) and (name of element is \"Update now\") then
-                  click element
-                  return \"clicked\"
-                end if
-              end try
-            end repeat
-            error \"the Update now button was not found\"
-          end tell"
+          # One query returns every element with its path, so the button is found without a slow walk.
+          OLD_PID="$old_pid" osascript -l JavaScript -e '
+            ObjC.import("stdlib");
+            const events = Application("System Events");
+            const app = events.applicationProcesses.whose({ unixId: Number($.getenv("OLD_PID")) })[0];
+            app.frontmost = true;
+            const elements = app.windows[0].entireContents();
+            const button = elements.find((element) => Automation.getDisplayString(element).includes("buttons.byName(\"Update now\")"));
+            if (!button) throw new Error("the Update now button was not found among " + elements.length + " elements");
+            button.click();
+            "clicked Update now";
+          '
+          sleep 5
+          screencapture -x "$RUNNER_TEMP/update-evidence/after-click.png"
           for attempt in $(seq 1 240); do
             version="$(jq -r '.appVersion // empty' "$data/agent-runtime.json" 2>/dev/null || true)"
             [[ "$version" == "$SUCCESSOR" ]] && break
@@ -330,15 +333,16 @@ jobs:
           codesign --verify --deep --strict "$app"
           "$helper" profiles list | grep -q "\"$kept\""
           sudo jq -e '.counts.installer >= 1 and .counts.rejected == 0' "$work/fixture-state.json"
-      - name: Restore name resolution and trust
+      - name: Restore name resolution
         if: always()
+        timeout-minutes: 3
         shell: bash
         run: |
           work="$RUNNER_TEMP/update"
           [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
           sudo dscacheutil -flushcache || true
-          sudo pkill -f windows-updater-https-fixture.mjs || true
-          [[ -f "$work/ca.pem" ]] && sudo security remove-trusted-cert -d "$work/ca.pem" || true
+          screencapture -x "$RUNNER_TEMP/update-evidence/final.png" || true
+          cp "$HOME/Library/Application Support/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           cp "$HOME/Library/Application Support/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
           sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true

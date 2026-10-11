@@ -12,9 +12,6 @@ on:
       version:
         description: Version of the built app
         value: ${{ jobs.build.outputs.version }}
-  push:
-    branches:
-      - feat/macos-desktop
 
 permissions:
   contents: read

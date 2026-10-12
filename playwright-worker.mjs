@@ -1091,7 +1091,12 @@ export async function operatePersistentContext(browser, context, operation, payl
     } finally { await page.close().catch(() => {}); }
   }
   if (operation === "page" && payload.kind === "fingerprint") {
-    const page = await context.newPage();
+    // In Firefox a new page is a new window, and the user sees it open and close at each launch.
+    // The empty first window loads the probe document instead, and then becomes empty again.
+    const empty = context.pages().find((candidate) => {
+      try { return candidate.url() === "about:blank"; } catch { return false; }
+    });
+    const page = empty ?? await context.newPage();
     const url = "https://fingerprint.aliasmode.invalid/?__aliasmode_fingerprint__=1";
     let intercepted = false;
     const handler = async (route) => {
@@ -1099,14 +1104,21 @@ export async function operatePersistentContext(browser, context, operation, payl
       intercepted = true;
       return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Fingerprint</title>" });
     };
+    // location.replace keeps the probe document out of the Back history of the window.
+    const replaceWith = (target) => Promise.all([
+      page.waitForURL(target, { waitUntil: "domcontentloaded", timeout }),
+      page.evaluate((next) => location.replace(next), target).catch(() => {}),
+    ]);
     try {
       await page.route("**/*", handler);
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout });
+      if (empty) await replaceWith(url);
+      else await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       if (!intercepted || page.url() !== url) throw new Error("fingerprint document was not fulfilled locally");
       return await page.evaluate(payload.fingerprintScript);
     } finally {
+      if (empty) await replaceWith("about:blank").catch(() => {});
       await page.unroute("**/*", handler).catch(() => {});
-      await page.close().catch(() => {});
+      if (!empty) await page.close().catch(() => {});
     }
   }
   if (operation === "page") {

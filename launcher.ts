@@ -2050,10 +2050,8 @@ export class Launcher {
         startupStatus = await this.firefoxStatus(launch);
       }
       let nativeSessionRestored = restoreLastSession && startupStatus.pageTargets.some((target) => canonicalUserPageUrl(target.url));
-      if (!nativeSessionRestored && closedTabs !== undefined) {
-        await this.navigate(launch.ws, closedTabs, true);
-        nativeSessionRestored = closedTabs.length > 0;
-      }
+      // The capture comes before the tabs: it can then use the empty first window, and no extra
+      // window opens and closes in front of the user.
       const captured = await recordCapture({
         profile, capture: () => this.captureFingerprintFn(launch.ws),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
@@ -2062,6 +2060,10 @@ export class Launcher {
       if (captured) {
         profile = this.store.getProfile(profileId)!;
         snapshot = JSON.stringify(profile);
+      }
+      if (!nativeSessionRestored && closedTabs !== undefined) {
+        await this.navigate(launch.ws, closedTabs, true);
+        nativeSessionRestored = closedTabs.length > 0;
       }
       if (!this.skipDefaultWindowLabel) {
         const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));

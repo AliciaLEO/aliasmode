@@ -175,8 +175,27 @@ jobs:
 
           created="$("$helper" profiles create --name ci-firefox --temporary --engine firefox)"
           profile="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
+          # A Firefox launch must show one window only: no second window that opens and closes.
+          PROFILE="$profile" osascript -l JavaScript -e '
+            ObjC.import("stdlib");
+            const events = Application("System Events");
+            const shell = Application.currentApplication(); shell.includeStandardAdditions = true;
+            let most = 0;
+            for (let round = 0; round < 40; round++) {
+              let pids = [];
+              try { pids = shell.doShellScript("pgrep -f profiles/" + $.getenv("PROFILE") + " || true").split(/\s+/).filter(Boolean).map(Number); } catch (error) {}
+              for (const pid of pids) {
+                try { most = Math.max(most, events.applicationProcesses.whose({ unixId: pid })[0].windows.length); } catch (error) {}
+              }
+              delay(0.25);
+            }
+            "most windows at the same time: " + most;
+          ' > "$RUNNER_TEMP/evidence/firefox-launch-windows.txt" &
+          window_count=$!
           "$helper" browser open --profile "$profile" --url https://example.com/ | jq -e '.ok and .result.engine == "firefox"'
-          sleep 10
+          wait "$window_count"
+          cat "$RUNNER_TEMP/evidence/firefox-launch-windows.txt"
+          grep -qx "most windows at the same time: 1" "$RUNNER_TEMP/evidence/firefox-launch-windows.txt"
           screencapture -x "$RUNNER_TEMP/evidence/firefox-profile.png"
           "$helper" browser status --profile "$profile" | tee "$RUNNER_TEMP/evidence/status.json" | jq -e '.ok'
 

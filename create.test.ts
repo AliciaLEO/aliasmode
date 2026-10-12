@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { buildNewProfile, generateId } from "./create.ts";
+import { graphicsIdentity } from "./firefox-config.ts";
 import { deterministicSeed, deriveFingerprintFlags, hostPlatformOs, platformFromUA } from "./fingerprint.ts";
 import { ProfileStore } from "./store.ts";
 
@@ -25,6 +26,25 @@ test("new Chromium profiles keep their initial timezone across launches", () => 
   expect(flags).toContain(`--fingerprint-timezone=${timezone}`);
   expect(deriveFingerprintFlags(structuredClone(profile))).toEqual(flags);
   expect(flags.some((flag) => flag.startsWith("--user-agent="))).toBe(false);
+});
+
+test("a new Firefox profile stores its own graphics card, matched to its system and not to the host", () => {
+  const windows = buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false);
+  const mac = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
+
+  // Windows reports its cards through ANGLE and Direct3D; a Mac never does.
+  expect(String(windows.firefox!.config["webGl:vendor"])).toStartWith("Google Inc.");
+  expect(String(windows.firefox!.config["webGl:renderer"])).toContain("Direct3D11");
+  expect(String(mac.firefox!.config["webGl:renderer"])).not.toContain("Direct3D");
+  // The stored identity has the limits that belong to the card, not only its name.
+  for (const key of ["webGl:parameters", "webGl2:parameters", "webGl:supportedExtensions", "webGl:shaderPrecisionFormats"]) {
+    expect(windows.firefox!.config[key]).toBeDefined();
+  }
+  expect(windows.firefox!.config).not.toHaveProperty("webGl2Enabled");
+  expect(String(windows.firefox!.config["webGl:renderer"])).not.toMatch(/SwiftShader|Basic Render/);
+  // The choice comes from the profile seed, so it is stable for that profile.
+  expect(graphicsIdentity("windows", windows.fingerprintSeed)["webGl:renderer"]).toBe(windows.firefox!.config["webGl:renderer"]);
+  expect(buildNewProfile({}, () => false).firefox).toBeUndefined();
 });
 
 test("buildNewProfile generates and fixes a selected Windows identity for Firefox", () => {

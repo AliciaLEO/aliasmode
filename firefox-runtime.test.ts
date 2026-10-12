@@ -42,6 +42,10 @@ test("Firefox owner passes native proxy preferences", () => {
     },
   });
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe", proxy })).not.toHaveProperty("firefoxUserPrefs.browser.startup.page");
+  // A stored graphics identity keeps WebGL on, so the same card shows on every computer.
+  expect(firefoxLaunchOptions({ executablePath: "firefox.exe", config: { "webGl:vendor": "Google Inc. (Intel)" } }).firefoxUserPrefs)
+    .toMatchObject({ "webgl.force-enabled": true });
+  expect(firefoxLaunchOptions({ executablePath: "firefox.exe", config: {} }).firefoxUserPrefs).not.toHaveProperty("webgl.force-enabled");
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs).toEqual({
     "media.peerconnection.ice.default_address_only": true,
   });

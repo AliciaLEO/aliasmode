@@ -82,7 +82,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     ?? (engine === "chromium" ? hostChromiumRuntime() : undefined);
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
-    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs)
+    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs, deterministicSeed(id))
     : undefined;
   const firefoxUa = firefox?.config["navigator.userAgent"];
   const firefoxScreenWidth = firefox?.config["screen.width"];

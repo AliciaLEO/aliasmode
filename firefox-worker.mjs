@@ -154,6 +154,8 @@ function send(response, status, body) {
 }
 
 export function firefoxLaunchOptions(input) {
+  // A stored graphics identity must show on every computer, also where the browser would turn WebGL off.
+  const graphics = input.config?.["webGl:vendor"] ? { "webgl.force-enabled": true } : {};
   return {
     executablePath: input.executablePath,
     viewport: null,
@@ -163,10 +165,11 @@ export function firefoxLaunchOptions(input) {
         "media.peerconnection.ice.proxy_only": true,
         "media.peerconnection.ice.default_address_only": true,
         "media.peerconnection.ice.no_host": true,
+        ...graphics,
       },
     } : {
       // No proxy: keep WebRTC on the default route so a system VPN's IP is used, not the real NIC.
-      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true },
+      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true, ...graphics },
     }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),

@@ -129,6 +129,20 @@ jobs:
           screencapture -x "$RUNNER_TEMP/evidence/firefox-profile.png"
           "$helper" browser status --profile "$profile" | tee "$RUNNER_TEMP/evidence/status.json" | jq -e '.ok'
 
+          # A Firefox profile with a Windows identity must show its own stored graphics card, not this Mac's.
+          created="$(curl --fail --silent --show-error -X POST "http://127.0.0.1:$port/ui/api/profiles" -H 'content-type: application/json' -d '{"name":"ci-firefox-windows","engine":"firefox","platformOs":"windows"}')"
+          winfx="$(jq -er '.profile.id // .id' <<<"$created")"
+          "$helper" browser open --profile "$winfx" --url https://example.com/ | jq -e '.ok'
+          observed=""
+          for attempt in $(seq 1 60); do
+            observed="$(sqlite3 "$data/profiles.sqlite" "select fp_observed_json from profiles where id = '$winfx'")"
+            [[ "$observed" == *webglRenderer* ]] && break
+            sleep 1
+          done
+          jq '{userAgent, platform, webglVendor, webglRenderer, hardwareConcurrency}' <<<"$observed" | tee "$RUNNER_TEMP/evidence/firefox-windows-identity.json"
+          jq -e '(.webglRenderer | contains("Direct3D11")) and (.webglVendor | startswith("Google Inc.")) and (.platform == "Win32")' <<<"$observed"
+          "$helper" browser close --profile "$winfx" | jq -e '.ok'
+
           # No runtime flag: on macOS a Chromium profile must default to the 155 runtime.
           created="$("$helper" profiles create --name ci-chromium --temporary)"
           chromium="$(jq -er 'select(.ok) | .result.id' <<<"$created")"

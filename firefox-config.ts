@@ -4,6 +4,9 @@ import fingerprintNetworkDefinitionPath from "./node_modules/fingerprint-generat
 import inputNetworkDefinitionPath from "./node_modules/header-generator/data_files/input-network-definition.zip" with { type: "file" };
 // @ts-expect-error Bun embeds this package data in compiled sidecars.
 import headerNetworkDefinitionPath from "./node_modules/header-generator/data_files/header-network-definition.zip" with { type: "file" };
+// @ts-expect-error Bun embeds this package data in compiled sidecars.
+import webglDataPath from "./node_modules/camoufox-js/dist/data-files/webgl_data.db" with { type: "file" };
+import { Database } from "bun:sqlite";
 import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { platformFromUA } from "./fingerprint.ts";
@@ -20,14 +23,61 @@ const generatorAssets = Object.fromEntries(await Promise.all(generatorAssetInput
 (globalThis as typeof globalThis & { __aliasmodeGeneratorAssets?: Record<string, Buffer> }).__aliasmodeGeneratorAssets = generatorAssets;
 const { fromBrowserforge, generateFingerprint } = await import("camoufox-js/dist/fingerprints.js");
 
+type PersonaOs = "windows" | "macos" | "linux";
+interface GraphicsIdentity {
+  weight: number;
+  keys: Record<string, JsonValue>;
+}
+
+/**
+ * Real graphics identities per system from the engine's data set, weighted by how
+ * common they are. Each has the vendor, the renderer and the matching WebGL limits.
+ * Software renderers are left out: they are no device identity.
+ */
+const graphicsIdentities = await (async (): Promise<Record<PersonaOs, GraphicsIdentity[]>> => {
+  const database = Database.deserialize(new Uint8Array(await Bun.file(webglDataPath).arrayBuffer()));
+  const rows = database
+    .prepare("SELECT renderer, data, win, mac, lin FROM webgl_fingerprints ORDER BY vendor, renderer, data")
+    .all() as Array<{ renderer: string; data: string; win: number; mac: number; lin: number }>;
+  database.close();
+  const forSystem = (column: "win" | "mac" | "lin") => rows.flatMap((row) => {
+    const { webGl2Enabled, ...keys } = JSON.parse(row.data) as Record<string, JsonValue>;
+    return row[column] > 0 && webGl2Enabled === true && !/SwiftShader|Basic Render/i.test(row.renderer)
+      ? [{ weight: row[column], keys }]
+      : [];
+  });
+  return { windows: forSystem("win"), macos: forSystem("mac"), linux: forSystem("lin") };
+})();
+
+/** Choose the graphics identity of a profile. The same seed always gives the same one. */
+export function graphicsIdentity(platformOs: PersonaOs, seed: number): Record<string, JsonValue> {
+  const options = graphicsIdentities[platformOs];
+  const total = options.reduce((sum, option) => sum + option.weight, 0);
+  // Mulberry32 turns the profile seed into one well-mixed fraction.
+  let mixed = (seed + 0x6d2b79f5) >>> 0;
+  mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+  mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+  let remaining = (((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296) * total;
+  for (const option of options) {
+    remaining -= option.weight;
+    if (remaining < 0) return structuredClone(option.keys);
+  }
+  return structuredClone(options.at(-1)!.keys);
+}
+
 export const FIREFOX_RUNTIME_VERSION = "152.0.4-beta.30";
 const FIREFOX_UA_MAJOR_VERSION = "152";
 
-/** Generate an OS-matched identity once, for durable profile storage. */
+/**
+ * Generate an OS-matched identity once, for durable profile storage. With a seed the
+ * identity also has its own graphics card, so the profile shows the same hardware on
+ * every computer instead of the graphics card of the computer that opens it.
+ */
 export function createFirefoxProfileConfig(
   screenWidth: number,
   screenHeight: number,
-  platformOs: "windows" | "macos" | "linux" = "windows",
+  platformOs: PersonaOs = "windows",
+  seed?: number,
 ): FirefoxProfileConfig {
   const fingerprint = generateFingerprint([screenWidth, screenHeight], {
     browsers: ["firefox"],
@@ -37,6 +87,7 @@ export function createFirefoxProfileConfig(
   if (typeof config.timezone !== "string" || !config.timezone.trim()) {
     config.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
+  if (seed !== undefined) Object.assign(config, graphicsIdentity(platformOs, seed));
   return normalizeFirefoxProfileConfig({
     version: 1,
     runtimeVersion: FIREFOX_RUNTIME_VERSION,

@@ -2,6 +2,9 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/hardware-identity
   workflow_call:
     inputs:
       ref:
@@ -157,7 +160,8 @@ jobs:
             import { buildNewProfile } from "./create.ts";
             import { serializeAdsTxt } from "./parse.ts";
             const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows" }, () => false);
-            process.stdout.write(serializeAdsTxt([profile]));
+            // As made on Windows: a CloakBrowser profile with its stored processor cores.
+            process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
           ' > "$data/inbox/ci-cloakbrowser.txt"
           cloak=""
           for attempt in $(seq 1 60); do
@@ -170,6 +174,15 @@ jobs:
           sleep 8
           screencapture -x "$RUNNER_TEMP/evidence/cloakbrowser-profile.png"
           pgrep -f "runtimes/cloakbrowser-.*/Chromium.app/Contents/MacOS/Chromium" >/dev/null
+          # The page must read the stored cores, not the engine default of 8 and not this Mac's count.
+          observed=""
+          for attempt in $(seq 1 60); do
+            observed="$(sqlite3 "$data/profiles.sqlite" "select fp_observed_json from profiles where id = '$cloak'")"
+            [[ "$observed" == *hardwareConcurrency* ]] && break
+            sleep 1
+          done
+          jq '{platform, hardwareConcurrency, webglRenderer}' <<<"$observed" | tee "$RUNNER_TEMP/evidence/cloakbrowser-identity.json"
+          jq -e '.hardwareConcurrency == 20 and .platform == "Win32"' <<<"$observed"
           "$helper" browser close --profile "$cloak" | jq -e '.ok'
 
           # The stdio MCP host must answer an agent client and list the AliasMode tools.

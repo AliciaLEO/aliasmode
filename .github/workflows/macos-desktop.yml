@@ -119,6 +119,60 @@ jobs:
           sleep 5
           screencapture -x "$RUNNER_TEMP/evidence/dashboard.png"
 
+          # A click on an outside link must open the default browser. The offer host is turned off
+          # on this runner, so Safari keeps the full address and NobleProxy counts no visit.
+          echo "127.0.0.1 nobleproxy.com" | sudo tee -a /etc/hosts >/dev/null
+          sudo dscacheutil -flushcache
+          ui() {
+            DESKTOP_PID="$(jq -er .desktopPid "$data/agent-runtime.json")" ACTION="$1" WANTED="$2" osascript -l JavaScript -e '
+              ObjC.import("stdlib");
+              const action = String($.getenv("ACTION")), wanted = String($.getenv("WANTED"));
+              const events = Application("System Events");
+              const app = events.applicationProcesses.whose({ unixId: Number($.getenv("DESKTOP_PID")) })[0];
+              app.frontmost = true;
+              delay(1);
+              const elements = app.windows[0].entireContents();
+              const element = elements.find((candidate) => Automation.getDisplayString(candidate).includes(wanted));
+              if (!element) throw new Error(wanted + " was not found among " + elements.length + " elements");
+              if (action === "click") element.click();
+              action + " " + wanted;
+            '
+          }
+          browser_shows() {
+            local shown=""
+            for attempt in $(seq 1 45); do
+              if pgrep -x Safari >/dev/null; then
+                shown="$(osascript -l JavaScript -e '
+                  Application("System Events").applicationProcesses.byName("Safari").windows[0].toolbars[0].entireContents()
+                    .filter((element) => Automation.getDisplayString(element).includes("textFields"))
+                    .map((field) => field.value()).join("\n");
+                ' 2>/dev/null || true)"
+                [[ "$shown" == *"$1"* ]] && return 0
+              fi
+              sleep 1
+            done
+            echo "the default browser did not show $1 (it showed: ${shown:-nothing})"
+            return 1
+          }
+          close_browser() {
+            pkill -x Safari
+            for attempt in $(seq 1 20); do pgrep -x Safari >/dev/null || return 0; sleep 1; done
+            return 1
+          }
+          ui click 'uiElements.byName("Buy proxies from NobleProxy'
+          browser_shows "https://nobleproxy.com/t/aliasmode?src=sidebar-cart"
+          screencapture -x "$RUNNER_TEMP/evidence/link-sidebar.png"
+          close_browser
+          ui click 'buttons.byName("New Profile")'
+          sleep 2
+          # A new Chrome profile on a Mac uses Chromium 155, and the help text must say so.
+          ui find 'buttons.byName("Chrome: Chromium 155 beta")'
+          ui click 'uiElements.byName("Buy static residential proxies from NobleProxy'
+          browser_shows "https://nobleproxy.com/t/aliasmode?src=profile-dialog"
+          screencapture -x "$RUNNER_TEMP/evidence/link-new-profile.png"
+          close_browser
+          ui click 'buttons.byName("Cancel")'
+
           created="$("$helper" profiles create --name ci-firefox --temporary --engine firefox)"
           profile="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
           "$helper" browser open --profile "$profile" --url https://example.com/ | jq -e '.ok and .result.engine == "firefox"'

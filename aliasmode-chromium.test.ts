@@ -27,7 +27,7 @@ function fakeRelease(options: { archiveHash?: string; executableHash?: string } 
       writeFileSync(output, options.archiveHash ?? ALIASMODE_CHROMIUM_ARCHIVE_SHA256);
     },
     extract: async (_archive, directory) => {
-      const root = join(directory, "apostate-155.0.8059.31-windows-x64");
+      const root = join(directory, "aliasmode-chromium-155.0.8059.31-windows-x64");
       mkdirSync(root, { recursive: true });
       writeFileSync(join(root, "chrome.exe"), options.executableHash ?? ALIASMODE_CHROMIUM_EXECUTABLE_SHA256);
       writeFileSync(join(root, "chrome.dll"), "dll");

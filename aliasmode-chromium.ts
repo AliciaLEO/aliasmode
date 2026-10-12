@@ -12,15 +12,15 @@ export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
 // version manifest, which upstream's Windows archive omits. Each build gets its
 // own directory, so a browser still running from an earlier build keeps its files.
 const WINDOWS_BUILD = {
-  name: "windows-x64",
-  url: "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.31-aliasmode.1/apostate-155.0.8059.31-windows-x64.zip",
+  root: `aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64`,
+  url: "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.31-aliasmode.1/aliasmode-chromium-155.0.8059.31-windows-x64.zip",
   dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-aliasmode.1`,
-  archiveSha256: "b923f2db62e70d4aa05a6446a0898c5b2c68f3b36462bd5ebe815bdc7b03cb1e",
+  archiveSha256: "8d103e7d1c2322df88af0581b19e71857288584123b16467bbf42a2ce17e5d28",
   executable: "chrome.exe",
   executableSha256: "3f2404d037ba019c9ae6ce70e532991e9e3d109c9fb00c82d3455a680e95872f",
 };
 const MACOS_BUILD = {
-  name: "macos-arm64",
+  root: `apostate-${ALIASMODE_CHROMIUM_VERSION}-macos-arm64`,
   url: "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-macos-arm64.zip",
   dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}`,
   archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
@@ -29,7 +29,7 @@ const MACOS_BUILD = {
 };
 // Apple Silicon macOS gets upstream's signed build; every other host keeps the Windows pins.
 const BUILD = process.platform === "darwin" ? MACOS_BUILD : WINDOWS_BUILD;
-const ARCHIVE_ROOT = `apostate-${ALIASMODE_CHROMIUM_VERSION}-${BUILD.name}`;
+const ARCHIVE_ROOT = BUILD.root;
 export const ALIASMODE_CHROMIUM_ARCHIVE_URL = BUILD.url;
 export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
 export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;

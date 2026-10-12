@@ -4700,6 +4700,8 @@ test("the macOS app opens a CloakBrowser profile with the downloaded macOS build
   await launcher.start(profile.id);
   expect(binaries).toEqual(["/fake/runtimes/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium"]);
   expect(betaDownloads).toBe(0);
+  // Without this flag macOS asks for the Keychain password when a second Chromium build starts.
+  expect(spawnedArgs[0]).toContain("--use-mock-keychain");
   expect(await launcher.stop(profile.id)).toBe(true);
   store.close();
 });

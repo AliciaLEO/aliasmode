@@ -1049,6 +1049,12 @@ export class Launcher {
       `--disk-cache-size=${20 * 1024 * 1024}`,
       ...deriveFingerprintFlags(profile),
     ];
+    // Chromium builds with different signatures share one "Chromium Safe Storage" Keychain item,
+    // and macOS stops the second build with a password prompt. The runtimes that the app
+    // downloads on macOS keep their cookie key out of the Keychain instead.
+    if (this.hostPlatform === "darwin" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
+      args.push("--use-mock-keychain");
+    }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns

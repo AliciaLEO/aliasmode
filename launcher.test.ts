@@ -4660,6 +4660,32 @@ test("Chromium 155 beta profiles launch the installed beta runtime without Cloak
   store.close();
 });
 
+test("Chromium 155 keeps WebGL on a Windows computer with no graphics card", async () => {
+  const launchArgs = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    const profile = engine === "aliasmode" ? chromium155 : cloakbrowser;
+    store.upsertProfile(profile);
+    const f = fleet();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+    });
+    await launcher.start(profile.id);
+    await launcher.stop(profile.id);
+    store.close();
+    return spawnedArgs[0]!;
+  };
+  expect(await launchArgs("win32", "aliasmode")).toContain("--ignore-gpu-blocklist");
+  // A Mac has a graphics card, and CloakBrowser reports a card by itself.
+  expect(await launchArgs("darwin", "aliasmode")).not.toContain("--ignore-gpu-blocklist");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--ignore-gpu-blocklist");
+});
+
 test("Chromium 155 beta download failure is a public preflight error", async () => {
   const store = new ProfileStore(":memory:");
   const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);

@@ -1054,6 +1054,10 @@ export class Launcher {
     if (this.hostPlatform === "darwin" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
       args.push("--use-mock-keychain");
     }
+    // Chrome blocks WebGL on a Windows computer with no graphics card, and in most remote desktop
+    // sessions. Chromium 155 then shows no card at all. With the blocklist ignored, it shows the
+    // card that the profile seed selects, with WebGL 2 and WebGPU to match.
+    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--ignore-gpu-blocklist");
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns

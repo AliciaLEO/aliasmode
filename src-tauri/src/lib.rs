@@ -574,6 +574,7 @@ pub fn run() {
 
             let allowed_port = port;
             let shell_handle = handle.clone();
+            let navigation_shell_handle = handle.clone();
             let url = format!("{origin}/")
                 .parse()
                 .map_err(|error| boxed(format!("invalid sidecar URL: {error}")))?;
@@ -625,6 +626,12 @@ pub fn run() {
             };
             let window = match webview_builder
                 .on_navigation(move |url| {
+                    // WKWebView asks this rule before it asks for a new window, and a refusal
+                    // here ends the click. So on macOS the allowed outside links open from here.
+                    if cfg!(target_os = "macos") && allowed_external_url(url.as_str()) {
+                        open_external_url(&navigation_shell_handle, url.as_str());
+                        return false;
+                    }
                     (url.scheme() == "http"
                         && url.host_str() == Some("127.0.0.1")
                         && url.port() == Some(allowed_port))

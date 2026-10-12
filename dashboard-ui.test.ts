@@ -256,8 +256,10 @@ test("dashboard selects browser for new profiles", () => {
   const createModal = app.slice(app.indexOf("{showCreate && ("), app.indexOf("{editId && ("));
   const editModal = app.slice(app.indexOf("{editId && ("), app.indexOf("{showBulk && ("));
   expect(createModal).toContain('className="browser-options"');
-  expect(createModal).toContain('engine: "chromium", label: "Chrome", runtime: "CloakBrowser"');
-  expect(createModal).toContain('engine: "firefox", label: "Firefox", runtime: "AliasMode Firefox"');
+  expect(createModal).toContain('engine: "chromium", label: "Chrome"');
+  expect(createModal).toContain('engine: "firefox", label: "Firefox"');
+  // The help text follows the engine that this computer creates, such as Chromium 155 on a Mac.
+  expect(createModal).toContain('const runtime = browserLabel(engine, appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime);');
   expect(createModal).toContain('type="radio" name="browser-engine"');
   expect(createModal).toContain('checked={form.engine === engine}');
   expect(createModal).toContain('setF("engine", engine)');

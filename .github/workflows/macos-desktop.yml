@@ -2,9 +2,6 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/macos-cloakbrowser
   workflow_call:
     inputs:
       ref:

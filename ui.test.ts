@@ -8,6 +8,7 @@ import { Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
 import { deriveFingerprintFlags } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest } from "./ui.ts";
+import { supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { readXlsx, writeXlsx } from "./xlsx.ts";
 import { AppConfigStore } from "./app-config.ts";
 import { CloudAuthRuntime } from "./cloud-auth.ts";
@@ -2605,7 +2606,10 @@ test("app mode API exposes unconfigured first launch and persists Local selectio
     null,
     { appConfig },
   );
-  expect(await initial!.json()).toEqual({ version: 1, mode: "unconfigured", localAnalytics: false });
+  const { chromiumRuntime: _forcedRuntime, defaultChromiumRuntime, ...config } = await initial!.json();
+  expect(config).toEqual({ version: 1, mode: "unconfigured", localAnalytics: false });
+  // The dashboard starts new Chrome profiles on Chromium 155 only where this computer can run it.
+  expect(defaultChromiumRuntime).toBe(supportsChromium155Host(process.platform, process.arch) ? "aliasmode" : undefined);
 
   const selected = await handleUiRequest(
     new Request("http://x/ui/api/app-mode", {

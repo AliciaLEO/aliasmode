@@ -2,9 +2,6 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/hardware-identity
   workflow_call:
     inputs:
       ref:

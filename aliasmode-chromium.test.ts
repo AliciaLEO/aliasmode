@@ -1,5 +1,4 @@
 import { test, expect } from "bun:test";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,19 +37,19 @@ function fakeRelease(options: { archiveHash?: string; executableHash?: string } 
   return { deps, downloads };
 }
 
-test("installs the pinned 155 runtime once and adds Chromium's version manifest", async () => {
+test("installs AliasMode's own 155 build once, beside any earlier runtime", async () => {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-chromium-"));
-  mkdirSync(join(root, ".chromium-155.0.8059.31-stale"));
+  mkdirSync(join(root, ".chromium-155.0.8059.31-aliasmode.1-stale"));
+  // The upstream runtime earlier betas installed stays put for browsers still running from it.
+  mkdirSync(join(root, "chromium-155.0.8059.31"));
   const release = fakeRelease();
 
   const executable = await ensureAliasmodeChromium(root, release.deps);
   expect(executable).toBe(aliasmodeChromiumExecutable(root));
   expect(release.downloads).toEqual([ALIASMODE_CHROMIUM_ARCHIVE_URL]);
-  const manifest = readFileSync(join(root, "chromium-155.0.8059.31", "155.0.8059.31.manifest"));
-  // The exact bytes verified to start Chromium 155 on Windows.
-  expect(createHash("sha256").update(manifest).digest("hex"))
-    .toBe("dfc0444aa477681e88b3ea34867d58673b6894ac12980f435c67c0ee9673b5ab");
-  expect(readdirSync(root)).toEqual(["chromium-155.0.8059.31"]);
+  expect(ALIASMODE_CHROMIUM_ARCHIVE_URL)
+    .toStartWith("https://github.com/aliasmode/aliasmode-chromium/releases/download/");
+  expect(readdirSync(root).sort()).toEqual(["chromium-155.0.8059.31", "chromium-155.0.8059.31-aliasmode.1"]);
 
   expect(await ensureAliasmodeChromium(root, release.deps)).toBe(executable);
   expect(release.downloads).toHaveLength(1);

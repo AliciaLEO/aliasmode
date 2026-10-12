@@ -3,37 +3,36 @@
  * the opt-in Chromium 155 beta, and CloakBrowser for the macOS app. Each is
  * pinned by archive and executable SHA-256 like the bundled CloakBrowser kernel.
  */
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { CLOAKBROWSER_MACOS_VERSION, sha256File } from "./browser-install.ts";
 
 export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
+// AliasMode's own build of the patch series. Its package includes Chromium's
+// version manifest, which upstream's Windows archive omits. Each build gets its
+// own directory, so a browser still running from an earlier build keeps its files.
 const WINDOWS_BUILD = {
   name: "windows-x64",
-  archiveSha256: "8e55e44fb7f58619461e1d42a947446dcc08a2b46493c420c8e62ae27ab9c7e5",
+  url: "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.31-aliasmode.1/apostate-155.0.8059.31-windows-x64.zip",
+  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-aliasmode.1`,
+  archiveSha256: "b923f2db62e70d4aa05a6446a0898c5b2c68f3b36462bd5ebe815bdc7b03cb1e",
   executable: "chrome.exe",
-  executableSha256: "5b4e065110a8a24bb35448d2716d26427a91618b0ee1f4b33723c4d25722de67",
+  executableSha256: "3f2404d037ba019c9ae6ce70e532991e9e3d109c9fb00c82d3455a680e95872f",
 };
 const MACOS_BUILD = {
   name: "macos-arm64",
+  url: "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-macos-arm64.zip",
+  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}`,
   archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: "2dfa8b148e6d06598981c4a1e1bc0d7c2c7860d74401ad0d934d21a10c7916d7",
 };
-// Apple Silicon macOS gets its own upstream build; every other host keeps the Windows pins.
+// Apple Silicon macOS gets upstream's signed build; every other host keeps the Windows pins.
 const BUILD = process.platform === "darwin" ? MACOS_BUILD : WINDOWS_BUILD;
 const ARCHIVE_ROOT = `apostate-${ALIASMODE_CHROMIUM_VERSION}-${BUILD.name}`;
-export const ALIASMODE_CHROMIUM_ARCHIVE_URL =
-  `https://github.com/heretic-tech/apostate/releases/download/v0.5.1/${ARCHIVE_ROOT}.zip`;
+export const ALIASMODE_CHROMIUM_ARCHIVE_URL = BUILD.url;
 export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
 export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
-const RUNTIME_DIR = `chromium-${ALIASMODE_CHROMIUM_VERSION}`;
-
-// The upstream archive omits Chromium's version assembly manifest, and Windows
-// then refuses to start chrome.exe (error 14001). These are Chromium's own bytes.
-const VERSION_MANIFEST = "<assembly\r\n  xmlns='urn:schemas-microsoft-com:asm.v1' manifestVersion='1.0'>\r\n" +
-  `  <assemblyIdentity\r\n      name='${ALIASMODE_CHROMIUM_VERSION}'\r\n      version='${ALIASMODE_CHROMIUM_VERSION}'\r\n` +
-  "      type='win32'/>\r\n  <file name='chrome_elf.dll'/>\r\n</assembly>\r\n";
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {
@@ -45,21 +44,16 @@ interface PinnedRuntime {
   archiveRoot: string;
   executable: string;
   executableSha256: string;
-  /** A file the runtime needs beside its executable and that the archive lacks. */
-  manifest?: { name: string; text: string };
 }
 
 const CHROMIUM_155: PinnedRuntime = {
   label: "Chromium 155",
-  dir: RUNTIME_DIR,
-  url: ALIASMODE_CHROMIUM_ARCHIVE_URL,
+  dir: BUILD.dir,
+  url: BUILD.url,
   archiveSha256: BUILD.archiveSha256,
   archiveRoot: ARCHIVE_ROOT,
   executable: BUILD.executable,
   executableSha256: BUILD.executableSha256,
-  ...(BUILD === WINDOWS_BUILD
-    ? { manifest: { name: `${ALIASMODE_CHROMIUM_VERSION}.manifest`, text: VERSION_MANIFEST } }
-    : {}),
 };
 
 // CloakBrowser publishes no macOS build after 145, so that build opens CloakBrowser profiles on a Mac.
@@ -105,15 +99,14 @@ async function renameWhenUnlocked(from: string, to: string): Promise<void> {
 }
 
 export function aliasmodeChromiumExecutable(root: string): string {
-  return join(root, RUNTIME_DIR, BUILD.executable);
+  return join(root, BUILD.dir, BUILD.executable);
 }
 
 async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps): Promise<string> {
   const hashFile = deps.hashFile ?? sha256File;
   const target = join(root, spec.dir);
   const executable = join(target, spec.executable);
-  if ((!spec.manifest || existsSync(join(target, spec.manifest.name))) && existsSync(executable) &&
-    await hashFile(executable) === spec.executableSha256) {
+  if (existsSync(executable) && await hashFile(executable) === spec.executableSha256) {
     return executable;
   }
 
@@ -142,7 +135,6 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
     if (await hashFile(join(runtime, spec.executable)) !== spec.executableSha256) {
       throw new Error(`${spec.label} archive contained an unexpected executable`);
     }
-    if (spec.manifest) writeFileSync(join(runtime, spec.manifest.name), spec.manifest.text);
     rmSync(target, { recursive: true, force: true });
     await renameWhenUnlocked(runtime, target);
     return executable;

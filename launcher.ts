@@ -49,6 +49,7 @@ import {
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   ensureAliasmodeChromium,
   ensureCloakBrowserMacos,
+  supportsChromium155Host,
 } from "./aliasmode-chromium.ts";
 
 // Chromium ignores inline user:pass@ on --proxy-server. Rather than an MV3 extension answering
@@ -87,10 +88,6 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
     .replace(/^user_pref\("browser\.startup\.page",\s*\d+\);\s*$/gm, "")
     .trimEnd();
   writeFileSync(path, `${preserved}${preserved ? "\n" : ""}user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`);
-}
-
-function supportsChromium155Host(platform: NodeJS.Platform, arch: string): boolean {
-  return (platform === "win32" && arch === "x64") || (platform === "darwin" && arch === "arm64");
 }
 
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {

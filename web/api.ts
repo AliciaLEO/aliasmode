@@ -109,6 +109,8 @@ export interface AppModeConfig {
   legacyRemote?: boolean;
   /** Set when this host runs every Chromium profile on one runtime, so there is no version to choose. */
   chromiumRuntime?: "aliasmode";
+  /** Set when this computer can run Chromium 155: the New profile dialog then starts on it. */
+  defaultChromiumRuntime?: "aliasmode";
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {

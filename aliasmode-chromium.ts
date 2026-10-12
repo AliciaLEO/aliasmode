@@ -68,6 +68,11 @@ const CLOAKBROWSER_MACOS: PinnedRuntime = {
   executableSha256: CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
 };
 
+/** The computers that can run Chromium 155. */
+export function supportsChromium155Host(platform: NodeJS.Platform, arch: string): boolean {
+  return (platform === "win32" && arch === "x64") || (platform === "darwin" && arch === "arm64");
+}
+
 /** New Chromium profiles made on macOS use this runtime, unless a CloakBrowser binary is configured. */
 export function hostChromiumRuntime(platform = process.platform, env = process.env): "aliasmode" | undefined {
   return platform === "darwin" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;

@@ -35,7 +35,7 @@ import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-chec
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
-import { hostChromiumRuntime } from "./aliasmode-chromium.ts";
+import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
@@ -672,6 +672,7 @@ export async function handleUiRequest(
       ...(remote ? { legacyRemote: true } : {}),
       ...(options.runtimeMode ? { restartRequired: config.mode !== options.runtimeMode } : {}),
       ...(hostChromiumRuntime() ? { chromiumRuntime: hostChromiumRuntime() } : {}),
+      ...(!remote && supportsChromium155Host(process.platform, process.arch) ? { defaultChromiumRuntime: "aliasmode" } : {}),
     });
   }
 

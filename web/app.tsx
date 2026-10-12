@@ -2403,7 +2403,7 @@ function App() {
   // cancelled draft never leaks into the next open.
   const openCreate = () => {
     resetCreateProxyCheck();
-    setForm({ ...BLANK_FORM, group: group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "" });
+    setForm({ ...BLANK_FORM, chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group: group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "" });
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
@@ -4529,8 +4529,9 @@ function App() {
                 <label className="fld">
                   <span>{t("Chrome version")}</span>
                   <select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
-                    <option value="">{t("146 (default)")}</option>
-                    <option value="aliasmode">{t("155 beta")}</option>
+                    {appMode?.defaultChromiumRuntime
+                      ? <><option value="aliasmode">{t("155 (default)")}</option><option value="">{t("146")}</option></>
+                      : <><option value="">{t("146 (default)")}</option><option value="aliasmode">{t("155 beta")}</option></>}
                   </select>
                   {form.chromiumRuntime && <small>{t("Beta. Downloads once (about 190 MB) on each computer that opens it.")}</small>}
                 </label>

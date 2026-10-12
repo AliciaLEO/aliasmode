@@ -61,6 +61,10 @@
     "0.1.0-beta.58": {
       "path": "mcp-tools/0.1.0-beta.58.json",
       "sha256": "902ae539d3fe8a8017b9d06797651f549fee56a0d8a02797f585ed948d5ef9c4"
+    },
+    "0.1.0-beta.59": {
+      "path": "mcp-tools/0.1.0-beta.59.json",
+      "sha256": "b27632d2ca55f4a8a9f0d8cbc55671b6d962cd2a5c4ba9a7474823d3bfbc516f"
     }
   },
   "releasedVersions": [
@@ -76,6 +80,7 @@
     "0.1.0-beta.55",
     "0.1.0-beta.56",
     "0.1.0-beta.57",
-    "0.1.0-beta.58"
+    "0.1.0-beta.58",
+    "0.1.0-beta.59"
   ]
 }

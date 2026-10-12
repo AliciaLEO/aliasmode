@@ -412,12 +412,24 @@ function appVersion(): Promise<string> {
  * what you can't see. Safe only because the dashboard is loopback-only (same
  * trust boundary as the `inspect` command).
  */
+/** The hardware a profile is set to report, for display. Engines choose what is absent. */
+function storedHardware(p: Profile): { gpu?: string; cores?: number } | undefined {
+  const gpu = p.firefox?.config["webGl:renderer"];
+  const cores = p.hardware?.cores ?? p.firefox?.config["navigator.hardwareConcurrency"];
+  const hardware = {
+    ...(typeof gpu === "string" && gpu ? { gpu } : {}),
+    ...(typeof cores === "number" ? { cores } : {}),
+  };
+  return Object.keys(hardware).length ? hardware : undefined;
+}
+
 function profileEditView(p: Profile) {
   const px = p.proxy;
   const proxy = px ? proxyLegacyString(px) : "";
   const conversion = isMobileUserAgent(p.ua) ? convertMobilePersonaToDesktop(p) : null;
   return {
     id: p.id, name: p.name, engine: profileEngine(p), ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
+    ...(storedHardware(p) ? { hardware: storedHardware(p) } : {}),
     group: p.group, platform: p.platform ?? "",
     proxyType: px?.type ?? "http", proxy,
     ...(p.proxyError ? { proxyError: p.proxyError } : {}),

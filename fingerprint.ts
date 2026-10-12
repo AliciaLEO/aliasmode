@@ -13,7 +13,7 @@
  *   --fingerprint-screen-width=N / --fingerprint-screen-height=N
  */
 
-import type { Profile } from "./types.ts";
+import type { Profile, ProfileEngine, ProfileHardware } from "./types.ts";
 import { proxyUrl } from "./proxy.ts";
 
 /** FNV-1a 32-bit hash → positive integer. Stable across runs and platforms. */
@@ -26,6 +26,35 @@ export function deterministicSeed(profileId: string): number {
   }
   // Keep it well clear of 0 so a seed is always "set".
   return h === 0 ? 1 : h;
+}
+
+/** One well-mixed fraction in [0, 1) from a profile seed (Mulberry32). */
+export function seedFraction(seed: number): number {
+  let mixed = (seed + 0x6d2b79f5) >>> 0;
+  mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+  mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+  return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+}
+
+// Logical processor counts of current desktop and laptop computers; repeats set the odds.
+const CORE_COUNTS = [8, 8, 8, 12, 12, 12, 16, 16, 20, 24] as const;
+
+/** Choose the hardware that a new CloakBrowser profile reports on every computer. */
+export function generateProfileHardware(seed: number): ProfileHardware {
+  // The extra constant keeps this draw apart from other values drawn from the same seed.
+  return { cores: CORE_COUNTS[Math.floor(seedFraction(seed ^ 0x9e3779b9) * CORE_COUNTS.length)]! };
+}
+
+/** Validate stored hardware. Only CloakBrowser profiles carry it; the other engines choose their own. */
+export function normalizeProfileHardware(value: unknown, engine: ProfileEngine, chromiumRuntime: unknown): ProfileHardware | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const cores = typeof value === "object" && !Array.isArray(value) ? (value as { cores?: unknown }).cores : undefined;
+  if (typeof cores !== "number" || !Number.isInteger(cores) || cores < 1 || cores > 256
+    || Object.keys(value as object).length !== 1) {
+    throw new Error("unsupported profile hardware");
+  }
+  if (engine !== "chromium" || chromiumRuntime) throw new Error("only CloakBrowser profiles carry stored hardware");
+  return { cores };
 }
 
 /** Parse AdsPower "1680*1050" (or "1680x1050") → width/height; default 1920x1080. */
@@ -176,6 +205,10 @@ export function deriveFingerprintFlags(profile: Profile): string[] {
   // signal, so Google treats the profile as private. Report a real-disk size.
   // The Chromium 155 runtime derives a real-disk quota from its own profile.
   if (!profile.chromiumRuntime) flags.push(`--fingerprint-storage-quota=${100_000 + (profile.fingerprintSeed % 400_000)}`);
+  // Without this flag CloakBrowser reports 8 cores for every profile.
+  if (!profile.chromiumRuntime && profile.hardware) {
+    flags.push(`--fingerprint-hardware-concurrency=${profile.hardware.cores}`);
+  }
   return flags;
 }
 

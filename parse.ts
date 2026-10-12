@@ -22,8 +22,8 @@
  */
 
 import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
-import type { ChromiumRuntime, CookieRecord, Profile, ProxySpec } from "./types.ts";
-import { deterministicSeed, parseResolution, platformFromUA } from "./fingerprint.ts";
+import type { ChromiumRuntime, CookieRecord, Profile, ProfileHardware, ProxySpec } from "./types.ts";
+import { deterministicSeed, normalizeProfileHardware, parseResolution, platformFromUA } from "./fingerprint.ts";
 import { normalizeProxyType, parseProxySpec, proxyLegacyString } from "./proxy.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { attestationFields, expectationFromRecord, FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
@@ -394,10 +394,16 @@ export function recordToProfile(
   let chromiumRuntime: ChromiumRuntime | undefined;
   try { chromiumRuntime = normalizeChromiumRuntime(rec.chromium_runtime?.trim(), browser.engine ?? "chromium"); }
   catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
+  let hardware: ProfileHardware | undefined;
+  try {
+    const cores = rec.hardware_cores?.trim();
+    hardware = normalizeProfileHardware(cores ? { cores: Number(cores) } : undefined, browser.engine ?? "chromium", chromiumRuntime);
+  } catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const profile: Profile = {
     id,
     ...browser,
     ...(chromiumRuntime ? { chromiumRuntime } : {}),
+    ...(hardware ? { hardware } : {}),
     accId: (rec.acc_id ?? "").trim(),
     name: (rec.name ?? "").trim(),
     group: (rec.group ?? "").trim(),
@@ -702,6 +708,7 @@ function profileFields(p: ProfileExport): Record<string, string> {
     engine: p.engine ?? "chromium",
     firefox_config: p.firefox ? JSON.stringify(p.firefox) : "",
     chromium_runtime: p.chromiumRuntime ?? "",
+    hardware_cores: p.hardware ? String(p.hardware.cores) : "",
     // Attested fields: a photograph of the identity, never an input to one.
     ...attestationFields(fp),
   };
@@ -738,7 +745,8 @@ export function serializeAdsTxt(profiles: ProfileExport[]): string {
   const blocks = profiles.map((p) => {
     const f = profileFields(p);
     const keys: readonly string[] = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
-      : p.chromiumRuntime ? [...TXT_KEYS, "chromium_runtime"] : TXT_KEYS;
+      : p.chromiumRuntime ? [...TXT_KEYS, "chromium_runtime"]
+      : p.hardware ? [...TXT_KEYS, "hardware_cores"] : TXT_KEYS;
     return [...keys.map((k) => `${k}=${f[k]}`), "******************"].join("\n");
   });
   return blocks.join("\n") + (blocks.length ? "\n" : "");
@@ -753,6 +761,7 @@ export function serializeXlsxRows(profiles: ProfileExport[]): { headers: string[
   const columns: readonly string[] = [
     ...(profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS),
     ...(profiles.some((profile) => profile.chromiumRuntime) ? ["chromium_runtime"] : []),
+    ...(profiles.some((profile) => profile.hardware) ? ["hardware_cores"] : []),
   ];
   return {
     headers: [...columns],

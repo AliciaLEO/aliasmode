@@ -311,7 +311,16 @@ export interface PortableProfileV3 {
   session: PortableSessionV1;
 }
 
-export type PortableProfile = PortableProfileV1 | PortableProfileV2 | PortableProfileV3;
+/** CloakBrowser with stored hardware. Older clients reject it instead of opening it with the engine default and saving it without the hardware. */
+export interface PortableProfileV4 {
+  schemaVersion: 4;
+  profile: PortableProfileV1["profile"] & {
+    hardware: { cores: number };
+  };
+  session: PortableSessionV1;
+}
+
+export type PortableProfile = PortableProfileV1 | PortableProfileV2 | PortableProfileV3 | PortableProfileV4;
 
 export interface CloudProfileSummary {
   id: string;

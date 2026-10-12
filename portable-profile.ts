@@ -1,6 +1,7 @@
-import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableProfileV3, PortableSessionV1 } from "./contracts/cloud-v1.ts";
-import type { ChromiumRuntime, FirefoxProfileConfig, Profile } from "./types.ts";
+import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortableProfileV3, PortableProfileV4, PortableSessionV1 } from "./contracts/cloud-v1.ts";
+import type { ChromiumRuntime, FirefoxProfileConfig, Profile, ProfileHardware } from "./types.ts";
 import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import { normalizeProfileHardware } from "./fingerprint.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 import { normalizeBundle } from "./session.ts";
 
@@ -21,7 +22,7 @@ export function encodePortableProfile(
   profile: Profile & { engine: "firefox"; firefox: FirefoxProfileConfig },
   sessionBundle?: string,
 ): PortableProfileV2;
-export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1 | PortableProfileV3;
+export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfileV1 | PortableProfileV3 | PortableProfileV4;
 export function encodePortableProfile(profile: Profile, sessionBundle?: string): PortableProfile {
   assertValidProfile(profile);
   const engine = normalizeProfileEngine(profile.engine, profile.firefox);
@@ -72,6 +73,9 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
   // A new schema version, so older clients reject it instead of opening it on CloakBrowser.
   const chromiumRuntime = normalizeChromiumRuntime(profile.chromiumRuntime, engine.engine);
   if (chromiumRuntime) return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime }, session };
+  // Also a new version: an older client would open the profile with the engine default and then save it without the hardware.
+  const hardware = normalizeProfileHardware(profile.hardware, engine.engine, chromiumRuntime);
+  if (hardware) return { schemaVersion: 4, profile: { ...portableProfile, hardware }, session };
   return { schemaVersion: 1, profile: portableProfile, session };
 }
 
@@ -84,17 +88,22 @@ export function decodePortableProfile(payload: PortableProfile): {
     engine?: unknown;
     firefox?: unknown;
     chromiumRuntime?: unknown;
+    hardware?: unknown;
   };
   let engine;
   let chromiumRuntime: ChromiumRuntime | undefined;
-  if (payload.schemaVersion === 1 || payload.schemaVersion === 3) {
+  let hardware: ProfileHardware | undefined;
+  if (payload.schemaVersion === 1 || payload.schemaVersion === 3 || payload.schemaVersion === 4) {
     if (portableProfile.engine !== undefined || portableProfile.firefox !== undefined) {
       throw new Error("portable Chromium profile cannot include a Firefox config");
     }
     engine = normalizeProfileEngine(undefined, undefined);
     chromiumRuntime = normalizeChromiumRuntime(portableProfile.chromiumRuntime, engine.engine);
-    // V1 never carries a runtime; V3 always does.
-    if (payload.schemaVersion === 1 ? chromiumRuntime : !chromiumRuntime) throw new Error("unsupported portable profile payload");
+    try { hardware = normalizeProfileHardware(portableProfile.hardware, engine.engine, chromiumRuntime); }
+    catch { throw new Error("unsupported portable profile payload"); }
+    // V1 carries neither; V3 always has a runtime; V4 always has stored hardware.
+    const carried = chromiumRuntime ? 3 : hardware ? 4 : 1;
+    if (payload.schemaVersion !== carried) throw new Error("unsupported portable profile payload");
   } else if (payload.schemaVersion === 2) {
     if (portableProfile.engine !== "firefox") throw new Error("unsupported portable profile payload");
     engine = normalizeProfileEngine(portableProfile.engine, portableProfile.firefox);
@@ -107,6 +116,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     id: portableProfile.id,
     engine: engine.engine,
     ...(chromiumRuntime ? { chromiumRuntime } : {}),
+    ...(hardware ? { hardware } : {}),
     ...(engine.firefox ? { firefox: engine.firefox } : {}),
     accId: portableProfile.accId,
     name: portableProfile.name,

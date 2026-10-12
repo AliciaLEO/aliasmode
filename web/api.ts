@@ -685,6 +685,8 @@ export interface EditProfile {
   name: string;
   engine: "chromium" | "firefox";
   chromiumRuntime?: "aliasmode";
+  /** Hardware the profile is set to report on every computer. Absent values are chosen by the engine. */
+  hardware?: { gpu?: string; cores?: number };
   group: string;
   platform: string;
   proxyType: string;

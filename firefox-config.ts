@@ -9,7 +9,7 @@ import webglDataPath from "./node_modules/camoufox-js/dist/data-files/webgl_data
 import { Database } from "bun:sqlite";
 import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
-import { platformFromUA } from "./fingerprint.ts";
+import { platformFromUA, seedFraction } from "./fingerprint.ts";
 import { localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
 
 const generatorAssetInputs = [
@@ -53,11 +53,7 @@ const graphicsIdentities = await (async (): Promise<Record<PersonaOs, GraphicsId
 export function graphicsIdentity(platformOs: PersonaOs, seed: number): Record<string, JsonValue> {
   const options = graphicsIdentities[platformOs];
   const total = options.reduce((sum, option) => sum + option.weight, 0);
-  // Mulberry32 turns the profile seed into one well-mixed fraction.
-  let mixed = (seed + 0x6d2b79f5) >>> 0;
-  mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
-  mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
-  let remaining = (((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296) * total;
+  let remaining = seedFraction(seed) * total;
   for (const option of options) {
     remaining -= option.weight;
     if (remaining < 0) return structuredClone(option.keys);

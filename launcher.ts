@@ -941,6 +941,8 @@ export class Launcher {
       ...(profile.locale ? { locale: profile.locale } : {}),
       screen: [profile.screenWidth, profile.screenHeight],
       fingerprintSeed: profile.fingerprintSeed,
+      // Only when present, so the digest of a profile without stored hardware does not change.
+      ...(profile.hardware ? { hardware: profile.hardware } : {}),
       extensions,
       ...(autofill ? { autofill: AUTOFILL_EXTENSION_REVISION } : {}),
     });

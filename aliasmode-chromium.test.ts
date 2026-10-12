@@ -77,7 +77,8 @@ test("new profiles keep their Chromium runtime fixed locally and in Cloud payloa
   const { chromiumRuntime: _runtime, ...edited } = store.getProfile(beta.id)!;
   store.upsertProfile({ ...edited, name: "renamed" });
   expect(store.getProfile(beta.id)).toMatchObject({ name: "renamed", chromiumRuntime: "aliasmode" });
-  expect(() => store.upsertProfile({ ...store.getProfile(standard.id)!, chromiumRuntime: "aliasmode" }))
+  const { hardware: _stored, ...standardEdit } = store.getProfile(standard.id)!;
+  expect(() => store.upsertProfile({ ...standardEdit, chromiumRuntime: "aliasmode" }))
     .toThrow("Chromium runtime cannot change in place");
   expect(store.getProfile(standard.id)!.chromiumRuntime).toBeUndefined();
 
@@ -87,7 +88,9 @@ test("new profiles keep their Chromium runtime fixed locally and in Cloud payloa
   expect(payload.schemaVersion).toBe(3);
   expect(payload.profile).toMatchObject({ chromiumRuntime: "aliasmode" });
   expect(decodePortableProfile(payload).profile.chromiumRuntime).toBe("aliasmode");
-  const standardPayload = encodePortableProfile(standard);
+  // A profile without stored hardware (made before it existed) stays V1.
+  const { hardware: _hardware, ...legacy } = standard;
+  const standardPayload = encodePortableProfile(legacy);
   expect(standardPayload.schemaVersion).toBe(1);
   expect("chromiumRuntime" in standardPayload.profile).toBe(false);
   expect(decodePortableProfile(standardPayload).profile.chromiumRuntime).toBeUndefined();

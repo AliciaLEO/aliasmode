@@ -64,6 +64,12 @@ export interface ProxySpec {
  * of these — that mirrors the AdsPower launch invariant: launch uses stored
  * state, it does not mutate it.
  */
+/** Hardware that a CloakBrowser profile reports on every computer. Chosen once at creation. */
+export interface ProfileHardware {
+  /** Logical processor count (navigator.hardwareConcurrency). */
+  cores: number;
+}
+
 export interface Profile {
   /** AdsPower profile id, e.g. "k1d0cd11". Stays the same after migration. */
   id: string;
@@ -71,6 +77,8 @@ export interface Profile {
   engine?: ProfileEngine;
   /** Chromium runtime fixed at creation: "aliasmode" is the Chromium 155 beta. */
   chromiumRuntime?: ChromiumRuntime;
+  /** Stored hardware of a CloakBrowser profile. Profiles made before it existed have none and keep the engine default. */
+  hardware?: ProfileHardware;
   /**
    * Firefox's complete Camoufox identity. It is generated once on creation and
    * must accompany every Firefox profile; Chromium profiles must not carry it.

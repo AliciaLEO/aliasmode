@@ -716,6 +716,7 @@ function FingerprintSettings({
   onTimezoneChange,
   disabled = false,
   onUndo,
+  hardware,
 }: {
   engine: "chromium" | "firefox";
   chromiumRuntime?: string;
@@ -727,6 +728,7 @@ function FingerprintSettings({
   onTimezoneChange?: (value: string) => void;
   disabled?: boolean;
   onUndo?: () => void;
+  hardware?: { gpu?: string; cores?: number };
 }) {
   const { t } = useTranslation();
   return (
@@ -765,12 +767,16 @@ function FingerprintSettings({
             <input value={timezone ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. Europe/Paris")} onChange={(event) => onTimezoneChange(event.target.value)} />
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
-          <label className="fld" key={label}>
-            <span>{label}</span>
-            <input value={value} readOnly tabIndex={-1} className="ro" />
-          </label>
-        ))}
+        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => {
+          // A stored value is the same on every computer that opens the profile.
+          const stored = label === "GPU" ? hardware?.gpu : label === "CPU" && hardware?.cores ? `${hardware.cores} cores` : undefined;
+          return (
+            <label className="fld" key={label}>
+              <span>{label}</span>
+              <input value={stored ? `Stored · ${stored}` : value} title={stored} readOnly tabIndex={-1} className="ro" />
+            </label>
+          );
+        })}
         <div className="hint">{disabled
           ? "Close the browser before changing fingerprint settings."
           : onTimezoneChange
@@ -1200,6 +1206,7 @@ function App() {
   const [editLive, setEditLive] = useState(false);
   const [editEngine, setEditEngine] = useState<"chromium" | "firefox">("chromium");
   const [editChromiumRuntime, setEditChromiumRuntime] = useState("");
+  const [editHardware, setEditHardware] = useState<{ gpu?: string; cores?: number } | undefined>();
   const [timezoneBusy, setTimezoneBusy] = useState(false);
   const editFetchId = useRef<string | null>(null);
   const [editMobile, setEditMobile] = useState<NonNullable<EditProfile["desktopConversion"]> | null>(null);
@@ -2520,6 +2527,7 @@ function App() {
     setEditLive(false);
     setEditEngine("chromium");
     setEditChromiumRuntime("");
+    setEditHardware(undefined);
     setTimezoneBusy(false);
     setEditErr(null);
     setEditLoading(true);
@@ -2542,6 +2550,7 @@ function App() {
         setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
         setEditChromiumRuntime(p.chromiumRuntime ?? "");
+        setEditHardware(p.hardware);
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
         setEditMobile(p.desktopConversion ?? null);
@@ -2562,6 +2571,7 @@ function App() {
     setEditLive(false);
     setEditEngine("chromium");
     setEditChromiumRuntime("");
+    setEditHardware(undefined);
     setTimezoneBusy(false);
     setEditLoading(false);
     setEditForm({});
@@ -4691,6 +4701,7 @@ function App() {
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
+                    hardware={editHardware}
                   />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">

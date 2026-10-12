@@ -13,7 +13,7 @@
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime } from "./firefox-config.ts";
 import { hostChromiumRuntime } from "./aliasmode-chromium.ts";
-import { deterministicSeed, hostPlatformOs } from "./fingerprint.ts";
+import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 
@@ -93,6 +93,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     id,
     engine,
     ...(chromiumRuntime ? { chromiumRuntime } : {}),
+    ...(engine === "chromium" && !chromiumRuntime ? { hardware: generateProfileHardware(deterministicSeed(id)) } : {}),
     ...(firefox ? { firefox } : {}),
     accId: "",
     name: (input.name || "").trim() || id, // AdsPower auto-names blank profiles after the id

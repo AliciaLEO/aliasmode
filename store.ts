@@ -21,6 +21,7 @@ import type {
   ProxySpec,
 } from "./types.ts";
 import { completeProfileFingerprint, normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import { normalizeProfileHardware } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
@@ -36,6 +37,7 @@ export class ProfileStore {
         id TEXT PRIMARY KEY,
         engine TEXT NOT NULL DEFAULT 'chromium',
         chromium_runtime TEXT NOT NULL DEFAULT '',
+        hardware_json TEXT NOT NULL DEFAULT '',
         firefox_config_json TEXT NOT NULL DEFAULT '',
         acc_id TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL DEFAULT '',
@@ -164,6 +166,7 @@ export class ProfileStore {
       "engine TEXT NOT NULL DEFAULT 'chromium'",
       "firefox_config_json TEXT NOT NULL DEFAULT ''",
       "chromium_runtime TEXT NOT NULL DEFAULT ''",
+      "hardware_json TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         this.db.exec(`ALTER TABLE profiles ADD COLUMN ${col}`);
@@ -303,12 +306,15 @@ export class ProfileStore {
     // parser. Invalid full-profile JSON must never reach persistent identity.
     assertValidProfile(p);
     const existing = this.db
-      .query<{ seeded: number; trashed_at: number; engine: unknown; chromium_runtime: unknown; locale: string }, [string]>("SELECT seeded, trashed_at, engine, chromium_runtime, locale FROM profiles WHERE id = ?")
+      .query<{ seeded: number; trashed_at: number; engine: unknown; chromium_runtime: unknown; hardware_json: string; locale: string }, [string]>("SELECT seeded, trashed_at, engine, chromium_runtime, hardware_json, locale FROM profiles WHERE id = ?")
       .get(p.id);
     if (!p.locale && existing?.locale) p = { ...p, locale: existing.locale };
     // The runtime is fixed at creation. An edit or re-import that omits it keeps it.
     const storedRuntime = existing ? normalizeChromiumRuntime(existing.chromium_runtime, storedProfileEngine(existing.engine)) : undefined;
     if (!p.chromiumRuntime && storedRuntime) p = { ...p, chromiumRuntime: storedRuntime };
+    // Stored hardware is fixed at creation too. An edit or re-import that omits it keeps it.
+    const storedHardware = existing?.hardware_json || "";
+    if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
     if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
     const browser = normalizeProfileEngine(p.engine, p.firefox);
     if (p.proxy && p.proxyError) throw new Error("profile cannot contain both a valid proxy and a proxy quarantine error");
@@ -322,17 +328,22 @@ export class ProfileStore {
     if (existing && storedRuntime !== chromiumRuntime) {
       throw new Error("profile Chromium runtime cannot change in place");
     }
+    const hardware = normalizeProfileHardware(p.hardware, browser.engine, chromiumRuntime);
+    const hardwareJson = hardware ? JSON.stringify(hardware) : "";
+    if (existing && storedHardware !== hardwareJson) {
+      throw new Error("profile hardware cannot change in place");
+    }
     const seeded = existing ? existing.seeded : p.seeded ? 1 : 0;
     this.db
       .query(
         `INSERT INTO profiles
-           (id, engine, chromium_runtime, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, locale,
+           (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, locale,
             screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$chromiumRuntime,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
          ON CONFLICT(id) DO UPDATE SET
            engine=$engine, firefox_config_json=$firefox,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
@@ -379,6 +390,7 @@ export class ProfileStore {
         $id: p.id,
         $engine: browser.engine,
         $chromiumRuntime: chromiumRuntime ?? "",
+        $hardware: hardwareJson,
         $firefox: browser.firefox ? JSON.stringify(browser.firefox) : "",
         $acc: p.accId,
         $name: p.name,
@@ -997,6 +1009,7 @@ function rowToProfile(row: any): Profile {
     id: row.id,
     engine: browser.engine,
     ...(row.chromium_runtime ? { chromiumRuntime: normalizeChromiumRuntime(row.chromium_runtime, browser.engine) } : {}),
+    ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json), browser.engine, row.chromium_runtime) } : {}),
     ...(browser.firefox ? { firefox: browser.firefox } : {}),
     accId: row.acc_id ?? "",
     name: row.name ?? "",

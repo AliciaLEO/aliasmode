@@ -2,6 +2,9 @@ name: macOS desktop build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feat/macos-cloakbrowser
   workflow_call:
     inputs:
       ref:
@@ -136,6 +139,27 @@ jobs:
           sleep 10
           "$helper" browser close --profile "$chromium" | jq -e '.ok'
           ! grep -q "search provider setup failed" "$data"/logs/*.log
+
+          # A CloakBrowser profile from Windows arrives without a Chromium runtime. The app must
+          # download the macOS CloakBrowser build for it and must not use Chromium 155.
+          bun -e '
+            import { buildNewProfile } from "./create.ts";
+            import { serializeAdsTxt } from "./parse.ts";
+            const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows" }, () => false);
+            process.stdout.write(serializeAdsTxt([profile]));
+          ' > "$data/inbox/ci-cloakbrowser.txt"
+          cloak=""
+          for attempt in $(seq 1 60); do
+            cloak="$("$helper" profiles list | jq -r '.result.profiles[]? | select(.name == "ci-cloakbrowser") | .id' | head -n 1)"
+            [[ -n "$cloak" ]] && break
+            sleep 1
+          done
+          test -n "$cloak"
+          "$helper" browser open --profile "$cloak" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
+          sleep 8
+          screencapture -x "$RUNNER_TEMP/evidence/cloakbrowser-profile.png"
+          pgrep -f "runtimes/cloakbrowser-.*/Chromium.app/Contents/MacOS/Chromium" >/dev/null
+          "$helper" browser close --profile "$cloak" | jq -e '.ok'
 
           # The stdio MCP host must answer an agent client and list the AliasMode tools.
           {

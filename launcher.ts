@@ -44,7 +44,12 @@ import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwne
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
 import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION } from "./firefox-config.ts";
-import { ALIASMODE_CHROMIUM_EXECUTABLE_SHA256, ensureAliasmodeChromium } from "./aliasmode-chromium.ts";
+import {
+  ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
+  CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
+  ensureAliasmodeChromium,
+  ensureCloakBrowserMacos,
+} from "./aliasmode-chromium.ts";
 
 // Chromium ignores inline user:pass@ on --proxy-server. Rather than an MV3 extension answering
 // onAuthRequired (whose service worker can't answer reliably during a page-load burst), the browser
@@ -132,7 +137,7 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
-  chromium146_host: "This profile uses Chrome 146, which is not available on macOS. Open it in AliasMode on Windows.",
+  cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
   chromium155_host: "Chromium 155 beta requires Windows x64 or Apple Silicon macOS.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
@@ -319,6 +324,8 @@ export interface LauncherOptions {
   chromiumRuntimeRoot?: string;
   /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
   ensureAliasmodeChromium?: (root: string) => Promise<string>;
+  /** Installs CloakBrowser for the macOS app, which bundles no CloakBrowser. */
+  ensureCloakBrowserMacos?: (root: string) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -635,6 +642,7 @@ export class Launcher {
   private expectedFirefoxBinarySha256: string;
   private chromiumRuntimeRoot: string;
   private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
+  private ensureCloakBrowserMacosFn: (root: string) => Promise<string>;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -737,6 +745,7 @@ export class Launcher {
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
     this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
+    this.ensureCloakBrowserMacosFn = opts.ensureCloakBrowserMacos ?? ((root) => ensureCloakBrowserMacos(root));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
@@ -816,9 +825,15 @@ export class Launcher {
     });
   }
 
+  /** The macOS app ships no CloakBrowser; it downloads the pinned macOS build on first use. */
+  private downloadsCloakBrowser(): boolean {
+    return this.hostPlatform === "darwin" && this.hostArch === "arm64" && !this.binaryPath;
+  }
+
   /** Validate the deployment pin without reading the configured binary. */
   private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
     if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
+    if (engine === "chromium" && this.downloadsCloakBrowser()) return CLOAKBROWSER_MACOS_EXECUTABLE_SHA256;
     const expected = engine === "firefox" ? this.expectedFirefoxBinarySha256 : this.expectedBinarySha256;
     if (this.unsafeDisableIdentityGates) {
       return /^[a-f0-9]{64}$/.test(expected) ? expected : "0".repeat(64);
@@ -839,6 +854,13 @@ export class Launcher {
       } catch (error) {
         this.log(`Chromium 155 beta install failed: ${error instanceof Error ? error.message : String(error)}`);
         throw new BrowserLaunchError("preflight", "chromium155_download");
+      }
+    } else if (engine === "chromium" && this.downloadsCloakBrowser()) {
+      try {
+        binaryPath = await this.ensureCloakBrowserMacosFn(this.chromiumRuntimeRoot);
+      } catch (error) {
+        this.log(`CloakBrowser install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "cloakbrowser_download");
       }
     }
     if (this.unsafeDisableIdentityGates) return { path: binaryPath, sha256: expected };
@@ -964,10 +986,6 @@ export class Launcher {
     if (!this.enforceHostCompatibility) return;
     if (profile.chromiumRuntime && !supportsChromium155Host(this.hostPlatform, this.hostArch)) {
       throw new BrowserLaunchError("preflight", "chromium155_host");
-    }
-    // A profile stays on the Chrome version it was made with; macOS never runs a 146 profile on 155.
-    if (!profile.chromiumRuntime && this.hostPlatform === "darwin" && !this.binaryPath) {
-      throw new BrowserLaunchError("preflight", "chromium146_host");
     }
     if (isMobileUserAgent(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_mobile");

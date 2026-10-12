@@ -4675,22 +4675,49 @@ test("Chromium 155 beta download failure is a public preflight error", async () 
   store.close();
 });
 
-test("macOS refuses a Chrome 146 profile instead of opening it on another Chrome version", async () => {
+test("the macOS app opens a CloakBrowser profile with the downloaded macOS build, never with Chromium 155", async () => {
   const store = new ProfileStore(":memory:");
-  const profile = buildNewProfile({}, () => false);
+  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
   store.upsertProfile(profile);
-  let downloads = 0;
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  let betaDownloads = 0;
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "darwin",
+    hostArch: "arm64",
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async () => { betaDownloads++; return "/unused"; },
+    ensureCloakBrowserMacos: async (root) => `${root}/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["/fake/runtimes/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium"]);
+  expect(betaDownloads).toBe(0);
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("a failed CloakBrowser download on macOS is a public preflight error", async () => {
+  const store = new ProfileStore(":memory:");
+  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  store.upsertProfile(profile);
   const launcher = new ProductionLauncher({
     store,
     binaryPath: "",
     dataRoot: testDataRoot(store),
     hostPlatform: "darwin",
     hostArch: "arm64",
-    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    ensureCloakBrowserMacos: async () => { throw new Error("offline"); },
     spawn: () => { throw new Error("must not spawn"); },
   });
-  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium146_host"));
-  expect(downloads).toBe(0);
+  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "cloakbrowser_download"));
   store.close();
 });
 

@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/in
 
 The script downloads the newest macOS build from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg`. The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
 
-Chromium profiles on macOS use Chromium 155. A profile made with Chrome 146 on Windows opens only on Windows, because a profile stays on the Chrome version it was made with. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
+New Chromium profiles made on macOS use Chromium 155. A CloakBrowser profile made on Windows opens on macOS with the macOS build of CloakBrowser (Chrome 145), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
 
 Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
 

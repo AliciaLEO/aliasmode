@@ -379,6 +379,30 @@ fn record_update_failure(
     }
 }
 
+/// Keeps the cause of a failed install step. The app writes its error text only to its
+/// standard error, and that is lost when the app starts from the desktop.
+fn log_install_failure(data_dir: &std::path::Path, version: &str, error: &str) {
+    use std::io::Write;
+    let logs = data_dir.join("logs");
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let written = std::fs::create_dir_all(&logs).and_then(|()| {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("desktop-update.log"))?;
+        writeln!(
+            file,
+            "{seconds} update from {} to {version} failed at the install step: {error}",
+            env!("CARGO_PKG_VERSION")
+        )
+    });
+    if written.is_err() {
+        eprintln!("AliasMode could not store the cause of the failed update");
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum UpdatePreparationError {
     Download(String),
@@ -560,6 +584,7 @@ pub async fn update_now(
         }
         Err(UpdatePreparationError::Install(error)) => {
             record_update_failure(&data_dir, &handoff.id, UpdateFailureReason::InstallerLaunch);
+            log_install_failure(&data_dir, &expected_version, &error);
             let _ = window.show();
             let _ = window.set_focus();
             restart_after_install_failure(app, error);
@@ -571,10 +596,10 @@ pub async fn update_now(
 #[cfg(test)]
 mod tests {
     use super::{
-        download_percent, is_release_asset_url, newest_release, release_highlights,
-        run_verified_update, update_artifact_name, validate_manifest_result, GithubAsset,
-        GithubRelease, ReleaseCandidate, UpdateCoordinator, UpdatePreparationError, UpdateProgress,
-        UpdateStatus, UPDATE_MANIFEST, UPDATE_TARGET,
+        download_percent, is_release_asset_url, log_install_failure, newest_release,
+        release_highlights, run_verified_update, update_artifact_name, validate_manifest_result,
+        GithubAsset, GithubRelease, ReleaseCandidate, UpdateCoordinator, UpdatePreparationError,
+        UpdateProgress, UpdateStatus, UPDATE_MANIFEST, UPDATE_TARGET,
     };
     use semver::Version;
     use serde_json::json;
@@ -950,6 +975,25 @@ mod tests {
             serde_json::to_value(UpdateProgress::Installing).unwrap(),
             json!({ "phase": "installing" })
         );
+    }
+
+    #[test]
+    fn keeps_the_cause_of_a_failed_install() {
+        let directory = tempfile::tempdir().unwrap();
+        log_install_failure(
+            directory.path(),
+            "0.1.0-beta.99",
+            "Operation not permitted (os error 1)",
+        );
+        log_install_failure(directory.path(), "0.1.0-beta.99", "second failure");
+        let text =
+            std::fs::read_to_string(directory.path().join("logs/desktop-update.log")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with(
+            "to 0.1.0-beta.99 failed at the install step: Operation not permitted (os error 1)"
+        ));
+        assert!(lines[1].ends_with("second failure"));
     }
 
     #[test]

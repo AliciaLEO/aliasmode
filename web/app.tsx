@@ -847,7 +847,7 @@ async function readDesktopRemoteMcpCredential(): Promise<RemoteMcpCredential | n
 
 async function storeDesktopRemoteMcpCredential(value: RemoteMcpCredential): Promise<void> {
   const invoke = desktopInvoke();
-  if (!invoke) throw new Error("Remote MCP settings are available in the Windows app.");
+  if (!invoke) throw new Error("Remote MCP settings are available in the desktop app.");
   await invoke("credential_set", { key: "remote_mcp_connector", secret: JSON.stringify(value) });
 }
 
@@ -1385,7 +1385,7 @@ function App() {
   const checkDesktopUpdate = async (manual: boolean) => {
     const invoke = desktopInvoke();
     if (!invoke) {
-      if (manual) setDesktopUpdateErr("Updates are available only in the Windows desktop app.");
+      if (manual) setDesktopUpdateErr("Updates are available only in the desktop app.");
       return;
     }
     setDesktopUpdateChecking(true);
@@ -1480,7 +1480,7 @@ function App() {
     try {
       const stored = await readDesktopRemoteMcpCredential();
       if (stored === undefined) {
-        throw new Error("Remote MCP settings are available in the Windows desktop app.");
+        throw new Error("Remote MCP settings are available in the desktop app.");
       }
       if (stored?.state === "disabled") {
         setRemoteMcp({ state: "disabled" });

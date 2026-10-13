@@ -2636,7 +2636,7 @@ async function main() {
         },
       })
     : undefined;
-  const mcpTunnel = process.platform === "win32" && agentNonce && cloudAuth && cloudConfig && cloudConnection
+  const mcpTunnel = (process.platform === "win32" || process.platform === "darwin") && agentNonce && cloudAuth && cloudConfig && cloudConnection
     ? new McpTunnelRuntime({
         baseUrl: cloudConfig.apiUrl,
         accessToken: () => cloudAuth.accessTokenOrRefresh(),

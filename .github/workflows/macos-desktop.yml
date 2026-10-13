@@ -266,6 +266,46 @@ jobs:
           grep -q '"aliasmode_profiles_list"' "$RUNNER_TEMP/evidence/mcp.jsonl"
           grep -q '"aliasmode_browser_open"' "$RUNNER_TEMP/evidence/mcp.jsonl"
 
+          # Remote MCP: the tunnel must start the packaged MCP host on a Mac and pass messages both
+          # ways. A local server takes the place of AliasMode Cloud.
+          test -x "$(dirname "$(ps -o comm= -p "$(jq -er .sidecarPid "$data/agent-runtime.json")")")/aliasmode-mcp"
+          HELPER="$helper" bun -e '
+            import { WebSocketServer } from "ws";
+            import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
+            import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+            const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+            await new Promise((resolve) => server.once("listening", resolve));
+            const tools = new Promise((resolve, reject) => {
+              const timer = setTimeout(() => reject(new Error("the tunnel returned no tool list")), 60_000);
+              server.on("connection", (socket, request) => {
+                if (request.url !== "/v1/mcp/tunnel" || request.headers["x-aliasmode-device"] !== "ci-device") return socket.close();
+                const send = (frame) => socket.send(JSON.stringify({ protocol: MCP_TUNNEL_PROTOCOL, sessionId: "ci", ...frame }));
+                socket.on("message", (data) => {
+                  const frame = JSON.parse(data.toString());
+                  if (frame.type !== "message") return reject(new Error("the tunnel sent " + JSON.stringify(frame)));
+                  if (frame.payload.id === 1) {
+                    send({ type: "message", payload: { jsonrpc: "2.0", method: "notifications/initialized" } });
+                    send({ type: "message", payload: { jsonrpc: "2.0", id: 2, method: "tools/list" } });
+                  }
+                  if (frame.payload.id === 2) { clearTimeout(timer); resolve(frame.payload.result.tools.map((tool) => tool.name)); }
+                });
+                send({ type: "open" });
+                send({ type: "message", payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "ci", version: "1" } } } });
+              });
+            });
+            const tunnel = new McpTunnelRuntime({
+              baseUrl: "http://127.0.0.1:" + server.address().port,
+              accessToken: () => "ci-token", deviceId: () => "ci-device-id", deviceCredential: () => "ci-device",
+              helperPath: process.env.HELPER,
+            });
+            tunnel.start();
+            const names = await tools;
+            await tunnel.stop();
+            server.close();
+            if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+            console.log("Remote MCP tunnel listed " + names.length + " tools");
+          '
+
           # Cmd+Q with a browser still open must close that browser and stop the sidecar.
           desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
           sidecar="$(jq -er .sidecarPid "$data/agent-runtime.json")"

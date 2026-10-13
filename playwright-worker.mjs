@@ -695,6 +695,7 @@ export async function captureSession(browser, payload, options = {}) {
   let reader;
   try {
     const byOrigin = new Map();
+    const unreadable = [];
     for (const origin of [...origins].sort()) {
       let storage = await captureLiveOrigin(context, origin, !!options.nativeStorage);
       if (!storage) {
@@ -703,7 +704,15 @@ export async function captureSession(browser, payload, options = {}) {
           // which clears its cache entry.
           storage = options.storageCache?.get(origin);
           if (!storage) {
-            storage = await sessionStep("origin_storage", () => nativeOriginStorage(context, origin));
+            try {
+              storage = await nativeOriginStorage(context, origin);
+            } catch {
+              // The browser can refuse to open an origin as a page, for example when an extension
+              // blocks it. One such origin must not stop the capture: the caller keeps the storage
+              // that it saved for this origin before.
+              unreadable.push(origin);
+              continue;
+            }
             if (!storage) throw sessionError("origin_storage");
             if (!hasOriginPage(context, origin)) options.storageCache?.set(origin, storage);
           }
@@ -734,6 +743,7 @@ export async function captureSession(browser, payload, options = {}) {
       origins: [...byOrigin.values()],
       tabs,
       ...(telegramClient ? { telegramClient } : {}),
+      ...(unreadable.length ? { unreadableOrigins: unreadable } : {}),
     });
   } finally {
     await reader?.close();

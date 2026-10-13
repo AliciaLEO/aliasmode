@@ -88,6 +88,8 @@ export interface CapturedSessionBundle extends SessionBundle {
 export interface SessionCaptureSeed {
   origins: string[];
   telegramClient?: TelegramWebClient;
+  /** Saved storage of the seed origins. An origin that the browser cannot open keeps it. Not sent to the worker. */
+  saved?: OriginStorage[];
 }
 
 export interface NormalizedSessionBundle {
@@ -564,7 +566,28 @@ export function sessionCaptureSeed(bundle: string): SessionCaptureSeed {
   return {
     origins: normalized.origins.map((origin) => origin.origin),
     ...(normalized.telegramClient ? { telegramClient: normalized.telegramClient } : {}),
+    ...(normalized.origins.length ? { saved: normalized.origins } : {}),
   };
+}
+
+/** The seed as the capture worker gets it: the origin names, without the saved storage. */
+export function workerCaptureSeed(seed: SessionCaptureSeed): SessionCaptureSeed {
+  const { saved: _saved, ...names } = seed;
+  return names;
+}
+
+/**
+ * The Firefox worker lists the origins that the browser did not open for a storage read. They keep
+ * the storage of the last saved session, so one blocked origin does not stop a capture or lose data.
+ */
+export function keepUnreadableOrigins(bundle: string, saved: OriginStorage[] = []): string {
+  const parsed = parseBundle(bundle);
+  if (!isRecord(parsed) || parsed.unreadableOrigins === undefined) return bundle;
+  const { unreadableOrigins, ...captured } = parsed;
+  if (!Array.isArray(unreadableOrigins) || !Array.isArray(captured.origins)) throw new Error("invalid captured session bundle");
+  const kept = saved.filter((origin) => unreadableOrigins.includes(origin.origin));
+  const origins = [...captured.origins as OriginStorage[], ...kept].sort((a, b) => a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : 0);
+  return JSON.stringify({ ...captured, origins });
 }
 
 function canonicalValue(value: unknown): unknown {
@@ -873,11 +896,11 @@ export async function readSession(
   ws: string,
   captureSeed: SessionCaptureSeed = { origins: [] },
 ): Promise<string> {
-  const bundle = await runPlaywrightWorker<string>("session-capture", {
+  const bundle = keepUnreadableOrigins(await runPlaywrightWorker<string>("session-capture", {
     endpoint: ws,
     connectTimeoutMs: 30_000,
-    captureSeed,
-  }, { timeoutMs: SESSION_SUBPROCESS_TIMEOUT_MS });
+    captureSeed: workerCaptureSeed(captureSeed),
+  }, { timeoutMs: SESSION_SUBPROCESS_TIMEOUT_MS }), captureSeed.saved);
   parseCapturedSessionBundle(bundle);
   return bundle;
 }
@@ -926,11 +949,12 @@ export async function readSessionInSubprocess(
   ws: string,
   options: ReadSessionSubprocessOptions = {},
 ): Promise<string> {
-  const bundle = await runPlaywrightWorker<string>("session-capture", {
+  const captureSeed = options.captureSeed ?? { origins: [] };
+  const bundle = keepUnreadableOrigins(await runPlaywrightWorker<string>("session-capture", {
     endpoint: ws,
     connectTimeoutMs: 30_000,
-    captureSeed: options.captureSeed ?? { origins: [] },
-  }, { ...options, timeoutMs: options.timeoutMs ?? SESSION_SUBPROCESS_TIMEOUT_MS });
+    captureSeed: workerCaptureSeed(captureSeed),
+  }, { ...options, timeoutMs: options.timeoutMs ?? SESSION_SUBPROCESS_TIMEOUT_MS }), captureSeed.saved);
   parseCapturedSessionBundle(bundle);
   return bundle;
 }

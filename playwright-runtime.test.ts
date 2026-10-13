@@ -443,12 +443,13 @@ test("native closed-origin capture restores tracked origins after storageState f
       throw new Error("storage failed");
     },
   };
-  await expect(captureSession({ contexts: () => [context] }, {
+  // An origin that the browser does not open must not stop the capture. The worker names it, and
+  // the caller keeps the storage that it saved for this origin before.
+  const captured = JSON.parse(await captureSession({ contexts: () => [context] }, {
     captureSeed: { origins: ["https://closed.example"] },
-  }, { nativeStorage: true })).rejects.toMatchObject({
-    code: "operation_failed",
-    details: { operation: "origin_storage", outcome: "failed" },
-  });
+  }, { nativeStorage: true }));
+  expect(captured.unreadableOrigins).toEqual(["https://closed.example"]);
+  expect(captured.origins.map((entry: { origin: string }) => entry.origin)).not.toContain("https://closed.example");
   expect([...origins]).toEqual([
     "https://live.example",
     "https://closed.example",

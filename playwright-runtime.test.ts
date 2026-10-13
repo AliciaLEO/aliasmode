@@ -12,7 +12,7 @@ import {
   runPlaywrightWorker,
   verifyPlaywrightRuntime,
 } from "./playwright-runtime.ts";
-import { captureSession, restoreSession } from "./playwright-worker.mjs";
+import { captureSession, operatePersistentContext, restoreSession } from "./playwright-worker.mjs";
 
 const bunAsNodeTest = process.platform === "win32" ? test.skip : test;
 
@@ -2114,4 +2114,36 @@ test("rejects an installed runtime without its ESM entrypoint", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("Firefox opens saved tabs in the window of the empty first page, not in new windows", async () => {
+  const visits: string[] = [];
+  let windowsOpened = 0;
+  let front = "";
+  let resolveTab: ((page: unknown) => void) | undefined;
+  const makePage = (name: string, url: string) => {
+    const page = {
+      url: () => url,
+      async goto(target: string) { url = target; visits.push(`${name} ${target}`); },
+      // The empty page opens each tab with window.open.
+      async evaluate() { resolveTab?.(makePage(`tab${visits.length + tabs.push(0)}`, "about:blank")); },
+      async bringToFront() { front = name; },
+      async close() {},
+    };
+    return page;
+  };
+  const tabs: number[] = [];
+  const first = makePage("first", "about:blank");
+  const context = {
+    pages: () => [first],
+    async newPage() { windowsOpened++; return makePage("window", "about:blank"); },
+    waitForEvent: () => new Promise((resolve) => { resolveTab = resolve; }),
+  };
+  await operatePersistentContext({}, context, "navigate", {
+    urls: ["https://one.example/", "https://two.example/", "https://one.example/"],
+    replacePages: true,
+  });
+  expect(windowsOpened).toBe(0);
+  expect(visits).toEqual(["first https://one.example/", "tab1 https://two.example/", "tab2 https://one.example/"]);
+  expect(front).toBe("first");
 });

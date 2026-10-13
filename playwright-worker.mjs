@@ -752,7 +752,19 @@ function isInternalNewTabUrl(url) {
   return INTERNAL_NEW_TAB_URLS.has(url) || url === "about:newtab" || url === "about:home";
 }
 
-async function navigatePages(context, urls, replacePages = false) {
+// In Firefox a new page from Playwright is a new window. A page can open a tab in its own window,
+// and "noopener" leaves that tab with no link to the page.
+async function openTabBeside(context, page) {
+  try {
+    const opened = context.waitForEvent("page", { timeout: 5_000 });
+    await page.evaluate(() => { globalThis.open("about:blank", "_blank", "noopener"); });
+    return await opened;
+  } catch {
+    return undefined;
+  }
+}
+
+async function navigatePages(context, urls, replacePages = false, tabsInOneWindow = false) {
   const targets = (Array.isArray(urls) ? urls : []).map(canonicalUserPageUrl).filter(Boolean);
   const existing = [...context.pages()];
   const existingUserPage = existing.some((page) => {
@@ -798,14 +810,20 @@ async function navigatePages(context, urls, replacePages = false) {
     }
   }
 
+  // The tabs open in the window of the empty page, before that page gets its own address.
+  const tabs = [];
+  if (tabsInOneWindow && blank) {
+    for (let index = 1; index < targets.length; index++) tabs[index] = await openTabBeside(context, blank);
+  }
   for (let index = 0; index < targets.length; index++) {
     try {
-      const page = index === 0 && blank ? blank : await context.newPage();
+      const page = index === 0 && blank ? blank : tabs[index] ?? await context.newPage();
       await page.goto(targets[index], { waitUntil: "domcontentloaded", timeout: 30_000 });
     } catch (error) {
       firstError ??= error;
     }
   }
+  if (tabs.some(Boolean)) await blank.bringToFront?.().catch(() => {});
   if (firstError) throw firstError;
 }
 
@@ -907,7 +925,7 @@ export async function restoreSession(browser, context, payload, options = {}) {
   }
   await sessionStep("cookie_clear", () => context.clearCookies());
   if (cookies.length) await sessionStep("cookie_add", () => context.addCookies(cookies));
-  await sessionStep("navigation", () => navigatePages(context, payload.urls, !!payload.replacePages));
+  await sessionStep("navigation", () => navigatePages(context, payload.urls, !!payload.replacePages, !!options.nativeStorage));
   return null;
 }
 
@@ -1068,7 +1086,7 @@ export async function operatePersistentContext(browser, context, operation, payl
   }
   if (operation === "cookie-harvest") return context.cookies(Array.isArray(payload.urls) && payload.urls.length ? payload.urls : SESSION_URLS);
   if (operation === "navigate") {
-    await navigatePages(context, payload.urls, !!payload.replacePages);
+    await navigatePages(context, payload.urls, !!payload.replacePages, true);
     return null;
   }
   if (operation === "profile-card") {

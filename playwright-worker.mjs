@@ -810,10 +810,15 @@ async function navigatePages(context, urls, replacePages = false, tabsInOneWindo
     }
   }
 
-  // The tabs open in the window of the empty page, before that page gets its own address.
+  // The tabs open in the window of the empty page, before that page gets its own address. Each
+  // tab opens from the tab before it, because Firefox puts a new tab directly after its opener.
   const tabs = [];
   if (tabsInOneWindow && blank) {
-    for (let index = 1; index < targets.length; index++) tabs[index] = await openTabBeside(context, blank);
+    let opener = blank;
+    for (let index = 1; index < targets.length; index++) {
+      tabs[index] = await openTabBeside(context, opener);
+      opener = tabs[index] ?? opener;
+    }
   }
   for (let index = 0; index < targets.length; index++) {
     try {

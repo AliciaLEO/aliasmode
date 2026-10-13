@@ -2118,6 +2118,7 @@ test("rejects an installed runtime without its ESM entrypoint", async () => {
 
 test("Firefox opens saved tabs in the window of the empty first page, not in new windows", async () => {
   const visits: string[] = [];
+  const openers: string[] = [];
   let windowsOpened = 0;
   let front = "";
   let resolveTab: ((page: unknown) => void) | undefined;
@@ -2125,14 +2126,13 @@ test("Firefox opens saved tabs in the window of the empty first page, not in new
     const page = {
       url: () => url,
       async goto(target: string) { url = target; visits.push(`${name} ${target}`); },
-      // The empty page opens each tab with window.open.
-      async evaluate() { resolveTab?.(makePage(`tab${visits.length + tabs.push(0)}`, "about:blank")); },
+      // A page opens the next tab with window.open.
+      async evaluate() { openers.push(name); resolveTab?.(makePage(`tab${openers.length}`, "about:blank")); },
       async bringToFront() { front = name; },
       async close() {},
     };
     return page;
   };
-  const tabs: number[] = [];
   const first = makePage("first", "about:blank");
   const context = {
     pages: () => [first],
@@ -2144,6 +2144,8 @@ test("Firefox opens saved tabs in the window of the empty first page, not in new
     replacePages: true,
   });
   expect(windowsOpened).toBe(0);
+  // Each tab opens from the tab before it, so the tab strip keeps the saved order.
+  expect(openers).toEqual(["first", "tab1"]);
   expect(visits).toEqual(["first https://one.example/", "tab1 https://two.example/", "tab2 https://one.example/"]);
   expect(front).toBe("first");
 });

@@ -216,7 +216,11 @@ async function run() {
   };
   const observePage = (page) => {
     try { observeUrl(page.url()); } catch {}
-    page.on?.("framenavigated", (frame) => { try { observeUrl(frame.url()); } catch {} });
+    // Only the page itself counts. An embedded frame has its own partitioned storage, and a capture
+    // of its origin would open a window for it at every checkpoint.
+    page.on?.("framenavigated", (frame) => {
+      try { if (frame === page.mainFrame()) observeUrl(frame.url()); } catch {}
+    });
   };
   for (const page of context.pages()) observePage(page);
   context.on?.("page", observePage);

@@ -482,7 +482,9 @@ test("native restore does not call Firefox CDP methods", async () => {
       await handler?.({ fulfill: async () => {} });
     },
     url: () => routeUrl,
-    async evaluate() {},
+    async waitForURL() {},
+    // The restore page loads its document with location.replace.
+    async evaluate(_script: unknown, input?: unknown) { if (typeof input === "string") await page.goto(input); },
     async close() { closed = true; },
   };
   const context = {
@@ -504,6 +506,44 @@ test("native restore does not call Firefox CDP methods", async () => {
   expect(closed).toBe(true);
 });
 
+test("native restore uses the empty first window for every origin and opens no other window", async () => {
+  let handler: ((route: { fulfill: () => Promise<void> }) => Promise<void>) | undefined;
+  let currentUrl = "about:blank";
+  const visited: string[] = [];
+  let opened = 0;
+  let closed = false;
+  const page = {
+    async goto(url: string) {
+      currentUrl = url;
+      visited.push(new URL(url).origin);
+      await handler?.({ fulfill: async () => {} });
+    },
+    async waitForURL() {},
+    url: () => currentUrl,
+    async evaluate(_script: unknown, input?: unknown) { if (typeof input === "string") await page.goto(input); },
+    async close() { closed = true; },
+  };
+  const context = {
+    pages: () => [page],
+    async newPage() { opened++; return page; },
+    async route(_url: string, value: typeof handler) { handler = value; },
+    async unroute() { handler = undefined; },
+    async clearCookies() {},
+    async addCookies() {},
+  };
+  await restoreSession({}, context, {
+    bundle: JSON.stringify({ cookies: [], origins: [
+      { origin: "https://one.example", localStorage: [{ name: "a", value: "1" }] },
+      { origin: "https://two.example", localStorage: [{ name: "b", value: "2" }] },
+    ] }),
+    urls: [],
+  }, { nativeStorage: true });
+  expect(opened).toBe(0);
+  expect(closed).toBe(false);
+  expect(visited).toEqual(["https://one.example", "https://two.example", "null"]);
+  expect(currentUrl).toBe("about:blank");
+});
+
 test("native restore applies an explicit empty localStorage capture", async () => {
   let handler: ((route: { fulfill: () => Promise<void> }) => Promise<void>) | undefined;
   let currentUrl = "about:blank";
@@ -519,7 +559,9 @@ test("native restore applies an explicit empty localStorage capture", async () =
       await handler?.({ fulfill: async () => {} });
     },
     url: () => currentUrl,
+    async waitForURL() {},
     async evaluate(script: (input: unknown) => Promise<void>, input: unknown) {
+      if (typeof input === "string") return page.goto(input);
       await runInNewContext(`(${script.toString()})(input)`, { input, localStorage });
     },
     async close() {},

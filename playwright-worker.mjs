@@ -740,6 +740,14 @@ export async function captureSession(browser, payload, options = {}) {
   }
 }
 
+// Loads a document in a page with no new entry in the Back history of its window.
+async function replaceDocument(page, target, timeout) {
+  await Promise.all([
+    page.waitForURL(target, { waitUntil: "domcontentloaded", timeout }),
+    page.evaluate((next) => { globalThis.location.replace(next); }, target).catch(() => {}),
+  ]);
+}
+
 function isInternalNewTabUrl(url) {
   return INTERNAL_NEW_TAB_URLS.has(url) || url === "about:newtab" || url === "about:home";
 }
@@ -812,13 +820,26 @@ export async function restoreSession(browser, context, payload, options = {}) {
   const storageSource = origins.some((target) => target.indexedDB?.length)
     ? await sessionStep("origin_storage", storageScriptSource)
     : undefined;
+  // In Firefox a new page is a new window. One page then serves all origins: the empty first
+  // window when there is one.
+  let shared;
+  let sharedIsFirstWindow = false;
+  try {
   for (const target of origins) {
     await sessionStep("origin_storage", async () => {
       const existing = context.pages();
       for (const page of existing) {
+        if (page === shared) continue;
         try { if (new URL(page.url()).origin === target.origin) await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }); } catch {}
       }
-      const page = await context.newPage();
+      if (options.nativeStorage && !shared) {
+        const empty = context.pages().find((candidate) => {
+          try { return candidate.url() === "about:blank"; } catch { return false; }
+        });
+        shared = empty ?? await context.newPage();
+        sharedIsFirstWindow = !!empty;
+      }
+      const page = shared ?? await context.newPage();
       const restoreUrl = `${target.origin}/?__aliasmode_session_restore__=${Date.now()}`;
       let intercepted = false;
       const handler = (route) => {
@@ -832,7 +853,8 @@ export async function restoreSession(browser, context, payload, options = {}) {
           await cdp.send("Network.setBypassServiceWorker", { bypass: true });
         }
         await context.route(restoreUrl, handler);
-        await page.goto(restoreUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        if (shared) await replaceDocument(page, restoreUrl, 10_000);
+        else await page.goto(restoreUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
         if (!intercepted) throw new Error("Restore navigation was not intercepted");
         if (new URL(page.url()).origin !== target.origin) throw new Error("wrong restore origin");
       await page.evaluate(async ({ entries, databases, source, isFirefox, databaseRules }) => {
@@ -874,10 +896,14 @@ export async function restoreSession(browser, context, payload, options = {}) {
         });
       } finally {
         await context.unroute(restoreUrl, handler).catch(() => {});
-        await page.close();
+        if (!shared) await page.close();
         if (cdp) await cdp.detach().catch(() => {});
       }
     });
+  }
+  } finally {
+    if (shared && sharedIsFirstWindow) await replaceDocument(shared, "about:blank", 5_000).catch(() => {});
+    else await shared?.close().catch(() => {});
   }
   await sessionStep("cookie_clear", () => context.clearCookies());
   if (cookies.length) await sessionStep("cookie_add", () => context.addCookies(cookies));
@@ -1104,19 +1130,14 @@ export async function operatePersistentContext(browser, context, operation, payl
       intercepted = true;
       return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Fingerprint</title>" });
     };
-    // location.replace keeps the probe document out of the Back history of the window.
-    const replaceWith = (target) => Promise.all([
-      page.waitForURL(target, { waitUntil: "domcontentloaded", timeout }),
-      page.evaluate((next) => location.replace(next), target).catch(() => {}),
-    ]);
     try {
       await page.route("**/*", handler);
-      if (empty) await replaceWith(url);
+      if (empty) await replaceDocument(page, url, timeout);
       else await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       if (!intercepted || page.url() !== url) throw new Error("fingerprint document was not fulfilled locally");
       return await page.evaluate(payload.fingerprintScript);
     } finally {
-      if (empty) await replaceWith("about:blank").catch(() => {});
+      if (empty) await replaceDocument(page, "about:blank", 5_000).catch(() => {});
       await page.unroute("**/*", handler).catch(() => {});
       if (!empty) await page.close().catch(() => {});
     }

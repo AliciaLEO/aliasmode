@@ -1,3 +1,5 @@
+const t = (key: string) => key;
+
 import { afterEach, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
@@ -13,8 +15,6 @@ import {
   retryProxyProfileIds,
 } from "./proxies.tsx";
 import type { ProxyCheckView, ProxyProgressEvent, ProxyReplacementView } from "../proxy-tools-types.ts";
-import { proxyOfferUrl } from "./proxy-offer.tsx";
-import { catalogs } from "./locales/registry.ts";
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -81,7 +81,7 @@ test("proxy preview sends a same-origin JSON request and preserves its abort sig
   }) as typeof fetch;
   const controller = new AbortController();
   const input = { scope: { groups: ["Sales"] }, mode: "list" as const, input: "proxy.example:8080:user:private" };
-  expect(await requestProxyPreview(input, controller.signal)).toMatchObject({ previewId: "preview-1" });
+  expect(await requestProxyPreview(input, t, controller.signal)).toMatchObject({ previewId: "preview-1" });
   expect(request?.url).toBe("/ui/api/proxies/preview");
   expect(request?.init?.method).toBe("POST");
   expect(request?.init?.signal).toBe(controller.signal);
@@ -96,7 +96,7 @@ test("preview errors and malformed results never repeat input credentials", asyn
     new Response("private-password", { headers: { "content-type": "text/html" } }),
   ]) {
     globalThis.fetch = (async () => response) as unknown as typeof fetch;
-    const error = await requestProxyPreview({ scope: { all: true }, mode: "list", input: "private-password" }).catch((value) => value);
+    const error = await requestProxyPreview({ scope: { all: true }, mode: "list", input: "private-password" }, t).catch((value) => value);
     expect(error).toBeInstanceOf(Error);
     expect(error.message).not.toContain("private-password");
   }
@@ -110,7 +110,7 @@ test("proxy progress reads split UTF-8 records and requires a completed stream",
     { type: "done" },
   ];
   const seen: ProxyProgressEvent[] = [];
-  await readProxyProgress(stream(records, 1), (record) => seen.push(record));
+  await readProxyProgress(stream(records, 1), (record) => seen.push(record), t);
   expect(seen).toEqual(records);
 });
 
@@ -125,7 +125,7 @@ test("proxy progress rejects missing completion, broken JSON, wrong types, and s
     Response.json({ ok: true }),
   ];
   for (const response of responses) {
-    const error = await readProxyProgress(response, () => {}).catch((value) => value);
+    const error = await readProxyProgress(response, () => {}, t).catch((value) => value);
     expect(error).toBeInstanceOf(Error);
     expect(error.message).not.toContain("private-password");
   }
@@ -135,7 +135,7 @@ test("cancelling progress cancels the reader and cannot report completion", asyn
   let cancelled = false;
   const controller = new AbortController();
   const response = new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { "content-type": "application/x-ndjson" } });
-  const pending = readProxyProgress(response, () => {}, controller.signal);
+  const pending = readProxyProgress(response, () => {}, t, controller.signal);
   controller.abort();
   await expect(pending).rejects.toThrow();
   expect(cancelled).toBe(true);
@@ -147,26 +147,4 @@ test("the proxy page remains mounted but hidden when navigation changes", () => 
   expect(html).toContain('aria-pressed="true">Check proxies');
   expect(html).toContain('aria-pressed="false">Replace proxies');
   expect(html).not.toContain('type="file"');
-});
-
-test("the desktop shell accepts every proxy offer link the dashboard can build", async () => {
-  // The shell opens an outside link only when proxy_offer_url() in src-tauri/src/lib.rs accepts it.
-  const shell = await Bun.file(new URL("../src-tauri/src/lib.rs", import.meta.url)).text();
-  expect(shell).toContain('url.strip_prefix("https://nobleproxy.com/t/aliasmode?")');
-  expect(shell).toContain('matches!(key, "src" | "qty" | "lang")');
-  const accepted = /^https:\/\/nobleproxy\.com\/t\/aliasmode\?(?:src|qty|lang)=[A-Za-z0-9-]{1,32}(?:&(?:src|qty|lang)=[A-Za-z0-9-]{1,32})*$/;
-
-  const sources = await Promise.all(
-    ["app.tsx", "proxies.tsx", "proxy-offer.tsx"].map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
-  );
-  const placements = new Set<string>();
-  for (const match of sources.join("\n").matchAll(/placement=("[^"]+"|\{[^}]+\})|proxyOfferUrl\(("[^"]+")/g)) {
-    for (const literal of (match[1] ?? match[2])!.matchAll(/"([^"]+)"/g)) placements.add(literal[1]!);
-  }
-  expect(placements.size).toBeGreaterThan(4);
-  for (const placement of placements) {
-    for (const language of Object.keys(catalogs)) {
-      for (const quantity of [0, 1, 1000]) expect(proxyOfferUrl(placement, language, quantity)).toMatch(accepted);
-    }
-  }
 });

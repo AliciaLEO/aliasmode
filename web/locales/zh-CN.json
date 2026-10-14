@@ -487,5 +487,12 @@
   "AliasMode {expectedVersion} could not start. AliasMode {fromVersion} remains installed.": "AliasMode {expectedVersion} 无法启动。AliasMode {fromVersion} 仍保持安装。",
   "AliasMode could not verify {expectedVersion} at the expected install location. Close AliasMode, then {reopen}.": "AliasMode 无法在预期的安装位置验证 {expectedVersion}。请关闭 AliasMode，然后{reopen}。",
   "AliasMode could not confirm {expectedVersion}. If the installed version did not change, {reinstall}.": "AliasMode 无法确认 {expectedVersion}。如果已安装版本未更改，请{reinstall}。",
-  "The last update did not finish.": "上次更新未完成。"
+  "The last update did not finish.": "上次更新未完成。",
+  "AliasMode {version} is available.": "AliasMode {version} 可用。",
+  "Preparing update…": "准备更新…",
+  "Downloading update…": "下载更新…",
+  "Downloading update… {percent}%": "下载更新… {percent}%",
+  "Verifying update…": "验证更新…",
+  "Saving and closing browsers…": "保存并关闭浏览器…",
+  "Installing and restarting…": "安装并重启…"
 }

@@ -8,6 +8,7 @@ import type {
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
 import type { UiProfile } from "./api.ts";
+import { useTranslation } from "./i18n.tsx";
 import {
   createScript,
   deleteScript,
@@ -53,6 +54,7 @@ function publicationPending(script: ScriptRecord): boolean {
 }
 
 export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
+  const { t } = useTranslation();
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [script, setScript] = useState<ScriptRecord | null>(null);
   const [tab, setTab] = useState<ScriptsTab>("mine");
@@ -110,7 +112,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
 
   const importFile = async (file: File) => {
     const language = languageFor(file);
-    if (!language) { setError("Choose a .js, .mjs, or .py file."); return; }
+    if (!language) { setError(t("Choose a .js, .mjs, or .py file.")); return; }
     setBusy(true);
     setError(null);
     try {
@@ -124,7 +126,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   const replaceFile = async (file: File) => {
     if (!script) return;
     const language = languageFor(file);
-    if (!language) { setError("Choose a .js, .mjs, or .py file."); return; }
+    if (!language) { setError(t("Choose a .js, .mjs, or .py file.")); return; }
     setBusy(true);
     setError(null);
     try {
@@ -150,7 +152,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   const remove = async () => {
     if (!script) return;
     const alsoUnpublishes = script.publishedRevision !== null && script.publishedRevision !== undefined;
-    if (!window.confirm(`Delete ${script.name}?${alsoUnpublishes ? " This also removes its public listing." : ""}`)) return;
+    if (!window.confirm(t("Delete {name}?", { name: script.name }) + (alsoUnpublishes ? t(" This also removes its public listing.") : ""))) return;
     setBusy(true);
     setError(null);
     try {
@@ -214,19 +216,19 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   return (
     <div className="workspace scripts-page">
       <div className="scripts-head">
-        <div><h2 className="sect-title">Scripts</h2><p className="formnote">Private scripts sync with your account in Cloud mode. Runs and logs stay on this computer.</p></div>
-        {tab === "mine" && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>Import script</button>}
+        <div><h2 className="sect-title">{t("Scripts")}</h2><p className="formnote">Private scripts sync with your account in Cloud mode. Runs and logs stay on this computer.</p></div>
+        {tab === "mine" && <button className="btn primary" type="button" disabled={busy} onClick={() => importRef.current?.click()}>{t("Import script")}</button>}
       </div>
-      <div className="tabs scripts-tabs" role="tablist" aria-label="Script library">
-        <button className={`tab${tab === "mine" ? " active" : ""}`} role="tab" aria-selected={tab === "mine"} type="button" onClick={() => setTab("mine")}>My scripts</button>
-        <button className={`tab${tab === "library" ? " active" : ""}`} role="tab" aria-selected={tab === "library"} type="button" onClick={() => setTab("library")}>Public library</button>
+      <div className="tabs scripts-tabs" role="tablist" aria-label={t("Script library")}>
+        <button className={`tab${tab === "mine" ? " active" : ""}`} role="tab" aria-selected={tab === "mine"} type="button" onClick={() => setTab("mine")}>{t("My scripts")}</button>
+        <button className={`tab${tab === "library" ? " active" : ""}`} role="tab" aria-selected={tab === "library"} type="button" onClick={() => setTab("library")}>{t("Public library")}</button>
       </div>
       {error && <div className="modal-err" role="alert">{error}</div>}
       {tab === "library" ? <PublicLibrary onImported={imported} /> : <>
-        {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{currentRun.scriptName}: {currentRun.status}. View run</button>}
+        {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{t("{scriptName}: {status}. View run", { scriptName: currentRun.scriptName, status: currentRun.status })}</button>}
         <div className="scripts-layout">
-          <div className="scripts-list" aria-label="Saved scripts">
-            {scripts.length === 0 ? <p className="formnote">No scripts yet.</p> : scripts.map((item) => (
+          <div className="scripts-list" aria-label={t("Saved scripts")}>
+            {scripts.length === 0 ? <p className="formnote">{t("No scripts yet.")}</p> : scripts.map((item) => (
               <button className={`script-row${script?.id === item.id ? " active" : ""}`} type="button" key={item.id} disabled={busy} onClick={() => void select(item.id)}>
                 <b>{item.name}</b><span>{languageName(item.language)}</span>
                 {item.description && <small>{item.description}</small>}
@@ -235,31 +237,31 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
           </div>
           {script ? (
             <section className="settings-card script-detail">
-              <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span>{isPublished && <span className="chip">{publicationPending(script) ? "Published, private changes pending" : "Published"}</span>}</header>
+              <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span>{isPublished && <span className="chip">{publicationPending(script) ? t("Published, private changes pending") : t("Published")}</span>}</header>
               <div className="card-body">
-                <label className="fld"><span>Title</span><input className="input" value={script.name} onChange={(event) => setScript({ ...script, name: event.target.value })} /></label>
-                <label className="fld"><span>Description</span><input className="input" value={script.description} onChange={(event) => setScript({ ...script, description: event.target.value })} /></label>
+                <label className="fld"><span>{t("Title")}</span><input className="input" value={script.name} onChange={(event) => setScript({ ...script, name: event.target.value })} /></label>
+                <label className="fld"><span>{t("Description")}</span><input className="input" value={script.description} onChange={(event) => setScript({ ...script, description: event.target.value })} /></label>
                 <div className="script-actions">
-                  <button className="btn primary" type="button" disabled={busy} onClick={() => void saveDetails()}>{busy ? "Saving…" : "Save details"}</button>
-                  <button className="btn" type="button" disabled={busy} onClick={() => replaceRef.current?.click()}>Replace file</button>
-                  <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>Delete</button>
+                  <button className="btn primary" type="button" disabled={busy} onClick={() => void saveDetails()}>{busy ? t("Saving…") : t("Save details")}</button>
+                  <button className="btn" type="button" disabled={busy} onClick={() => replaceRef.current?.click()}>{t("Replace file")}</button>
+                  <button className="btn danger" type="button" disabled={busy} onClick={() => void remove()}>{t("Delete")}</button>
                 </div>
                 <div className="script-actions">
-                  <button className="btn" type="button" disabled={busy || !canPublish || detailsChanged} onClick={openPublication}>{isPublished ? "Update publication" : "Publish"}</button>
-                  {isPublished && <button className="btn danger" type="button" disabled={busy || !canPublish} onClick={() => void unpublish()}>Unpublish</button>}
+                  <button className="btn" type="button" disabled={busy || !canPublish || detailsChanged} onClick={openPublication}>{isPublished ? t("Update publication") : t("Publish")}</button>
+                  {isPublished && <button className="btn danger" type="button" disabled={busy || !canPublish} onClick={() => void unpublish()}>{t("Unpublish")}</button>}
                 </div>
                 {canPublish && detailsChanged && <p className="formnote">Save details before publishing.</p>}
                 {!canPublish && <p className="formnote">Publishing is available after you sign in to Cloud mode.</p>}
                 {publicationOpen && <form className="script-publication" onSubmit={(event) => { event.preventDefault(); void publish(); }}>
                   <label className="fld"><span>Author name</span><input className="input" value={authorName} onChange={(event) => setAuthorName(event.target.value)} disabled={busy} /></label>
                   <label className="script-credentials"><input type="checkbox" checked={showEmail} onChange={(event) => setShowEmail(event.target.checked)} disabled={busy} />Show my account email</label>
-                  <div className="script-publication-preview"><b>{script.name}</b><span>{script.description || "No description"}</span><span>{languageName(script.language)}</span></div>
-                  <div className="script-actions"><button className="btn primary" type="submit" disabled={busy || detailsChanged}>{busy ? "Publishing…" : isPublished ? "Update publication" : "Publish"}</button><button className="btn" type="button" disabled={busy} onClick={() => setPublicationOpen(false)}>Cancel</button></div>
+                  <div className="script-publication-preview"><b>{script.name}</b><span>{script.description || t("No description")}</span><span>{languageName(script.language)}</span></div>
+                  <div className="script-actions"><button className="btn primary" type="submit" disabled={busy || detailsChanged}>{busy ? t("Publishing…") : isPublished ? t("Update publication") : t("Publish")}</button><button className="btn" type="button" disabled={busy} onClick={() => setPublicationOpen(false)}>{t("Cancel")}</button></div>
                 </form>}
-                <label className="fld"><span>Source</span><pre className="script-source">{script.source}</pre></label>
+                <label className="fld"><span>{t("Source")}</span><pre className="script-source">{script.source}</pre></label>
               </div>
             </section>
-          ) : <div className="emptystate"><b>Select a script</b><p>Import a .js, .mjs, or .py file to begin.</p></div>}
+          ) : <div className="emptystate"><b>{t("Select a script")}</b><p>Import a .js, .mjs, or .py file to begin.</p></div>}
         </div>
       </>}
       <input ref={importRef} type="file" accept=".js,.mjs,.py,text/javascript,text/x-python" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); event.target.value = ""; }} />
@@ -269,6 +271,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
 }
 
 function PublicLibrary({ onImported }: { onImported: (script: ScriptRecord) => Promise<void> }) {
+  const { t } = useTranslation();
   const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState<ScriptLanguage | "">("");
@@ -335,32 +338,32 @@ function PublicLibrary({ onImported }: { onImported: (script: ScriptRecord) => P
 
   return <div className="scripts-library">
     <form className="scripts-library-search" onSubmit={(event) => { event.preventDefault(); search(); }}>
-      <input className="input" aria-label="Search public scripts" placeholder="Search scripts" value={queryInput} onChange={(event) => setQueryInput(event.target.value)} />
-      <select className="select" aria-label="Script language" value={language} onChange={(event) => { setOffset(0); setLanguage(event.target.value as ScriptLanguage | ""); }}>
+      <input className="input" aria-label={t("Search public scripts")} placeholder={t("Search scripts")} value={queryInput} onChange={(event) => setQueryInput(event.target.value)} />
+      <select className="select" aria-label={t("Script language")} value={language} onChange={(event) => { setOffset(0); setLanguage(event.target.value as ScriptLanguage | ""); }}>
         <option value="">All languages</option><option value="javascript">JavaScript</option><option value="python">Python</option>
       </select>
-      <button className="btn primary" type="submit" disabled={busy}>Search</button>
+      <button className="btn primary" type="submit" disabled={busy}>{t("Search")}</button>
     </form>
     {error && <div className="modal-err" role="alert">{error}</div>}
     <div className="scripts-layout">
-      <div className="scripts-list" aria-label="Public scripts">
+      <div className="scripts-list" aria-label={t("Public scripts")}>
         {busy && scripts.length === 0 ? <p className="formnote">Loading scripts…</p> : scripts.length === 0 ? <p className="formnote">No public scripts found.</p> : scripts.map((item) => (
           <button className={`script-row${script?.id === item.id ? " active" : ""}`} type="button" key={item.id} disabled={busy} onClick={() => void select(item.id)}>
             <b>{item.name}</b><span>{item.authorName} · {languageName(item.language)} · {new Date(item.updatedAt).toLocaleDateString()}</span>
             {item.description && <small>{item.description}</small>}
           </button>
         ))}
-        <div className="script-library-pager"><button className="btn" type="button" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>Previous</button><button className="btn" type="button" disabled={busy || nextOffset === null} onClick={() => setOffset(nextOffset ?? offset)}>Next</button></div>
+        <div className="script-library-pager"><button className="btn" type="button" disabled={busy || offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>{t("Previous")}</button><button className="btn" type="button" disabled={busy || nextOffset === null} onClick={() => setOffset(nextOffset ?? offset)}>{t("Next")}</button></div>
       </div>
       {script ? <section className="settings-card script-detail">
         <header><h2>{script.name}</h2><span className="chip">{languageName(script.language)}</span></header>
         <div className="card-body">
-          <p>{script.description || "No description"}</p>
-          <p className="formnote">By {script.authorName}{script.authorEmail && <> · {script.authorEmail}</>} · {new Date(script.updatedAt).toLocaleDateString()}</p>
-          <button className="btn primary" type="button" disabled={busy} onClick={() => void importScript()}>Add to my scripts</button>
-          <label className="fld"><span>Source</span><pre className="script-source">{script.source}</pre></label>
+          <p>{script.description || t("No description")}</p>
+          <p className="formnote">{t("By {authorName}", { authorName: script.authorName })}{script.authorEmail && <> · {script.authorEmail}</>} · {new Date(script.updatedAt).toLocaleDateString()}</p>
+          <button className="btn primary" type="button" disabled={busy} onClick={() => void importScript()}>{t("Add to my scripts")}</button>
+          <label className="fld"><span>{t("Source")}</span><pre className="script-source">{script.source}</pre></label>
         </div>
-      </section> : <div className="emptystate"><b>Select a public script</b><p>Choose a script to view its details and source.</p></div>}
+      </section> : <div className="emptystate"><b>{t("Select a public script")}</b><p>Choose a script to view its details and source.</p></div>}
     </div>
   </div>;
 }
@@ -370,6 +373,7 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
   selectedProfiles: UiProfile[];
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [scriptId, setScriptId] = useState("");
   const [inputs, setInputs] = useState("{}");
@@ -423,11 +427,11 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
   const start = async () => {
     let parsed: unknown;
     try { parsed = JSON.parse(inputs); }
-    catch { setError("Inputs must be valid JSON."); return; }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { setError("Inputs must be a JSON object."); return; }
+    catch { setError(t("Inputs must be valid JSON.")); return; }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { setError(t("Inputs must be a JSON object.")); return; }
     if (!scriptId || selectedProfiles.length === 0) return;
     const parallel = Number(concurrency);
-    if (!Number.isSafeInteger(parallel) || parallel < 1) { setError("Parallel browsers must be a positive whole number."); return; }
+    if (!Number.isSafeInteger(parallel) || parallel < 1) { setError(t("Parallel browsers must be a positive whole number.")); return; }
     setBusy(true);
     setError(null);
     try {
@@ -450,21 +454,21 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal script-run-modal" role="dialog" aria-modal="true" aria-labelledby="script-run-title" onClick={(event) => event.stopPropagation()}>
-        <div className="modal-head" id="script-run-title">Run script<button type="button" className="modal-close" aria-label="Close" onClick={onClose}>×</button></div>
+        <div className="modal-head" id="script-run-title">{t("Run script")}<button type="button" className="modal-close" aria-label={t("Close")} onClick={onClose}>×</button></div>
         <div className="modal-body">
           {!desktop ? <div className="modal-err">Scripts require the desktop app.</div> : <>
             <p className="formnote">Scripts run locally with your computer permissions.</p>
             {error && <div className="modal-err" role="alert">{error}</div>}
-            <label className="fld"><span>Script</span><select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">Choose a script…</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</select></label>
+            <label className="fld"><span>{t("Script")}</span><select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">Choose a script…</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</select></label>
             <label className="fld"><span>JSON inputs</span><textarea className="input script-inputs" value={inputs} onChange={(event) => setInputs(event.target.value)} disabled={busy || runActive} /></label>
             <label className="script-credentials"><input type="checkbox" checked={useCredentials} onChange={(event) => setUseCredentials(event.target.checked)} disabled={busy || runActive} />Use saved profile login details</label>
             <label className="fld"><span>Parallel browsers</span><input className="input" type="number" min={1} step={1} value={concurrency} onChange={(event) => setConcurrency(event.target.value)} disabled={busy || runActive} /></label>
-            <p className="formnote">{selectedProfiles.length} selected profile{selectedProfiles.length === 1 ? "" : "s"}. Run up to this many at a time; the rest wait for a free slot. Browser startup may be staggered. Parallel runs share the log below.</p>
+            <p className="formnote">{t("{n} selected profiles. Run up to this many at a time; the rest wait for a free slot. Browser startup may be staggered. Parallel runs share the log below.", { n: String(selectedProfiles.length) })}</p>
             {run && <div className="script-progress"><b>{run.scriptName} · {run.status}</b>{run.profiles.map((profile) => <div key={profile.id} className={`script-profile ${profile.status}`}><span>{profile.name}</span><span>{profile.status}</span>{profile.error && <small>{profile.error}</small>}{profile.warning && <small className="warning">{profile.warning}</small>}</div>)}</div>}
-            {run && <pre className="script-log" aria-label="Script log">{log || "Waiting for log output…"}</pre>}
+            {run && <pre className="script-log" aria-label={t("Script log")}>{log || t("Waiting for log output…")}</pre>}
           </>}
         </div>
-        <div className="modal-foot"><button className="btn ghost" type="button" onClick={onClose}>Close</button>{desktop && !runActive && <button className="btn primary" type="button" disabled={busy || !scriptId || selectedProfiles.length === 0} onClick={() => void start()}>{busy ? "Starting…" : "Run script"}</button>}{desktop && runActive && <button className="btn solid-danger" type="button" disabled={busy || run?.status === "stopping"} onClick={() => void stop()}>{run?.status === "stopping" ? "Stopping…" : busy ? "Stopping…" : "Stop"}</button>}</div>
+        <div className="modal-foot"><button className="btn ghost" type="button" onClick={onClose}>{t("Close")}</button>{desktop && !runActive && <button className="btn primary" type="button" disabled={busy || !scriptId || selectedProfiles.length === 0} onClick={() => void start()}>{busy ? t("Starting…") : t("Run script")}</button>}{desktop && runActive && <button className="btn solid-danger" type="button" disabled={busy || run?.status === "stopping"} onClick={() => void stop()}>{run?.status === "stopping" ? t("Stopping…") : busy ? t("Stopping…") : t("Stop")}</button>}</div>
       </div>
     </div>
   );

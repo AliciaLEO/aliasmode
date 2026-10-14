@@ -2968,7 +2968,7 @@ function App() {
   };
 
   const desktopUpdateResultSummary = desktopUpdateResult
-    ? describeDesktopUpdateResult(desktopUpdateResult)
+    ? describeDesktopUpdateResult(desktopUpdateResult, t)
     : null;
 
   if (!appMode || !workspaceReady || restartRequired) {

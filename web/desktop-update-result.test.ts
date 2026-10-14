@@ -53,12 +53,24 @@ test("rejects malformed or unknown durable update results", () => {
   }
 });
 
+
+// Mock t function that does simple interpolation
+const mockT = (key: string, values?: Record<string, string>): string => {
+  let result = key;
+  if (values) {
+    for (const [k, v] of Object.entries(values)) {
+      result = result.replace(`{${k}}`, v);
+    }
+  }
+  return result;
+};
+
 test("describes confirmed, unconfirmed, and failed updates without private diagnostics", () => {
   expect(describeDesktopUpdateResult({
     state: "succeeded",
     fromVersion: "0.1.0-beta.47",
     version: "0.1.0-beta.48",
-  })).toEqual({
+  }, mockT)).toEqual({
     tone: "success",
     title: "AliasMode 0.1.0-beta.48 installed successfully.",
     detail: "Updated from 0.1.0-beta.47 and verified the installed app after restart.",
@@ -66,11 +78,11 @@ test("describes confirmed, unconfirmed, and failed updates without private diagn
   expect(describeDesktopUpdateResult({
     state: "installedRelaunchUnconfirmed",
     version: "0.1.0-beta.48",
-  }).detail).toContain("launch it from Windows Start");
+  }, mockT).detail).toContain("launch it from Windows Start");
   expect(describeDesktopUpdateResult({
     state: "failedOrInterrupted",
     fromVersion: "0.1.0-beta.47",
     expectedVersion: "0.1.0-beta.48",
     reason: "installationUnconfirmed",
-  }).detail).toContain("full offline installer without uninstalling");
+  }, mockT).detail).toContain("full offline installer without uninstalling");
 });

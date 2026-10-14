@@ -478,5 +478,14 @@
   "Applying changes": "正在应用更改",
   "More than one profile matched": "匹配到多个配置文件",
   "{total} rows": "{total} 行",
-  "Each old proxy is replaced wherever it appears in the selected folders.": "每个旧代理将在所选文件夹中出现的位置被替换。"
+  "Each old proxy is replaced wherever it appears in the selected folders.": "每个旧代理将在所选文件夹中出现的位置被替换。",
+  "AliasMode {version} installed successfully.": "AliasMode {version} 安装成功。",
+  "Updated from {fromVersion} and verified the installed app after restart.": "已从 {fromVersion} 更新，并在重启后验证了已安装的应用。",
+  "AliasMode {version} is installed.": "AliasMode {version} 已安装。",
+  "The automatic restart was not confirmed. Close AliasMode, then {reopen}.": "未确认自动重启。请关闭 AliasMode，然后{reopen}。",
+  "AliasMode {fromVersion} remains installed because browser services could not close safely.": "AliasMode {fromVersion} 仍保持安装，因为浏览器服务无法安全关闭。",
+  "AliasMode {expectedVersion} could not start. AliasMode {fromVersion} remains installed.": "AliasMode {expectedVersion} 无法启动。AliasMode {fromVersion} 仍保持安装。",
+  "AliasMode could not verify {expectedVersion} at the expected install location. Close AliasMode, then {reopen}.": "AliasMode 无法在预期的安装位置验证 {expectedVersion}。请关闭 AliasMode，然后{reopen}。",
+  "AliasMode could not confirm {expectedVersion}. If the installed version did not change, {reinstall}.": "AliasMode 无法确认 {expectedVersion}。如果已安装版本未更改，请{reinstall}。",
+  "The last update did not finish.": "上次更新未完成。"
 }

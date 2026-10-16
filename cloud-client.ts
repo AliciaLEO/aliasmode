@@ -120,6 +120,7 @@ export class CloudClient {
   private readonly fetchFn: CloudFetch;
   private readonly requestTimeoutMs: number;
   private profileRoster?: { etag: string; response: ListProfilesResponse };
+  private rosterInFlight?: Promise<ListProfilesResponse>;
 
   constructor(private readonly options: CloudClientOptions) {
     this.baseUrl = normalizeSecureServiceUrl(options.baseUrl, "AliasMode Cloud");
@@ -345,7 +346,7 @@ export class CloudClient {
       `/workspace/folders/${encodeURIComponent(name)}/extensions`,
       { method: "PUT", body: JSON.stringify(request) },
     );
-    this.profileRoster = undefined;
+    this.forgetRoster();
     return response;
   }
 
@@ -410,9 +411,12 @@ export class CloudClient {
   }
 
   listProfiles(): Promise<ListProfilesResponse> {
+    // Callers share one download: on a slow link a large roster takes longer
+    // than the dashboard poll, and parallel copies split the bandwidth.
+    if (this.rosterInFlight) return this.rosterInFlight;
     const headers = new Headers();
     if (this.profileRoster) headers.set("if-none-match", this.profileRoster.etag);
-    return this.call("/profiles", { headers }, {
+    const request = this.call<ListProfilesResponse>("/profiles", { headers }, {
       notModified: () => {
         if (!this.profileRoster) throw new Error("AliasMode Cloud profile roster cache is empty");
         return this.profileRoster.response;
@@ -421,7 +425,17 @@ export class CloudClient {
         const etag = response.headers.get("etag");
         this.profileRoster = etag ? { etag, response: body } : undefined;
       },
+    }).finally(() => {
+      if (this.rosterInFlight === request) this.rosterInFlight = undefined;
     });
+    this.rosterInFlight = request;
+    return request;
+  }
+
+  /** After a write, the next roster must be a new fetch, not the cached or in-flight one. */
+  private forgetRoster(): void {
+    this.profileRoster = undefined;
+    this.rosterInFlight = undefined;
   }
 
   listProfileProxies(signal?: AbortSignal): Promise<ListProfileProxiesResponse> {
@@ -476,7 +490,7 @@ export class CloudClient {
       method: "POST",
       body: JSON.stringify(request),
     });
-    this.profileRoster = undefined;
+    this.forgetRoster();
     return response;
   }
 
@@ -485,7 +499,7 @@ export class CloudClient {
       method: "POST",
       body: JSON.stringify(request),
     });
-    if (!request.dryRun) this.profileRoster = undefined;
+    if (!request.dryRun) this.forgetRoster();
     return response;
   }
 

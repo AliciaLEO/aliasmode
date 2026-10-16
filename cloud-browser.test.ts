@@ -3159,6 +3159,17 @@ test("Cloud roster excludes the exact registration retained for pending sync", a
   const roster = await state.coordinator.listRoster();
 
   expect(roster.profiles[0]?.lockedBy).toBeNull();
+
+  // The upload can finish while a slow roster is still downloading. Cloud built
+  // that reply before the close, so it still lists this device's registration.
+  const listProfiles = options.cloud.listProfiles;
+  options.cloud.listProfiles = async () => {
+    for (const pending of state.queue.list("account1")) state.queue.remove(pending.id, "account1");
+    return listProfiles();
+  };
+  const afterUpload = await state.coordinator.listRoster();
+
+  expect(afterUpload.profiles[0]?.lockedBy).toBeNull();
   await state.coordinator.releaseAll(true);
   state.queue.close();
   state.store.close();

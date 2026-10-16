@@ -461,23 +461,22 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       localRegistrations.set(profileId, registrations);
     };
     // A registration that finishes during the fetch can still be in the Cloud reply.
-    const rememberOpens = () => {
+    const rememberLocal = () => {
       for (const open of queue.listOpens(accountId)) rememberRegistration(open.profileId, open.registrationId);
+      for (const summary of queue.list(accountId)) {
+        try {
+          const pending = queue.get(summary.id, accountId);
+          if (pending) rememberRegistration(pending.profileId, pending.registrationId);
+        } catch {
+          // An unreadable registration cannot prove local ownership or hide a Cloud lock.
+        }
+      }
     };
-    rememberOpens();
+    rememberLocal();
     const response = await this.options.cloud.listProfiles();
     this.backfillProxyCache(response.profiles);
-    rememberOpens();
-    const summaries = queue.list(accountId);
-    for (const summary of summaries) {
-      try {
-        const pending = queue.get(summary.id, accountId);
-        if (pending) rememberRegistration(pending.profileId, pending.registrationId);
-      } catch {
-        // An unreadable registration cannot prove local ownership or hide a Cloud lock.
-      }
-    }
-    const parkedSessions = newestParkedSessions(summaries);
+    rememberLocal();
+    const parkedSessions = newestParkedSessions(queue.list(accountId));
     return {
       profiles: response.profiles
         .filter((profile) => profile.trashedAt === null)

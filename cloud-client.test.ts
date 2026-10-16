@@ -223,6 +223,34 @@ test("Cloud close rejects malformed conflicts without a current version", async 
     .rejects.toThrow("missing currentVersion");
 });
 
+test("Cloud client shares one roster download between callers until a write", async () => {
+  let rosterRequests = 0;
+  const waiting: Array<() => void> = [];
+  const cloud = client(async (url) => {
+    if (String(url).endsWith("/profiles/import")) return Response.json({ ok: true, imported: 0, ids: [] }, { status: 201 });
+    rosterRequests++;
+    await new Promise<void>((resolve) => { waiting.push(resolve); });
+    return Response.json({ ok: true, profiles: [] }, { headers: { etag: `"roster-${rosterRequests}"` } });
+  });
+
+  const first = cloud.listProfiles();
+  const second = cloud.listProfiles();
+  await Bun.sleep(0);
+  expect(rosterRequests).toBe(1);
+  waiting.shift()!();
+  expect(await second).toEqual(await first);
+
+  const before = cloud.listProfiles();
+  await Bun.sleep(0);
+  await cloud.importProfiles({ destination: "Sales", profiles: [] });
+  // A roster started before the write cannot answer for the state after it.
+  const after = cloud.listProfiles();
+  await Bun.sleep(0);
+  expect(rosterRequests).toBe(3);
+  for (const release of waiting.splice(0)) release();
+  await Promise.all([before, after]);
+});
+
 test("Cloud client imports one profile batch and invalidates its roster cache", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const rosterRequests: Array<string | null> = [];

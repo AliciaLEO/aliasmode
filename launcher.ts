@@ -1058,6 +1058,10 @@ export class Launcher {
     // sessions. Chromium 155 then shows no card at all. With the blocklist ignored, it shows the
     // card that the profile seed selects, with WebGL 2 and WebGPU to match.
     if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--ignore-gpu-blocklist");
+    // Chromium 155 draws pages at the profile's 100% pixel ratio. When Windows scales the
+    // display to 125% or 150%, it stretches those pages and they look blurry. A window at
+    // 100% shows them pixel for pixel.
+    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--force-device-scale-factor=1");
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns

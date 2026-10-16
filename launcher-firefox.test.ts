@@ -349,15 +349,20 @@ test("Mac reopens the latest native-close tabs instead of an older session", asy
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
 });
 
-test("Firefox enables native tab restore in the owned profile before spawn", async () => {
+test("Firefox enables native tab restore with session cookies in the owned profile before spawn", async () => {
   const f = fixture();
   const root = f.launcher.userDataDir(f.profile.id);
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
-  writeFileSync(join(root, "user.js"), 'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 1);\n');
+  writeFileSync(
+    join(root, "user.js"),
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 2);\nuser_pref("browser.startup.page", 1);\n',
+  );
   f.store.saveSessionBundle(f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: ["https://old.example/"] }));
   const opened = await f.launcher.start(f.profile.id);
-  expect(f.startupPreferences()).toBe('user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 3);\n');
+  expect(f.startupPreferences()).toBe(
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n',
+  );
   expect(opened.nativeSessionRestored).toBe(true);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -370,7 +375,9 @@ test("Firefox disables native restore when the Cloud coordinator requests portab
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   writeFileSync(join(root, "user.js"), 'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 3);\n');
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false, restoreLastSession: false });
-  expect(f.startupPreferences()).toBe('user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 0);\n');
+  expect(f.startupPreferences()).toBe(
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n',
+  );
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -383,7 +390,7 @@ test("Firefox disables native restore before applying a pending Cloud bundle", a
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   f.store.upsertProfiles([f.profile], new Map([[f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: [] })]]));
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false });
-  expect(f.startupPreferences()).toBe('user_pref("browser.startup.page", 0);\n');
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.store.getPendingSessionBundle(f.profile.id)).toBeNull();
   expect(await f.launcher.stop(f.profile.id)).toBe(true);

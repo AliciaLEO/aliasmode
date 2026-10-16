@@ -503,3 +503,21 @@ test("proxy replacement Agent Control method rejects non-Cloud and malformed cal
   expect(malformed).toMatchObject({ ok: false, error: { code: "invalid_request" } });
   expect(calls).toBe(0);
 });
+
+test("Local profiles.create sets the timezone from the proxy", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => Response.json({ status: "success", timezone: "Europe/Paris" })) as unknown as typeof fetch;
+  try {
+    const h = harness();
+    const saved: any[] = [];
+    const session = new AgentControlSession({ ...h.deps, store: { ...h.deps.store, upsertProfile: (profile: any) => saved.push(profile) } as any });
+    const response = await session.enqueue(wire("profiles.create", {
+      input: { name: "agent", proxy: { type: "http", host: "proxy.example", port: "8080" } },
+    }));
+    expect(response).toMatchObject({ ok: true });
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({ timezone: "Europe/Paris", locale: "fr-FR" });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

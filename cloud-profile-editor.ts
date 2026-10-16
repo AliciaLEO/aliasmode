@@ -211,8 +211,9 @@ export class CloudProfileEditor {
       if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
     }
     const proxyChanged = applyEdits(profile, set);
-    if (proxyChanged && profile.proxy && profile.engine !== "firefox" && !("timezone" in set)) {
+    if (proxyChanged && profile.proxy && !("timezone" in set)) {
       await attachTimezones([profile], this.timezoneFetch).catch(() => {});
+      syncFirefoxTimezone(profile);
     }
 
     const encoded = encodePortableProfile(completeProfileFingerprint(profile), JSON.stringify(authoritative.payload.session));

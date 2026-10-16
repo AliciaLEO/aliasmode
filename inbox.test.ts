@@ -1,10 +1,15 @@
-import { test, expect } from "bun:test";
+import { afterEach, beforeEach, test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProfileStore } from "./store.ts";
 import { importBuffers, importInbox, prepareImportBuffers } from "./inbox.ts";
 import { parseExport, serializeAdsTxt } from "./parse.ts";
+
+// Imports look up proxy timezones; answer them locally so tests stay offline.
+const realFetch = globalThis.fetch;
+beforeEach(() => { globalThis.fetch = (async () => Response.json({ status: "fail" })) as unknown as typeof fetch; });
+afterEach(() => { globalThis.fetch = realFetch; });
 
 const REC = (id: string) => `id=${id}
 name=acct-${id}
@@ -242,21 +247,42 @@ test("an explicit imported timezone is retained without a lookup", async () => {
   expect(logs.some((message) => message.includes("resolved timezone"))).toBe(false);
 });
 
-test("a proxy import preserves an existing timezone without a lookup", async () => {
+test("a proxy import sets the new proxy's timezone and keeps the saved one when the lookup fails", async () => {
+  for (const [row, timezone] of [[{ status: "success", timezone: "Europe/Paris" }, "Europe/Paris"], [{ status: "fail" }, "America/Los_Angeles"]] as const) {
+    const store = new ProfileStore(":memory:");
+    const original = parseExport(REC("existing")).profiles[0]!;
+    original.timezone = "America/Los_Angeles";
+    store.upsertProfile(original);
+    const logs: string[] = [];
+
+    await importBuffers(store, [{
+      name: "proxy.txt",
+      bytes: new TextEncoder().encode(`id=${original.id}\nproxytype=http\nproxy=8.8.8.8:8080:user:pass\n******************`),
+    }], (message) => logs.push(message), {}, undefined, async () => ({ json: async () => row }));
+
+    expect(store.getProfile(original.id)).toMatchObject({
+      proxy: { host: "8.8.8.8", port: "8080" },
+      timezone,
+    });
+    expect(logs).toContain(`import: resolved timezone for ${timezone === "Europe/Paris" ? 1 : 0}/1 supplied proxy/proxies`);
+    store.close();
+  }
+});
+
+test("re-importing an unchanged proxy keeps the saved timezone without a lookup", async () => {
   const store = new ProfileStore(":memory:");
   const original = parseExport(REC("existing")).profiles[0]!;
   original.timezone = "America/Los_Angeles";
   store.upsertProfile(original);
+  let lookups = 0;
 
-  await importBuffers(store, [{
-    name: "proxy.txt",
-    bytes: new TextEncoder().encode(`id=${original.id}\nproxytype=http\nproxy=8.8.8.8:8080:user:pass\n******************`),
-  }], () => {});
-
-  expect(store.getProfile(original.id)).toMatchObject({
-    proxy: { host: "8.8.8.8", port: "8080" },
-    timezone: "America/Los_Angeles",
+  await importBuffers(store, [{ name: "refresh.txt", bytes: new TextEncoder().encode(REC("existing")) }], () => {}, {}, undefined, async () => {
+    lookups++;
+    return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
   });
+
+  expect(lookups).toBe(0);
+  expect(store.getProfile(original.id)!.timezone).toBe("America/Los_Angeles");
   store.close();
 });
 

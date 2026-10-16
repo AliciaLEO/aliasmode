@@ -1788,6 +1788,14 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           : `${profileId}: Cloud access ended (${lease.errorCode}); browser was retained`);
         return;
       }
+      const renewal = lease.errorCode === "version_conflict" ? await this.renewLapsedOpen(open, context.queue) : "failed";
+      if (renewal !== "failed") {
+        this.startHeartbeat(profileId);
+        this.log(renewal === "renewed"
+          ? `${profileId}: Cloud lease lapsed; the browser stays open under a fresh registration`
+          : `${profileId}: Cloud lease lapsed and Cloud could not be reached; renewal is retried`);
+        return;
+      }
       const secured = await this.captureAndStopOpen(open, context.queue, true);
       if (!secured) this.startHeartbeat(profileId);
       this.log(secured
@@ -1953,6 +1961,36 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     return open.phase === "running" &&
       launch.debugPort === open.debugPort &&
       launch.startedAt === open.startedAt;
+  }
+
+  /**
+   * A heartbeat gap longer than the Cloud lease (laptop sleep, network outage)
+   * expires the registration even when nobody else wants the profile. Take a
+   * fresh registration for the still-running browser instead of closing it.
+   * Cloud refuses the fresh open while another device holds the profile, and a
+   * different base version means someone else wrote first: both keep the
+   * capture-and-stop path. Right after a wake the network is often not back
+   * yet, so an unreachable Cloud is retried on the next heartbeat.
+   */
+  private async renewLapsedOpen(open: PendingOpenSession, queue: PendingSyncQueue): Promise<"renewed" | "retry" | "failed"> {
+    const deviceId = this.options.deviceId();
+    const launch = this.options.store.getLaunch(open.profileId);
+    if (!deviceId || open.cleanupMode || !launch || !this.isExactRunningLaunch(open, launch)) return "failed";
+    let fresh: OpenProfileResponse;
+    try {
+      fresh = await this.options.cloud.openProfile(open.profileId, { deviceId });
+    } catch (error) {
+      return error instanceof CloudApiError && error.status < 500 ? "failed" : "retry";
+    }
+    if (
+      fresh.baseVersion === open.expectedVersion &&
+      queue.replaceOpenRegistration(open.profileId, open.accountId, open.registrationId, fresh.registrationId)
+    ) {
+      this.clearCheckpointSignature(open);
+      return "renewed";
+    }
+    await this.options.cloud.abandon(fresh.registrationId).catch(() => {});
+    return "failed";
   }
 
   private async captureAndStopOpen(

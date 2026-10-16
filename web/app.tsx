@@ -693,7 +693,7 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["CPU", "Automatic"],
   ["RAM", "Automatic"],
   ["Fingerprint seed", "Automatic · unique and stable"],
-  ["Timezone", "Stored · set from connection on request"],
+  ["Timezone", "Stored · set from the proxy automatically"],
   ["Canvas / WebGL / audio", "Automatic"],
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
@@ -3142,8 +3142,8 @@ function App() {
           <button
             type="button"
             className="rail-toggle tip"
-            data-tip={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            data-tip={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
+            aria-label={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
             aria-expanded={!sidebarCollapsed}
             onClick={toggleSidebar}
           >
@@ -3156,27 +3156,27 @@ function App() {
         </div>
         <div className="newrow">
           <button className="btn primary newbtn" data-tip={t("New profile")} title={t("New profile")} disabled={!canEditCloud} onClick={openCreate}>
-            <Icon name="plus" /><span className="navlabel">New Profile</span>
+            <Icon name="plus" /><span className="navlabel">{t("New Profile")}</span>
           </button>
           <button
             className="btn importbtn tip"
-            data-tip="Import profiles"
-            aria-label="Import profiles"
+            data-tip={t("Import profiles")}
+            aria-label={t("Import profiles")}
             disabled={!canEditCloud}
-            title="Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports"
+            title={t("Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports")}
             onClick={openBulk}
-          ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
+          ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
         </div>
 
-        <nav className="sidenav" aria-label="Sections">
+        <nav className="sidenav" aria-label={t("Sections")}>
           <button
             type="button"
             className={`navitem${view === "profiles" && group === "all" && !sharedOnly ? " active" : ""}`}
-            data-tip="All profiles"
-            title="All profiles"
+            data-tip={t("All profiles")}
+            title={t("All profiles")}
             onClick={() => selectFolder("all")}
           >
-            <Icon name="profiles" /><span className="navlabel">All profiles</span>
+            <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
           {isCloudMode && sharedProfiles.length > 0 && <button type="button" className={`navitem${view === "profiles" && sharedOnly ? " active" : ""}`} title={t("Shared with me")} onClick={() => { setGroup("all"); setSharedOnly(true); setView("profiles"); }}>
@@ -3184,8 +3184,8 @@ function App() {
           </button>}
           {!appMode?.legacyRemote && <>
             <div className="navrow">
-              <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip="Proxies" title="Proxies" onClick={() => setView("proxies")}>
-                <Icon name="activity" /><span className="navlabel">Proxies</span>
+              <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => setView("proxies")}>
+                <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
               </button>
               <a
                 className="navbuy"
@@ -3196,51 +3196,51 @@ function App() {
                 aria-label={t("Buy proxies from NobleProxy at the AliasMode user price (opens externally)")}
               ><CartIcon /></a>
             </div>
-            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip="Trash" title="Trash" onClick={() => setView("trash")}>
-              <Icon name="trash" /><span className="navlabel">Trash</span>
+            <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
+              <Icon name="trash" /><span className="navlabel">{t("Trash")}</span>
             </button>
           </>}
           <button
             type="button"
             className={`navitem${view === "scripts" ? " active" : ""}`}
-            data-tip="Scripts"
-            title="Scripts"
+            data-tip={t("Scripts")}
+            title={t("Scripts")}
             onClick={() => setView("scripts")}
           >
-            <Icon name="file" /><span className="navlabel">Scripts</span>
+            <Icon name="file" /><span className="navlabel">{t("Scripts")}</span>
           </button>
           <button
             type="button"
             className={`navitem${view === "extensions" ? " active" : ""}`}
-            data-tip="Manage extensions"
-            title="Manage extensions"
+            data-tip={t("Manage extensions")}
+            title={t("Manage extensions")}
             onClick={() => { setExtErr(null); setView("extensions"); }}
           >
-            <Icon name="puzzle" /><span className="navlabel">Manage extensions</span>
+            <Icon name="puzzle" /><span className="navlabel">{t("Manage extensions")}</span>
             {extensions.length > 0 && <span className="cnt">{extensions.length}</span>}
           </button>
           <button
             type="button"
             className="navitem"
-            title="View detailed logs"
+            title={t("View detailed logs")}
             onClick={() => {
               setLogErr(null);
               setLogView(null);
               fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
             }}
-          ><Icon name="logs" /><span className="navlabel">Logs</span></button>
+          ><Icon name="logs" /><span className="navlabel">{t("Logs")}</span></button>
         </nav>
 
         <div className="sidesection">
           <button className="sidehead" onClick={() => setGroupsOpen((o) => !o)}>
             <span className={`chev${groupsOpen ? " open" : ""}`}><Icon name="chevronRight" className="sm" /></span>
-            <span>{isCloudMode ? "Folders" : "Groups"}</span>
+            <span>{isCloudMode ? t("Folders") : t("Groups")}</span>
             <span className="grow" />
             <span className="cnt">{existingGroups.length}</span>
           </button>
           {groupsOpen && <>
             <div className="folders">
-            {existingGroups.length === 0 && <div className="folders-empty">No {isCloudMode ? "folders" : "groups"} yet</div>}
+            {existingGroups.length === 0 && <div className="folders-empty">{isCloudMode ? t("No folders yet") : t("No groups yet")}</div>}
             {tree.filter((folder) => !folder.ancestors.some((name) => collapsedFolders.has(name))).map(({ name: g, label, depth }) => (
               <div
                 key={g}
@@ -3291,7 +3291,7 @@ function App() {
                 {newFolderParent && <small>{t("In {folder}", { folder: folderLabel(newFolderParent) })}</small>}
                 <input
                   autoFocus
-                  aria-label={isCloudMode ? "New folder name" : "New group name"}
+                  aria-label={isCloudMode ? t("New folder name") : t("New group name")}
                   value={sidebarGroupName}
                   onChange={(event) => setSidebarGroupName(event.target.value)}
                   onKeyDown={(event) => {
@@ -3299,12 +3299,12 @@ function App() {
                     else if (event.key === "Escape") { setAddingGroup(false); setSidebarGroupName(""); }
                   }}
                 />
-                <button type="button" title="Create" onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
-                <button type="button" title="Cancel" onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
+                <button type="button" title={t("Create")} onClick={() => void createSidebarGroup()}><Icon name="check" className="sm" /></button>
+                <button type="button" title={t("Cancel")} onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
               <button className="newgroup" type="button" disabled={!canEditCloud || appMode?.legacyRemote} onClick={() => { setNewFolderParent(null); setAddingGroup(true); }}>
-                <Icon name="plus" className="sm" />{isCloudMode ? "New folder" : "New group"}
+                <Icon name="plus" className="sm" />{isCloudMode ? t("New folder") : t("New group")}
               </button>
             )}
           </>}
@@ -3316,20 +3316,20 @@ function App() {
             href="https://t.me/aliasmode"
             target="_blank"
             rel="noreferrer"
-            data-tip="Support"
-            title="Support — AliasMode Telegram group"
+            data-tip={t("Support")}
+            title={t("Support — AliasMode Telegram group")}
           >
-            <Icon name="help" /><span className="navlabel">Support</span>
+            <Icon name="help" /><span className="navlabel">{t("Support")}</span>
           </a>
-          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip="Settings" title="Settings" onClick={openAccountSettings}>
-            <Icon name="settings" /><span className="navlabel">Settings</span>
+          <button type="button" className={`navitem${view === "settings" ? " active" : ""}`} data-tip={t("Settings")} title={t("Settings")} onClick={openAccountSettings}>
+            <Icon name="settings" /><span className="navlabel">{t("Settings")}</span>
           </button>
           <div className="sidecredit">
             {/* Only the name is a link, and it points at its owner: "Developed by
                 Xreacher" goes to Xreacher, not to AliasMode. The project's own
                 links are the GitHub and Telegram marks beside it. */}
             <span className="watermark">
-              Developed by
+              {t("Developed by")}
               <a href="https://xreacher.com/" target="_blank" rel="noreferrer" title="xreacher.com">Xreacher</a>
             </span>
             <div className="projectlinks">
@@ -3341,7 +3341,7 @@ function App() {
                   target="_blank"
                   rel="noreferrer"
                   data-tip={link.label}
-                  aria-label={`AliasMode on ${link.label}`}
+                  aria-label={t("AliasMode on {name}", { name: link.label })}
                 >
                   <svg className="brandmark" viewBox="0 0 24 24" aria-hidden="true"><path d={link.path} /></svg>
                 </a>

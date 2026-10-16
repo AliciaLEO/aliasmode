@@ -4560,6 +4560,19 @@ test("a fresh launch refuses to spawn after an inconclusive profile-dir scan", a
   rmSync(dataRoot, { recursive: true, force: true });
 });
 
+(process.platform === "win32" ? test : test.skip)("the Windows process scan works when PATH has no PowerShell folder", async () => {
+  // A failed scan stops every saved profile with browser_launch/profile_directory.
+  const env: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+  );
+  env.PATH = (process.env.PATH ?? "").split(";").filter((dir) => !/WindowsPowerShell/i.test(dir)).join(";");
+  const child = Bun.spawn([
+    process.execPath, "-e",
+    'const { readHostProcessSnapshot } = await import("./launcher.ts"); process.stdout.write(String((await readHostProcessSnapshot()) !== null));',
+  ], { cwd: import.meta.dir, env, stdout: "pipe", stderr: "ignore" });
+  expect(await new Response(child.stdout).text()).toBe("true");
+}, 120_000);
+
 // --- fingerprint capture: bookkeeping that must never fail a launch ---
 
 test("a fingerprint probe that throws does not fail the launch", async () => {

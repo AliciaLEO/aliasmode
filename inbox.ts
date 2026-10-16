@@ -14,6 +14,8 @@ import { completeProfileFingerprint } from "./firefox-config.ts";
 import type { ParsedProfileImport } from "./parse.ts";
 import { parseImportFile } from "./import-formats.ts";
 import { FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
+import { attachTimezones, type FetchLike } from "./geoip.ts";
+import { proxyIdentityKey } from "./proxy.ts";
 import type { Profile } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
 
@@ -138,6 +140,10 @@ function mergeExisting(existing: Profile, incoming: SourcedImport): Profile {
       ? { ...p.proxy, type: existing.proxy.type }
       : p.proxy;
     delete out.proxyError;
+    // A resolved timezone belongs to a new proxy. An unchanged proxy or a failed lookup keeps the saved one.
+    if (p.timezone && existing.engine !== "firefox" && proxyIdentityKey(out.proxy) !== proxyIdentityKey(existing.proxy)) {
+      out.timezone = p.timezone;
+    }
   }
   return out;
 }
@@ -151,9 +157,11 @@ export interface PreparedImportBatch {
 /** Decode, parse, validate, override, and enrich uploaded profile exports. */
 export async function prepareImportBuffers(
   files: { name: string; bytes: Uint8Array }[],
-  _log: (msg: string) => void = console.log,
+  log: (msg: string) => void = console.log,
   overrides: ImportOverrides = {},
   exists: (id: string) => boolean = () => false,
+  timezoneFetch?: FetchLike,
+  saved: (id: string) => Profile | null = () => null,
 ): Promise<PreparedImportBatch> {
   let cookiesStripped = 0;
   let skipped = 0;
@@ -182,6 +190,19 @@ export async function prepareImportBuffers(
   }
   if (problems.length) throw unsafeImportError(problems);
 
+  // Look up the proxy the merge will save, and only when it differs from the saved one.
+  // Firefox keeps its saved configuration, which an import cannot change.
+  const toResolve = collected.flatMap((entry) => {
+    const current = saved(entry.profile.id);
+    const proxy = current ? mergeExisting(current, entry).proxy : entry.profile.proxy;
+    if (!entry.presentFields.includes("proxy") || !proxy || entry.profile.timezone || (current ?? entry.profile).engine === "firefox") return [];
+    if (current && proxyIdentityKey(proxy) === proxyIdentityKey(current.proxy)) return [];
+    return [{ entry, profile: { ...entry.profile, proxy } }];
+  });
+  const { resolved } = await attachTimezones(toResolve.map((item) => item.profile), timezoneFetch);
+  for (const { entry, profile } of toResolve) Object.assign(entry.profile, { timezone: profile.timezone, locale: profile.locale });
+  if (toResolve.length) log(`import: resolved timezone for ${resolved}/${toResolve.length} supplied proxy/proxies`);
+
   return {
     imports: collected,
     profiles: collected.map((entry) => entry.profile),
@@ -201,8 +222,9 @@ export async function importBuffers(
   overrides: ImportOverrides = {},
   /** Optional hub-side lock/CAS guard, called synchronously immediately before the atomic write. */
   beforeCommit?: (profiles: readonly Profile[]) => void,
+  timezoneFetch?: FetchLike,
 ): Promise<InboxResult> {
-  const batch = await prepareImportBuffers(files, log, overrides, (id) => !!store.getProfile(id) || store.isTrashed(id));
+  const batch = await prepareImportBuffers(files, log, overrides, (id) => !!store.getProfile(id) || store.isTrashed(id), timezoneFetch, (id) => store.getProfile(id));
   const collected = batch.imports;
   const trashedIds = collected.map((entry) => entry.profile.id).filter((id) => store.isTrashed(id));
   if (trashedIds.length) throw unsafeImportError([
@@ -210,7 +232,7 @@ export async function importBuffers(
   ], 409);
   const problems: string[] = [];
 
-  // All parsing and validation completed before this point. No await occurs
+  // All parsing, validation and timezone lookups completed before this point. No await occurs
   // between reading the current rows and committing the merged batch.
   const prepared: Profile[] = [];
   for (const entry of collected) {

@@ -1201,6 +1201,7 @@ test("terminal running heartbeat retries a failed capture without an external cl
   try {
     expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
     options.cloud.heartbeat = async () => { throw new CloudApiError("stale", "version_conflict", 409); };
+    options.cloud.openProfile = async () => { throw new CloudApiError("open elsewhere", "profile_open", 409); };
     options.readSession = async () => { throw new Error("capture failed"); };
     await state.coordinator.heartbeatOnce("profile1");
     expect(state.store.getLaunch("profile1")).not.toBeNull();
@@ -1221,6 +1222,109 @@ test("terminal running heartbeat retries a failed capture without an external cl
     state.queue.close();
     state.store.close();
   }
+});
+
+test("Cloud keeps a running browser open when its lease lapses during laptop sleep", async () => {
+  const state = setup({ heartbeatMs: 60_000, setIntervalFn: () => ({}), clearIntervalFn: () => {} });
+  const cloud = (state.coordinator as any).options.cloud;
+  // Cloud's rule: a heartbeat gap longer than the 120 s lease abandons the registration.
+  let now = 0;
+  const lastHeartbeat = new Map<string, number>([["registration1", 0]]);
+  const renewed: string[] = [];
+  cloud.heartbeat = async (registrationId: string) => {
+    renewed.push(registrationId);
+    if (now - lastHeartbeat.get(registrationId)! > 120_000) {
+      lastHeartbeat.set(registrationId, -Infinity);
+      throw new CloudApiError("The open registration expired.", "version_conflict", 409);
+    }
+    lastHeartbeat.set(registrationId, now);
+    return { ok: true, revoked: false, activeOpens: [] };
+  };
+  const closed: string[] = [];
+  cloud.closeOpen = async (registrationId: string, request: { expectedVersion: number }) => {
+    closed.push(registrationId);
+    return { ok: true, status: "accepted", version: request.expectedVersion + 1 };
+  };
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    cloud.openProfile = async () => {
+      lastHeartbeat.set("registration2", now);
+      return freshOpen("registration2");
+    };
+    now = 60_000;
+    await state.coordinator.heartbeatOnce("profile1");
+    const checkpoint = state.queue.list("account1");
+    expect(checkpoint).toMatchObject([{ readyToSubmit: false }]);
+    const savedBeforeSleep = state.queue.get(checkpoint[0]!.id, "account1")!.payload;
+
+    now += 30 * 60_000; // lid closed for 30 minutes
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(state.events).not.toContain("stop");
+    expect(state.store.getLaunch("profile1")).not.toBeNull();
+    expect(state.queue.getOpen("profile1", "account1")).toMatchObject({ registrationId: "registration2", phase: "running" });
+    expect((state.coordinator as any).timers.has("profile1")).toBe(true);
+    const [moved] = state.queue.list("account1");
+    expect(state.queue.get(moved!.id, "account1")).toMatchObject({
+      registrationId: "registration2",
+      readyToSubmit: false,
+      payload: savedBeforeSleep,
+    });
+
+    now += 60_000;
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(renewed).toEqual(["registration1", "registration1", "registration2"]);
+    expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete" });
+    expect(closed).toEqual(["registration2"]);
+    expect(state.abandonCalls()).toBe(0);
+  } finally {
+    await state.coordinator.releaseAll(true);
+    state.queue.close();
+    state.store.close();
+  }
+});
+
+test("Cloud retries a lapsed lease while the network is not back after a wake", async () => {
+  const state = setup({ heartbeatMs: 60_000, setIntervalFn: () => ({}), clearIntervalFn: () => {} });
+  const cloud = (state.coordinator as any).options.cloud;
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    cloud.heartbeat = async () => { throw new CloudApiError("The open registration expired.", "version_conflict", 409); };
+    cloud.openProfile = async () => { throw new TypeError("fetch failed"); };
+
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(state.events).not.toContain("stop");
+    expect(state.queue.getOpen("profile1", "account1")).toMatchObject({ registrationId: "registration1", phase: "running" });
+    expect((state.coordinator as any).timers.has("profile1")).toBe(true);
+
+    cloud.openProfile = async () => freshOpen("registration2");
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(state.events).not.toContain("stop");
+    expect(state.queue.getOpen("profile1", "account1")).toMatchObject({ registrationId: "registration2", phase: "running" });
+  } finally {
+    await state.coordinator.releaseAll(true);
+    state.queue.close();
+    state.store.close();
+  }
+});
+
+test.each([
+  ["another device holds the profile", async () => { throw new CloudApiError("open elsewhere", "profile_open", 409); }, 0],
+  ["someone else saved the profile", async () => freshOpen("registration2", 5), 1],
+] as const)("Cloud closes a browser whose lease lapsed when %s", async (_case, reopen, abandons) => {
+  const state = setup({ closeConflict: true });
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const cloud = (state.coordinator as any).options.cloud;
+  cloud.heartbeat = async () => { throw new CloudApiError("The open registration expired.", "version_conflict", 409); };
+  cloud.openProfile = reopen;
+
+  await state.coordinator.heartbeatOnce("profile1");
+
+  expect(state.events).toContain("stop");
+  expect(state.store.getLaunch("profile1")).toBeNull();
+  expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  expect(state.abandonCalls()).toBe(abandons);
+  state.queue.close();
+  state.store.close();
 });
 
 test.each([
@@ -2308,6 +2412,9 @@ test("Cloud releaseAll finishes retained cleanup without recapturing", async () 
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   (state.coordinator as any).options.cloud.heartbeat = async () => {
     throw new CloudApiError("stale", "version_conflict", 409);
+  };
+  (state.coordinator as any).options.cloud.openProfile = async () => {
+    throw new CloudApiError("open elsewhere", "profile_open", 409);
   };
 
   await state.coordinator.heartbeatOnce("profile1");
@@ -3702,6 +3809,9 @@ test("version-conflict heartbeat records the terminal conflict class", async () 
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   (state.coordinator as any).options.cloud.heartbeat = async () => {
     throw new CloudApiError("stale", "version_conflict", 409);
+  };
+  (state.coordinator as any).options.cloud.openProfile = async () => {
+    throw new CloudApiError("open elsewhere", "profile_open", 409);
   };
 
   await state.coordinator.heartbeatOnce("profile1");

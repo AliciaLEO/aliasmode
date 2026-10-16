@@ -299,10 +299,10 @@ test("both engines offer OS choices at creation and only Chromium allows later O
   expect(app).toContain('platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}');
 });
 
-test("Local timezone lookup is explicit", () => {
+test("Local timezone follows the proxy and can be refreshed on request", () => {
+  expect(app).toContain("Stored · set from the proxy automatically");
   expect(app).toContain("refreshProfileTimezone(id)");
   expect(app).toContain("Set timezone from proxy");
-  expect(app).not.toContain("Automatic · from proxy");
 });
 
 test("running profile rows expose Bring to front in Local and Cloud mode", () => {
@@ -401,7 +401,7 @@ test("sidebar creates persistent groups and gates Cloud deletion to workspace ma
   expect(app).toContain("folderTree(folders)");
   expect(app).toContain("const canManageCloudFolders = cloudAuth?.workspace?.role === \"owner\" || cloudAuth?.workspace?.role === \"admin\";");
   expect(app).toContain('className="newgroup"');
-  expect(app).toContain('{isCloudMode ? "New folder" : "New group"}');
+  expect(app).toContain('{isCloudMode ? t("New folder") : t("New group")}');
   expect(app).toContain('if (name === "all") {');
   expect(app).toContain('cloudWorkspaceAction("delete-folder", { name: g })');
   expect(app).toContain("!isCloudMode || canManageCloudFolders");
@@ -521,8 +521,8 @@ test("import entry points keep permission checks and collapsed labels", () => {
     expect(entry).toContain("onClick={openBulk}");
     expect(entry).toContain("disabled={!canEditCloud}");
   }
-  expect(sidebar).toContain('aria-label="Import profiles"');
-  expect(sidebar).toContain('<span className="navlabel">Import profiles</span>');
+  expect(sidebar).toContain('aria-label={t("Import profiles")}');
+  expect(sidebar).toContain('<span className="navlabel">{t("Import profiles")}</span>');
 });
 
 function rosterSelection(filtered: { id: string }[], selected = new Set<string>(), group = "all", q = "", page = 0) {
@@ -693,15 +693,15 @@ test("the sidebar collapses to an icon rail and remembers it", () => {
   expect(app).toContain("function readSidebarCollapsed(): boolean {");
   expect(app).toContain('writeSetting(SIDEBAR_KEY, collapsed ? "0" : "1")');
   expect(app).toContain('aria-expanded={!sidebarCollapsed}');
-  expect(app).toContain('data-tip={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}');
+  expect(app).toContain('data-tip={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}');
   // Labels must be elements, not bare text, or they cannot be hidden on the rail.
-  expect(app).toContain('<Icon name="plus" /><span className="navlabel">New Profile</span>');
-  expect(app).toContain('<Icon name="profiles" /><span className="navlabel">All profiles</span>');
+  expect(app).toContain('<Icon name="plus" /><span className="navlabel">{t("New Profile")}</span>');
+  expect(app).toContain('<Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>');
   expect(styles).toContain(".sidebar.collapsed");
   expect(styles).toContain(".rail-toggle");
   // Every rail item needs a hover label once its text is gone.
-  expect(app).toContain('data-tip="All profiles"');
-  expect(app).toContain('data-tip="Settings"');
+  expect(app).toContain('data-tip={t("All profiles")}');
+  expect(app).toContain('data-tip={t("Settings")}');
 });
 
 test("short sidebars keep folder space and let navigation scroll without clipping rail tooltips", () => {
@@ -847,7 +847,7 @@ test("the project links match the site footer and this repository", () => {
   const links = app.slice(app.indexOf("const PROJECT_LINKS"), app.indexOf("] as const;", app.indexOf("const PROJECT_LINKS")));
   expect(links).toContain("github.com");
   expect(links).toContain("t.me");
-  expect(app).toContain('aria-label={`AliasMode on ${link.label}`}');
+  expect(app).toContain('aria-label={t("AliasMode on {name}", { name: link.label })}');
   expect(styles).toContain(".projectlink");
 });
 
@@ -887,14 +887,14 @@ test("the dark theme is a token swap, and native controls follow it", () => {
 test("the sidebar offers extension management in both modes and a support link", () => {
   // The extension registry is local in both modes; Cloud profiles carry their
   // assignments and load matching local uploads at launch.
-  expect(app).toContain('<Icon name="puzzle" /><span className="navlabel">Manage extensions</span>');
+  expect(app).toContain('<Icon name="puzzle" /><span className="navlabel">{t("Manage extensions")}</span>');
   const nav = app.slice(app.indexOf('className="sidenav"'), app.indexOf("</nav>"));
   expect(nav).not.toMatch(/\{isCloudMode\s*&&\s*\(?\s*<button[^>]*setView\("extensions"\)/);
-  const extensions = nav.slice(nav.lastIndexOf("<button", nav.indexOf('data-tip="Manage extensions"')), nav.indexOf("</button>", nav.indexOf('data-tip="Manage extensions"')));
+  const extensions = nav.slice(nav.lastIndexOf("<button", nav.indexOf('data-tip={t("Manage extensions")}')), nav.indexOf("</button>", nav.indexOf('data-tip={t("Manage extensions")}')));
   expect(extensions).not.toContain("isCloudMode");
   // Small support entry that forwards to the Telegram group.
   expect(app).toContain('href="https://t.me/aliasmode"');
-  expect(app).toContain('<Icon name="help" /><span className="navlabel">Support</span>');
+  expect(app).toContain('<Icon name="help" /><span className="navlabel">{t("Support")}</span>');
   expect(styles).toContain("a.navitem");
 });
 

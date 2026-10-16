@@ -85,9 +85,15 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
   const path = join(userDataDir, "user.js");
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const preserved = existing
-    .replace(/^user_pref\("browser\.startup\.page",\s*\d+\);\s*$/gm, "")
+    .replace(/^user_pref\("browser\.(?:startup\.page|sessionstore\.privacy_level)",\s*\d+\);\s*$/gm, "")
     .trimEnd();
-  writeFileSync(path, `${preserved}${preserved ? "\n" : ""}user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`);
+  // The engine default (2) never saves session cookies, so a restored session came back
+  // without them. Stock Firefox (0) keeps them, as Chromium does with --restore-last-session.
+  writeFileSync(
+    path,
+    `${preserved}${preserved ? "\n" : ""}user_pref("browser.sessionstore.privacy_level", 0);\n` +
+      `user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`,
+  );
 }
 
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
@@ -3958,15 +3964,21 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
         "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
         "ConvertTo-Json -Compress",
       ].join(" | ");
+      // The full path also works when PATH has no PowerShell folder.
+      const powershell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
       const child = Bun.spawn(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
         { stdout: "pipe", stderr: "ignore" },
       );
       const result = await readSnapshotChildBounded(
         child as unknown as { stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): unknown },
         WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
       );
-      if (!result || result.exitCode !== 0) return null;
+      if (!result || result.exitCode !== 0) {
+        // A failed scan stops every saved profile with browser_launch/profile_directory. The log shows why.
+        console.log(`[aliasmode] Windows process scan failed: ${result ? `exit code ${result.exitCode}` : "timed out"}`);
+        return null;
+      }
       const parsed = result.raw.trim() ? JSON.parse(result.raw) : [];
       const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
       const records: HostProcessRecord[] = [];
@@ -3981,7 +3993,8 @@ export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | n
         });
       }
       return { records, incomplete: false };
-    } catch {
+    } catch (error) {
+      console.log(`[aliasmode] Windows process scan failed: ${(error as { code?: string })?.code ?? String(error)}`);
       return null;
     }
   }

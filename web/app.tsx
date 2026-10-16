@@ -49,6 +49,7 @@ import {
   resendCloudSignUp,
   selectAppMode,
   fetchProfiles,
+  serialLoader,
   fetchHealth,
   fetchLogs,
   fetchDiagnose,
@@ -1169,6 +1170,7 @@ function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const deleteInFlight = useRef(false);
+  const rosterLoader = useRef(serialLoader(() => loadRoster()));
   // Active profile export: null when idle, otherwise how far the server-side
   // collection has progressed ({completed: total} = file being built).
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -1320,7 +1322,12 @@ function App() {
     }
   };
 
-  const load = async () => {
+  // One roster request at a time: on a slow link a large roster takes longer
+  // than the poll interval, and stacked requests share the bandwidth until
+  // every one of them fails.
+  const { load, poll: pollRoster } = rosterLoader.current;
+
+  const loadRoster = async () => {
     try {
       const roster = await fetchProfiles();
       setProfiles(roster.profiles);
@@ -2016,7 +2023,7 @@ function App() {
 
   useEffect(() => {
     if (!appMode || !workspaceReady || restartRequired) return;
-    const t = setInterval(load, REFRESH_MS);
+    const t = setInterval(pollRoster, REFRESH_MS);
     return () => clearInterval(t);
   }, [appMode?.mode, restartRequired, workspaceReady]);
 

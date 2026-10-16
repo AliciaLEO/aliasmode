@@ -363,6 +363,35 @@ test("Cloud client classifies fetch failures without losing their cause", async 
   }
 });
 
+function trickle(chunks: string[], gapMs: number, stallAfter = Infinity): ReadableStream<Uint8Array> {
+  let sent = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      if (sent >= stallAfter) return new Promise<void>(() => {});
+      await Bun.sleep(gapMs);
+      if (sent === chunks.length) return controller.close();
+      controller.enqueue(new TextEncoder().encode(chunks[sent++]!));
+    },
+  });
+}
+
+test("Cloud client finishes a roster that keeps arriving past the timeout", async () => {
+  const body = JSON.stringify({ ok: true, profiles: [] }).padEnd(400, " ");
+  const chunks = body.match(/.{1,20}/gs)!;
+  const cloud = client(async () => new Response(trickle(chunks, 5)), 50);
+  const started = performance.now();
+  expect(await cloud.listProfiles()).toEqual({ ok: true, profiles: [] });
+  expect(performance.now() - started).toBeGreaterThan(50);
+});
+
+test("Cloud client times out a response body that stops arriving", async () => {
+  const cloud = client(async () => new Response(trickle(['{"ok":true,', '"profiles":[]}'], 1, 1)), 30);
+  await expect(cloud.listProfiles()).rejects.toMatchObject({
+    message: expect.stringContaining("timed out after 30ms"),
+    failure: { kind: "timeout", retryable: true },
+  });
+});
+
 test("Cloud client bounds fetch implementations that ignore abort", async () => {
   const cloud = client(() => new Promise<Response>(() => {}), 5);
   await expect(cloud.status()).rejects.toMatchObject({

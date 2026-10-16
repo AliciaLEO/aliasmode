@@ -340,7 +340,14 @@ function setup(options: {
   };
 }
 
-const VALID_DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
+/** The roster reconciles closed browsers beside its Cloud fetch; wait for that too. */
+async function rosterReconciled(coordinator: CloudBrowserCoordinator) {
+  const roster = await coordinator.listRoster();
+  await (coordinator as any).rosterReconcile;
+  return roster;
+}
+
+const VALID_DESKTOP_UA ="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 const TEST_BINARY = "approved test browser binary";
 const TEST_BINARY_SHA256 = createHash("sha256").update(TEST_BINARY).digest("hex");
 
@@ -885,7 +892,7 @@ for (const closeMethod of ["managed", "window"] as const) {
       // Browser X happens before any heartbeat capture. Chromium has newer tabs
       // than this opening checkpoint, which must not replace the native session.
       state.setReconcileHook(() => state.store.clearLaunch("profile1"));
-      await state.coordinator.listRoster();
+      await rosterReconciled(state.coordinator);
       expect(state.events).not.toContain("capture");
       expect(savedPayload.session.tabs).toBeUndefined();
       state.setReconcileHook(() => {});
@@ -1395,14 +1402,72 @@ test("Cloud roster reconciles a manually closed browser from its latest checkpoi
   state.events.length = 0;
   state.setReconcileHook(() => state.store.clearLaunch("profile1"));
 
-  const roster = await state.coordinator.listRoster();
+  await rosterReconciled(state.coordinator);
 
-  expect(state.events).toEqual(["reconcile", "cloud-close", "cloud-list"]);
-  expect(roster.profiles[0]?.running).toBe(false);
+  expect(state.events.filter((event) => event !== "cloud-list")).toEqual(["reconcile", "cloud-close"]);
+  expect(state.events).toContain("cloud-list");
+  expect((await state.coordinator.listRoster()).profiles[0]?.running).toBe(false);
   expect(state.queue.getOpen("profile1", "account1")).toBeNull();
   expect(state.queue.list("account1")).toEqual([]);
   expect(state.closeCalls()).toBe(1);
   expect(state.abandonCalls()).toBe(0);
+  state.queue.close();
+  state.store.close();
+});
+
+const notBlocked = <T>(work: Promise<T>) =>
+  Promise.race([work, Bun.sleep(1_000).then(() => "blocked" as const)]);
+
+test("Cloud roster returns while a closed browser's session upload is still pending", async () => {
+  const state = setup();
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const options = (state.coordinator as any).options;
+  const closeOpen = options.cloud.closeOpen;
+  let finishUpload: (() => void) | undefined;
+  options.cloud.closeOpen = async (...args: unknown[]) => {
+    await new Promise<void>((resolve) => { finishUpload = resolve; });
+    return closeOpen(...args);
+  };
+  state.setReconcileHook(() => state.store.clearLaunch("profile1"));
+
+  const first = state.coordinator.listRoster();
+  while (!finishUpload) await Bun.sleep(1);
+  expect(await notBlocked(first)).not.toBe("blocked");
+  const during = await notBlocked(state.coordinator.listRoster());
+  expect(during).not.toBe("blocked");
+  expect(during !== "blocked" && during.profiles[0]).toMatchObject({ running: false, lockedBy: null });
+  // The finalized session stays queued until Cloud accepts it.
+  expect(state.queue.list("account1")).toMatchObject([{ profileId: "profile1", readyToSubmit: true }]);
+
+  finishUpload();
+  await (state.coordinator as any).rosterReconcile;
+  expect(state.closeCalls()).toBe(1);
+  expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  expect(state.queue.list("account1")).toEqual([]);
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud roster is not held by a slow close of an open browser", async () => {
+  const state = setup();
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const options = (state.coordinator as any).options;
+  const readSession = options.readSession;
+  let finishCapture: (() => void) | undefined;
+  options.readSession = async (...args: unknown[]) => {
+    await new Promise<void>((resolve) => { finishCapture = resolve; });
+    return readSession(...args);
+  };
+
+  const closing = state.coordinator.close("profile1");
+  while (!finishCapture) await Bun.sleep(1);
+  expect(await notBlocked(state.coordinator.listRoster())).not.toBe("blocked");
+
+  finishCapture();
+  expect(await closing).toEqual({ closed: true, sync: "complete" });
+  await (state.coordinator as any).rosterReconcile;
+  expect(state.closeCalls()).toBe(1);
+  expect(state.queue.list("account1")).toEqual([]);
   state.queue.close();
   state.store.close();
 });
@@ -1416,10 +1481,10 @@ test("Cloud roster polls cannot accelerate the heartbeat no-page confirmation", 
   expect(state.events).toEqual(["heartbeat", "capture"]);
   state.events.length = 0;
 
-  const firstRoster = await state.coordinator.listRoster();
-  const secondRoster = await state.coordinator.listRoster();
+  const firstRoster = await rosterReconciled(state.coordinator);
+  const secondRoster = await rosterReconciled(state.coordinator);
 
-  expect(state.events).toEqual(["reconcile", "cloud-list", "reconcile", "cloud-list"]);
+  expect([...state.events].sort()).toEqual(["cloud-list", "cloud-list", "reconcile", "reconcile"]);
   expect(firstRoster.profiles[0]?.running).toBe(true);
   expect(secondRoster.profiles[0]?.running).toBe(true);
   expect(state.queue.getOpen("profile1", "account1")).not.toBeNull();
@@ -1565,9 +1630,9 @@ test("Cloud roster reconciliation does not release a replacement registration", 
     });
   });
 
-  await state.coordinator.listRoster();
+  await rosterReconciled(state.coordinator);
 
-  expect(state.events).toEqual(["reconcile", "cloud-list"]);
+  expect([...state.events].sort()).toEqual(["cloud-list", "reconcile"]);
   expect(state.queue.getOpen("profile1", "account1")?.registrationId).toBe("replacement-registration");
   expect(state.abandonCalls()).toBe(0);
   state.queue.close();
@@ -1591,7 +1656,7 @@ test("Cloud stopped checkpoint finalization cannot delete a replacement registra
     throw new Error("offline");
   };
 
-  await state.coordinator.listRoster();
+  await rosterReconciled(state.coordinator);
 
   expect(state.queue.getOpen("profile1", "account1")?.registrationId).toBe("replacement-registration");
   state.queue.close();
@@ -2149,7 +2214,7 @@ test("Cloud target checkpoints preserve ordered duplicate tabs through manual br
   };
   state.setReconcileHook(() => state.store.clearLaunch("profile1"));
 
-  await state.coordinator.listRoster();
+  await rosterReconciled(state.coordinator);
 
   expect(submitted?.session.tabs).toEqual([
     "https://same.example/a",
@@ -2326,7 +2391,7 @@ test("Cloud uses immediate native-close tabs before or after Firefox exits", asy
       };
       if (exited) {
         state.setReconcileHook(() => state.store.clearLaunch("profile1"));
-        await state.coordinator.listRoster();
+        await rosterReconciled(state.coordinator);
       } else {
         await state.coordinator.heartbeatOnce("profile1");
         await state.coordinator.close("profile1");
@@ -3322,7 +3387,7 @@ test("Cloud authentication isolates an uncertain profile and later recovers conf
     expect(state.events).not.toContain("stop");
 
     state.setReconcileHook(() => state.store.clearLaunch("profile1"));
-    await state.coordinator.listRoster();
+    await rosterReconciled(state.coordinator);
 
     expect(state.queue.getOpen("profile1", "account1")).toBeNull();
     expect(state.queue.list("account1")).toEqual([]);

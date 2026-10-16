@@ -429,6 +429,20 @@ export async function fetchProfiles(): Promise<UiRoster> {
   };
 }
 
+/** Runs `run` one call at a time. `load` resolves after a run that started
+ *  after the call (callers waiting meanwhile share one follow-up run), so an
+ *  action still sees its own result; `poll` skips while a run is in flight. */
+export function serialLoader(run: () => Promise<void>): { load: () => Promise<void>; poll: () => void } {
+  let active: { running: Promise<void>; next: Promise<void> | null } | null = null;
+  const load = (): Promise<void> => {
+    if (active) return active.next ??= active.running.then(load, load);
+    const running = run().finally(() => { active = null; });
+    active = { running, next: null };
+    return running;
+  };
+  return { load, poll: () => { if (!active) void load().catch(() => {}); } };
+}
+
 export interface ProfileCookieInput {
   name: string;
   value: string;

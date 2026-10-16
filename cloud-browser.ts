@@ -396,6 +396,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   /** Last backfill attempt per profile, so a failing fetch is not retried every poll. */
   private readonly proxyCacheAttempts = new Map<string, number>();
   private proxyBackfillTask: Promise<void> | null = null;
+  private rosterReconcile: Promise<void> | null = null;
 
   constructor(private readonly options: CloudBrowserOptions) {
     this.heartbeatMs = Math.max(0, options.heartbeatMs ?? 60_000);
@@ -444,18 +445,29 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
   async listRoster(): Promise<{ profiles: CloudBrowserProfile[]; healthSources: [] }> {
     const { queue, accountId } = this.requireContext(false);
-    await this.reconcileClosedBrowsers(queue, accountId);
-    const response = await this.options.cloud.listProfiles();
-    this.backfillProxyCache(response.profiles);
+    // Finishing a closed browser uploads its session and waits behind any open
+    // or close of that profile; on a slow link that takes minutes. Run it beside
+    // the roster fetch so the list never waits for it. Local probes usually
+    // finish before the fetch returns, so running state stays current.
+    if (!this.rosterReconcile) {
+      this.rosterReconcile = this.reconcileClosedBrowsers(queue, accountId)
+        .catch((error) => this.log(`Cloud roster reconciliation failed (${safeErrorType(error)})`))
+        .finally(() => { this.rosterReconcile = null; });
+    }
     const localRegistrations = new Map<string, Set<string>>();
     const rememberRegistration = (profileId: string, registrationId: string) => {
       const registrations = localRegistrations.get(profileId) ?? new Set<string>();
       registrations.add(registrationId);
       localRegistrations.set(profileId, registrations);
     };
-    for (const open of queue.listOpens(accountId)) {
-      rememberRegistration(open.profileId, open.registrationId);
-    }
+    // A registration that finishes during the fetch can still be in the Cloud reply.
+    const rememberOpens = () => {
+      for (const open of queue.listOpens(accountId)) rememberRegistration(open.profileId, open.registrationId);
+    };
+    rememberOpens();
+    const response = await this.options.cloud.listProfiles();
+    this.backfillProxyCache(response.profiles);
+    rememberOpens();
     const summaries = queue.list(accountId);
     for (const summary of summaries) {
       try {

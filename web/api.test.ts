@@ -30,6 +30,7 @@ import {
   unpublishScript,
   restoreCloudSession,
   selectAppMode,
+  serialLoader,
   signInCloud,
   signOutCloud,
   updateProfile,
@@ -566,4 +567,31 @@ test("public script library calls use the desktop capability and exact contracts
     if (originalWindow === undefined) Reflect.deleteProperty(globalThis, "window");
     else Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
   }
+});
+
+test("roster loads run one at a time and polls never stack on a slow fetch", async () => {
+  const releases: Array<() => void> = [];
+  let runs = 0;
+  const { load, poll } = serialLoader(() => {
+    runs++;
+    return new Promise<void>((resolve) => releases.push(resolve));
+  });
+
+  const first = load();
+  poll();
+  poll();
+  const afterAction = load();
+  expect(load()).toBe(afterAction);
+  expect(runs).toBe(1);
+
+  releases.shift()!();
+  await first;
+  await Promise.resolve();
+  // A load asked for during a fetch waits for a fetch that starts after it.
+  expect(runs).toBe(2);
+  releases.shift()!();
+  await afterAction;
+  poll();
+  expect(runs).toBe(3);
+  releases.shift()!();
 });

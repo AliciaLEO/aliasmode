@@ -96,6 +96,19 @@ export interface CloudClientOptions {
   requestTimeoutMs?: number;
 }
 
+async function readResponseText(response: Response, progress: () => void): Promise<string> {
+  if (!response.body) return response.text();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    progress();
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
 interface CallResponseOptions<T> {
   anonymous?: boolean;
   notModified?: () => T;
@@ -137,18 +150,24 @@ export class CloudClient {
     if (upstreamSignal?.aborted) abortFromUpstream();
     else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
 
+    // The limit covers silence, not total transfer time: a large roster on a
+    // slow link keeps arriving and must not fail only because it needs longer.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
+    let rejectTimeout!: (error: CloudRequestError) => void;
+    const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
+    const restartTimeout = () => {
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         const error = new CloudRequestError(
           `AliasMode Cloud request ${path} timed out after ${this.requestTimeoutMs}ms`,
           { kind: "timeout", retryable: true },
         );
         controller.abort(error);
-        reject(error);
+        rejectTimeout(error);
       }, this.requestTimeoutMs);
       if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
-    });
+    };
+    restartTimeout();
 
     try {
       const request = Promise.resolve().then(async () => {
@@ -166,6 +185,7 @@ export class CloudClient {
             { cause: error },
           );
         }
+        restartTimeout();
         if (response.status === 304) {
           if (!responseOptions.notModified) {
             throw new Error(`AliasMode Cloud ${path} returned an unexpected not-modified response`);
@@ -174,7 +194,7 @@ export class CloudClient {
         }
         let text: string;
         try {
-          text = await response.text();
+          text = await readResponseText(response, restartTimeout);
         } catch (error) {
           throw new CloudRequestError(
             `AliasMode Cloud response ${path} could not be read`,

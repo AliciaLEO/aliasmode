@@ -100,6 +100,61 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
   );
 }
 
+/** Firefox's mozLz4 file: "mozLz40\0", the decoded size, then one LZ4 block. */
+export function decodeMozLz4(file: Buffer): Buffer {
+  if (file.length < 12 || file.toString("latin1", 0, 8) !== "mozLz40\0") throw new Error("not a mozLz4 file");
+  const out = Buffer.alloc(file.readUInt32LE(8));
+  let input = 12;
+  let output = 0;
+  const length = (value: number) => {
+    if (value < 15) return value;
+    let byte: number;
+    do { byte = file[input++]!; value += byte; } while (byte === 255);
+    return value;
+  };
+  while (input < file.length) {
+    const token = file[input++]!;
+    const literals = length(token >> 4);
+    if (input + literals > file.length || output + literals > out.length) throw new Error("corrupt mozLz4 block");
+    file.copy(out, output, input, input + literals);
+    input += literals;
+    output += literals;
+    if (input >= file.length) break;
+    const offset = file.readUInt16LE(input);
+    input += 2;
+    const match = length(token & 15) + 4;
+    if (offset === 0 || offset > output || output + match > out.length) throw new Error("corrupt mozLz4 block");
+    for (const end = output + match; output < end; output++) out[output] = out[output - offset]!;
+  }
+  return out.subarray(0, output);
+}
+
+const FIREFOX_SESSION_FILES = [
+  "sessionstore.jsonlz4",
+  "sessionstore-backups/recovery.jsonlz4",
+  "sessionstore-backups/recovery.baklz4",
+  "sessionstore-backups/previous.jsonlz4",
+];
+
+/**
+ * Whether Firefox's native restore would reopen a web page, read from the first session file in
+ * Firefox's own order; null when none is readable. A window that ended because its last tab closed
+ * (a script closing every page does this) comes back only as an empty new-tab page. The Playwright
+ * launch never sees that page, so every later open waited for the owner until it timed out.
+ */
+function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
+  for (const file of FIREFOX_SESSION_FILES) {
+    let session: any;
+    try { session = JSON.parse(decodeMozLz4(readFileSync(join(userDataDir, file))).toString("utf8")); } catch { continue; }
+    const windows: any[] = Array.isArray(session?.windows) ? session.windows : [];
+    return windows.some((window) => !window?._maybeDontRestoreTabs && Array.isArray(window.tabs) && window.tabs.some((tab: any) => {
+      const entries: any[] = Array.isArray(tab?.entries) ? tab.entries : [];
+      return !!canonicalUserPageUrl(entries[(Number(tab.index) || entries.length) - 1]?.url);
+    }));
+  }
+  return null;
+}
+
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
   return (platform === "darwin" && arch === "arm64")
     || (platform === "linux" && arch === "x64")
@@ -2042,7 +2097,7 @@ export class Launcher {
     const restoreLastSession = !pendingSession && opts.restoreLastSession !== false &&
       !(this.hostPlatform === "darwin" && closedTabs !== undefined) && [
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
-    ].some((file) => existsSync(join(userDataDir, file)));
+    ].some((file) => existsSync(join(userDataDir, file))) && firefoxSessionRestoresPage(userDataDir) !== false;
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
     let reserved = false;
     try {

@@ -42,6 +42,7 @@ const concurrentFirefoxId = "firefoxconcurrent";
 const concurrentFirefoxPeerId = "firefoxconcurrentpeer";
 let concurrentChromiumId: string | undefined;
 const nativeCloseId = "firefoxnativeclose";
+const lastTabCloseId = "firefoxlasttabclose";
 
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
@@ -542,6 +543,29 @@ async def run(*, context, inputs, log, **_kwargs):
     foreignOwner = undefined;
   }
 
+  if (process.platform === "win32") {
+    // A script that closes every page ends Windows Firefox through its last tab. Firefox would
+    // restore that window as an empty new-tab page, and each later open timed out.
+    console.log("firefox-launcher-acceptance:last-tab-close-reopen");
+    localStore.upsertProfile(profile(lastTabCloseId, createFirefoxProfileConfig(1440, 900)));
+    await localLauncher.start(lastTabCloseId, [], { autoNavigate: false, headless: false });
+    const closer = join(root, "close-every-page.mjs");
+    await writeFile(closer, `
+import { writeFile } from "node:fs/promises";
+export default async ({ context, page, inputs }) => {
+  await page.goto(inputs.url, { waitUntil: "domcontentloaded" });
+  await writeFile(inputs.resultPath, JSON.stringify({ url: page.url() }));
+  for (const item of context.pages()) await item.close();
+};
+`);
+    await ownerScript(localLauncher, lastTabCloseId, closer, { url: `http://127.0.0.1:${fixturePort}/first` });
+    await waitForNativeFirefoxClose(lastTabCloseId);
+    assert.equal(await localLauncher.stop(lastTabCloseId), true, "Launcher confirms cleanup after the last tab closed Firefox");
+    await localLauncher.start(lastTabCloseId, [], { autoNavigate: false, headless: false });
+    assert.equal(await localLauncher.certifiedActive(lastTabCloseId), true, "Firefox reopens after a script closed its last tab");
+    assert.equal(await localLauncher.stop(lastTabCloseId), true, "Launcher stops the reopened Firefox");
+  }
+
   if (process.platform === "darwin") {
     localStore.upsertProfile(profile(nativeCloseId, createFirefoxProfileConfig(1440, 900)));
     const nativeOrigin = `http://127.0.0.1:${fixturePort}`;
@@ -656,6 +680,7 @@ export default async ({ context, inputs }) => {
       ? stopForCleanup(concurrentLauncher, localStore, concurrentChromiumId)
       : Promise.resolve(true),
     stopForCleanup(localLauncher, localStore, nativeCloseId),
+    stopForCleanup(localLauncher, localStore, lastTabCloseId),
     stopForCleanup(localLauncher, localStore, "firefoxlaunchproof"),
   ]);
   if (foreignOwner) {

@@ -4,7 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { firefoxLaunchConfig } from "./firefox-config.ts";
-import { Launcher, BrowserLaunchError, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
+import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
 
@@ -367,6 +367,64 @@ test("Firefox enables native tab restore with session cookies in the owned profi
   expect(f.startupPreferences()).toBe(
     'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n',
   );
+  expect(opened.nativeSessionRestored).toBe(true);
+  expect(f.navigated).toEqual([]);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+/** A literal-only mozLz4 file, as Firefox reads it. */
+function mozLz4(value: unknown): Buffer {
+  const data = Buffer.from(JSON.stringify(value));
+  const header = Buffer.alloc(12);
+  header.write("mozLz40\0", 0, "latin1");
+  header.writeUInt32LE(data.length, 8);
+  const extra: number[] = [];
+  if (data.length >= 15) {
+    let rest = data.length - 15;
+    for (; rest >= 255; rest -= 255) extra.push(255);
+    extra.push(rest);
+  }
+  return Buffer.concat([header, Buffer.from([Math.min(data.length, 15) << 4, ...extra]), data]);
+}
+
+test("mozLz4 decoding follows LZ4 back-references", () => {
+  const header = Buffer.alloc(12);
+  header.write("mozLz40\0", 0, "latin1");
+  header.writeUInt32LE(12, 8);
+  expect(decodeMozLz4(Buffer.concat([header, Buffer.from([0x35, 0x61, 0x62, 0x63, 3, 0])])).toString()).toBe("abcabcabcabc");
+  expect(JSON.parse(decodeMozLz4(mozLz4({ windows: [] })).toString())).toEqual({ windows: [] });
+});
+
+test("Firefox reopens without native restore when the saved session would show no web page", async () => {
+  // A script that closed every page ended Firefox through its last tab. Firefox would reopen that
+  // window as an empty new-tab page, the owner never became ready, and every open failed.
+  const lastTabClosed = { windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "about:blank" }, { url: "https://example.com/" }], index: 2 }] }] };
+  const newTabOnly = { windows: [{ tabs: [{ entries: [{ url: "chrome://browser/content/blanktab.html" }], index: 1 }] }] };
+  for (const [file, session] of [
+    ["sessionstore.jsonlz4", lastTabClosed],
+    ["sessionstore-backups/recovery.jsonlz4", newTabOnly],
+  ] as const) {
+    const f = fixture();
+    const root = f.launcher.userDataDir(f.profile.id);
+    mkdirSync(join(root, "sessionstore-backups"), { recursive: true });
+    writeFileSync(join(root, file), mozLz4(session));
+    writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: "previous", tabs: ["https://www.wikipedia.org/"] }));
+    await f.launcher.start(f.profile.id);
+    expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
+    expect(f.navigated).toEqual([["https://www.wikipedia.org/"]]);
+    expect(await f.launcher.stop(f.profile.id)).toBe(true);
+  }
+});
+
+test("Firefox natively restores a saved session with a web page", async () => {
+  const f = fixture();
+  const root = f.launcher.userDataDir(f.profile.id);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4({
+    windows: [{ tabs: [{ entries: [{ url: "about:blank" }, { url: "https://example.com/" }], index: 2 }] }],
+  }));
+  const opened = await f.launcher.start(f.profile.id);
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n');
   expect(opened.nativeSessionRestored).toBe(true);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);

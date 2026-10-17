@@ -11,29 +11,44 @@ import type { Profile } from "./types.ts";
 const browserPath = process.env.ALIASMODE_AUTOFILL_BROWSER;
 const browserTest = browserPath ? test : test.skip;
 
-async function clickAutofill(page: Page, field: string, trusted = true) {
-  await page.locator("aliasmode-autofill").waitFor();
-  const cdp = await page.context().newCDPSession(page);
-  try {
-    const { root } = await cdp.send("DOM.getDocument", { depth: -1, pierce: true });
-    const find = (node: any): any => {
-      const attrs: string[] = node.attributes ?? [];
-      if (node.nodeName === "BUTTON" && attrs.some((key, index) => key === "data-field" && attrs[index + 1] === field)) return node;
-      for (const child of [...(node.children ?? []), ...(node.shadowRoots ?? [])]) {
-        const result = find(child);
-        if (result) return result;
+// Records what page scripts could see: every DOM change outside the app and every input event.
+const PAGE_PROBE = `(() => {
+  window.__autofillProbe = { foreign: [], events: [] };
+  addEventListener("DOMContentLoaded", () => new MutationObserver((records) => {
+    for (const record of records) {
+      if (!record.target.closest?.("#app") && !record.target.parentElement?.closest("#app")) {
+        window.__autofillProbe.foreign.push(record.type + ":" + record.target.nodeName + ":" + [...record.addedNodes].map((node) => node.nodeName));
       }
-    };
-    const button = find(root);
-    expect(!!button).toBe(true);
-    if (trusted) {
-      const { model } = await cdp.send("DOM.getBoxModel", { nodeId: button.nodeId });
-      await page.mouse.click((model.content[0]! + model.content[4]!) / 2, (model.content[1]! + model.content[5]!) / 2);
-    } else {
-      const { object } = await cdp.send("DOM.resolveNode", { nodeId: button.nodeId });
-      await cdp.send("Runtime.callFunctionOn", { objectId: object.objectId, functionDeclaration: "function() { this.click(); }" });
     }
-  } finally { await cdp.detach(); }
+  }).observe(document, { childList: true, subtree: true, attributes: true }));
+  for (const type of ["keydown", "keyup", "beforeinput", "input"]) {
+    addEventListener(type, (event) => window.__autofillProbe.events.push({ type, trusted: event.isTrusted, key: event.key }), true);
+  }
+})()`;
+
+/** Same call the browser makes when the user picks an item in the field's context menu. */
+async function fillFromMenu(page: Page, field: string, frameUrl?: string) {
+  const context = page.context();
+  const worker = context.serviceWorkers().find((item) => item.url().endsWith("/background.js"))
+    ?? await context.waitForEvent("serviceworker", { predicate: (item) => item.url().endsWith("/background.js") });
+  const cdp = await context.newCDPSession(page);
+  const { targetInfo } = await cdp.send("Target.getTargetInfo");
+  await cdp.detach();
+  return await worker.evaluate(async ({ targetId, field, frameUrl }) => {
+    const scope = globalThis as any;
+    const tab = (await scope.chrome.debugger.getTargets()).find((item: any) => item.id === targetId);
+    return await scope.fill({ menuItemId: field, pageUrl: tab.url, frameUrl }, { id: tab.tabId });
+  }, { targetId: targetInfo.targetId, field, frameUrl });
+}
+
+/** Keys arrive as trusted presses and nothing appears in the page DOM. */
+async function expectOnlyTyping(page: Page, typed: string) {
+  const probe = await page.evaluate(() => (window as any).__autofillProbe);
+  expect(probe.foreign).toEqual([]);
+  expect(probe.events.every((event: { trusted: boolean }) => event.trusted)).toBe(true);
+  const presses = (type: string) => probe.events.filter((event: any) => event.type === type && event.key !== "Shift").length;
+  expect(presses("keydown")).toBeGreaterThanOrEqual(typed.length);
+  expect(presses("keyup")).toBe(presses("keydown"));
 }
 
 browserTest("profile extension fills multi-step React forms, new tabs and surviving browsers", async () => {
@@ -135,6 +150,7 @@ browserTest("profile extension fills multi-step React forms, new tabs and surviv
       const browser = await chromium.connectOverCDP(result.data.ws.puppeteer);
       browsers.push(browser);
       const context = browser.contexts()[0]!;
+      await context.addInitScript(PAGE_PROBE);
       await context.route("https://**/*", (route) => route.fulfill({
         contentType: new URL(route.request().url()).pathname === "/fixture.js" ? "text/javascript" : "text/html",
         body: new URL(route.request().url()).pathname === "/fixture.js" ? script : html,
@@ -146,54 +162,45 @@ browserTest("profile extension fills multi-step React forms, new tabs and surviv
     const page = await open(profile.id);
     const input = page.locator("#credential");
     await input.click();
-    await page.locator("aliasmode-autofill").waitFor();
-    expect(await input.inputValue()).toBe("");
-    const fieldBox = (await input.boundingBox())!;
-    const menuBox = (await page.locator("aliasmode-autofill").boundingBox())!;
-    expect(Math.abs(menuBox.x - fieldBox.x)).toBeLessThan(2);
-    expect(menuBox.y).toBeGreaterThan(fieldBox.y + fieldBox.height);
-    expect(menuBox.y).toBeLessThan(fieldBox.y + fieldBox.height + 8);
-    if (process.env.ALIASMODE_AUTOFILL_SCREENSHOT) await page.screenshot({ path: process.env.ALIASMODE_AUTOFILL_SCREENSHOT });
-    await page.keyboard.press("Escape");
-    expect(await page.locator("aliasmode-autofill").count()).toBe(0);
-    await input.click();
-    await clickAutofill(page, "username", false);
-    expect(await input.inputValue()).toBe("");
-    await clickAutofill(page, "username");
+    expect(await fillFromMenu(page, "username")).toEqual({ ok: true });
     await page.waitForFunction(() => document.querySelector("#value")?.textContent === "test-one");
     expect(await input.inputValue()).toBe(profile.username);
     expect(await page.locator("#submits").textContent()).toBe("0");
     await page.locator("#next").click();
     await input.click();
-    await clickAutofill(page, "email");
+    await fillFromMenu(page, "email");
     await page.waitForFunction(() => document.querySelector("#value")?.textContent === "test@example.com");
     await page.locator("#next").click();
     await input.click();
-    await clickAutofill(page, "password");
+    await fillFromMenu(page, "password");
     await page.waitForFunction(() => document.querySelector("#value")?.textContent === "synthetic-password");
     await page.locator("#next").click();
     await input.click();
     const beforeCode = generateTotp(profile.twofa)!.code;
-    await clickAutofill(page, "totp");
-    await page.waitForFunction(() => !!document.querySelector("#value")?.textContent);
+    await fillFromMenu(page, "totp");
+    await page.waitForFunction(() => document.querySelector("#value")?.textContent?.length === 6);
     expect([beforeCode, generateTotp(profile.twofa)!.code]).toContain(await input.inputValue());
     expect(await page.locator("#submits").textContent()).toBe("0");
+    await expectOnlyTyping(page, "test-one" + "test@example.com" + "synthetic-password" + beforeCode);
 
     const second = await open("autofill-two");
     await second.locator("#credential").click();
-    await clickAutofill(second, "username");
+    await fillFromMenu(second, "username");
     await second.waitForFunction(() => document.querySelector("#value")?.textContent === "test-two");
     const tab = await page.context().newPage();
     await tab.goto("https://twitter.com/login");
     await tab.locator("#credential").click();
-    await clickAutofill(tab, "username");
+    await fillFromMenu(tab, "username");
     await tab.waitForFunction(() => document.querySelector("#value")?.textContent === "test-one");
+    await expectOnlyTyping(tab, "test-one");
     const edited = await api(`/ui/api/profiles/${profile.id}/update`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ set: { username: "updated-user" } }),
     });
     expect(edited.ok).toBe(true);
+    // Filling types at the caret like a person, so clear the field first.
+    await tab.locator("#credential").fill("");
     await tab.locator("#credential").click();
-    await clickAutofill(tab, "username");
+    await fillFromMenu(tab, "username");
     await tab.waitForFunction(() => document.querySelector("#value")?.textContent === "updated-user");
 
     await tab.locator("#credential").fill("");
@@ -201,7 +208,7 @@ browserTest("profile extension fills multi-step React forms, new tabs and surviv
     await child!.exited;
     await startApp();
     await tab.locator("#credential").click();
-    await clickAutofill(tab, "username");
+    await fillFromMenu(tab, "username");
     await tab.waitForFunction(() => document.querySelector("#value")?.textContent === "updated-user");
     expect(await tab.locator("#credential").inputValue()).toBe("updated-user");
     await tab.bringToFront();
@@ -214,29 +221,19 @@ browserTest("profile extension fills multi-step React forms, new tabs and surviv
       document.body.append(frame);
     });
     const frame = tab.frameLocator("#login-frame");
-    await frame.locator("#credential").focus();
-    expect(await frame.locator("#credential").evaluate((element) => document.activeElement === element)).toBe(true);
-    await Bun.sleep(300);
-    expect(await frame.locator("aliasmode-autofill").count()).toBe(0);
+    await frame.locator("#credential").click();
+    expect((await fillFromMenu(tab, "username", "https://unrelated.test/login")).ok).toBe(false);
     expect(await frame.locator("#credential").inputValue()).toBe("");
     const frameNavigation = tab.waitForEvent("framenavigated", { predicate: (value) => value.url() === "https://x.com/login" });
     await tab.locator("#login-frame").evaluate((element) => { (element as HTMLIFrameElement).src = "https://x.com/login"; });
     const matchingFrame = await frameNavigation;
     await matchingFrame.waitForLoadState("load");
-    await frame.locator("#credential").focus();
-    expect(await frame.locator("#credential").evaluate((element) => document.activeElement === element)).toBe(true);
-    await frame.locator("aliasmode-autofill").waitFor({ timeout: 5_000 }).catch(async (error) => {
-      console.info("Autofill frame state", await frame.locator("#credential").evaluate((element) => ({
-        url: location.href, focused: document.activeElement === element, hasFocus: document.hasFocus(),
-        panels: document.querySelectorAll("aliasmode-autofill").length, ready: document.readyState,
-      })));
-      throw error;
-    });
-    expect(await frame.locator("#credential").inputValue()).toBe("");
+    await frame.locator("#credential").click();
+    expect(await fillFromMenu(tab, "username", "https://x.com/login")).toEqual({ ok: true });
+    expect(await frame.locator("#credential").inputValue()).toBe("updated-user");
     await tab.goto("https://x.com.evil.test/login");
     await tab.locator("#credential").click();
-    await Bun.sleep(300);
-    expect(await tab.locator("aliasmode-autofill").count()).toBe(0);
+    expect((await fillFromMenu(tab, "username")).ok).toBe(false);
     expect(await tab.locator("#credential").inputValue()).toBe("");
   } finally {
     for (const browser of browsers) {

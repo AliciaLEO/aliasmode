@@ -73,32 +73,32 @@ const MAC = typeof navigator !== "undefined" && /Macintosh/.test(navigator.userA
 const REOPEN = MAC ? "open it from the Applications folder" : "launch it from Windows Start";
 const REINSTALL = MAC ? "run the install command again" : "run the full offline installer without uninstalling";
 
-export function describeDesktopUpdateResult(result: DesktopUpdateResult): DesktopUpdateResultSummary {
+export function describeDesktopUpdateResult(result: DesktopUpdateResult, t: (key: string, values?: Record<string, string>) => string): DesktopUpdateResultSummary {
   if (result.state === "succeeded") {
     return {
       tone: "success",
-      title: `AliasMode ${result.version} installed successfully.`,
-      detail: `Updated from ${result.fromVersion} and verified the installed app after restart.`,
+      title: t("AliasMode {version} installed successfully.", { version: result.version }),
+      detail: t("Updated from {fromVersion} and verified the installed app after restart.", { fromVersion: result.fromVersion }),
     };
   }
   if (result.state === "installedRelaunchUnconfirmed") {
     return {
       tone: "warning",
-      title: `AliasMode ${result.version} is installed.`,
-      detail: `The automatic restart was not confirmed. Close AliasMode, then ${REOPEN}.`,
+      title: t("AliasMode {version} is installed.", { version: result.version }),
+      detail: t("The automatic restart was not confirmed. Close AliasMode, then {reopen}.", { reopen: REOPEN }),
     };
   }
 
   const detail = result.reason === "browserCleanup"
-    ? `AliasMode ${result.fromVersion} remains installed because browser services could not close safely.`
+    ? t("AliasMode {fromVersion} remains installed because browser services could not close safely.", { fromVersion: result.fromVersion })
     : result.reason === "installerLaunch"
-      ? `AliasMode ${result.expectedVersion} could not start. AliasMode ${result.fromVersion} remains installed.`
+      ? t("AliasMode {expectedVersion} could not start. AliasMode {fromVersion} remains installed.", { expectedVersion: result.expectedVersion, fromVersion: result.fromVersion })
       : result.reason === "startupMismatch"
-        ? `AliasMode could not verify ${result.expectedVersion} at the expected install location. Close AliasMode, then ${REOPEN}.`
-        : `AliasMode could not confirm ${result.expectedVersion}. If the installed version did not change, ${REINSTALL}.`;
+        ? t("AliasMode could not verify {expectedVersion} at the expected install location. Close AliasMode, then {reopen}.", { expectedVersion: result.expectedVersion, reopen: REOPEN })
+        : t("AliasMode could not confirm {expectedVersion}. If the installed version did not change, {reinstall}.", { expectedVersion: result.expectedVersion, reinstall: REINSTALL });
   return {
     tone: "error",
-    title: "The last update did not finish.",
+    title: t("The last update did not finish."),
     detail,
   };
 }

@@ -922,16 +922,17 @@ function UpdateHighlights({ version, highlights }: { version: string; highlights
 }
 
 function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgress }) {
+  const { t } = useTranslation();
   const percent = progress.phase === "downloading" ? progress.percent : null;
   const label = progress.phase === "preparing"
-    ? "Preparing update…"
+    ? t("Preparing update…")
     : progress.phase === "downloading"
-      ? percent === null ? "Downloading update…" : `Downloading update… ${percent}%`
+      ? percent === null ? t("Downloading update…") : t("Downloading update… {percent}%", { percent: String(percent) })
       : progress.phase === "verifying"
-        ? "Verifying update…"
+        ? t("Verifying update…")
         : progress.phase === "closingBrowsers"
-          ? "Saving and closing browsers…"
-          : "Installing and restarting…";
+          ? t("Saving and closing browsers…")
+          : t("Installing and restarting…");
   return (
     <div className="update-progress" role="status">
       <span>{label}</span>
@@ -2975,7 +2976,7 @@ function App() {
   };
 
   const desktopUpdateResultSummary = desktopUpdateResult
-    ? describeDesktopUpdateResult(desktopUpdateResult)
+    ? describeDesktopUpdateResult(desktopUpdateResult, t)
     : null;
 
   if (!appMode || !workspaceReady || restartRequired) {
@@ -3484,13 +3485,13 @@ function App() {
         <div className="update-banner">
           <Icon name="import" />
           <div className="update-copy">
-            <span role="status"><strong>AliasMode {desktopUpdate.version} is available.</strong> The update will save active browsers and restart the app.</span>
+            <span role="status"><strong>{t("AliasMode {version} is available.", { version: desktopUpdate.version })}</strong> {t("The update will save active browsers and restart the app.")}</span>
             <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
             {desktopUpdateErr && <span className="modal-err" role="alert">{desktopUpdateErr}</span>}
           </div>
           <button className="btn primary" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void installDesktopUpdate()}>
-            {desktopUpdateInstalling ? "Updating…" : "Update now"}
+            {desktopUpdateInstalling ? t("Updating…") : t("Update now")}
           </button>
         </div>
       )}

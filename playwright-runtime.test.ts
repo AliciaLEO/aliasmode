@@ -583,6 +583,72 @@ test("native restore applies an explicit empty localStorage capture", async () =
   expect(localStorage.stale).toBeUndefined();
 });
 
+// Chromium shows the search engine's new tab page as chrome://newtab/, but Playwright reports the
+// address that the page loads from. The CDP target has the address that the tab shows.
+const SEARCH_NEW_TAB_URL = "https://duckduckgo.com/chrome_newtab";
+const cdpShowingNewTab = async (page: { url: () => string }) => ({
+  async send(method: string) {
+    return method === "Target.getTargetInfo"
+      ? { targetInfo: { url: page.url() === SEARCH_NEW_TAB_URL ? "chrome://newtab/" : page.url() } }
+      : {};
+  },
+  async detach() {},
+});
+
+test("a Cloud open keeps the search engine's new tab page and does not leave a blank page", async () => {
+  let handler: ((route: { fulfill: () => Promise<void> }) => Promise<void>) | undefined;
+  const events: string[] = [];
+  const makePage = (name: string, url: string) => {
+    const page = {
+      url: () => url,
+      async goto(target: string) {
+        url = target;
+        events.push(`goto ${name} ${target}`);
+        await handler?.({ fulfill: async () => {} });
+      },
+      async evaluate() {},
+      async close() { events.push(`close ${name}`); },
+    };
+    return page;
+  };
+  const pages = [makePage("new-tab", SEARCH_NEW_TAB_URL), makePage("stale", "https://stale.example/")];
+  const context = {
+    pages: () => pages,
+    async newPage() { events.push("new page"); return makePage("restore", "about:blank"); },
+    async route(_url: string, value: typeof handler) { handler = value; },
+    async unroute() { handler = undefined; },
+    async clearCookies() {},
+    async addCookies() {},
+    newCDPSession: cdpShowingNewTab,
+  };
+  // An empty Cloud session for a new profile, and a saved session with DuckDuckGo storage.
+  for (const origins of [[], [{ origin: "https://duckduckgo.com", localStorage: [{ name: "theme", value: "dark" }] }]]) {
+    events.length = 0;
+    await restoreSession({}, context, { bundle: JSON.stringify({ cookies: [], origins }), urls: [], replacePages: true });
+    expect(events.filter((event) => event.includes("new-tab"))).toEqual([]);
+    // The only new page is the one that restores the storage; no blank page replaces the new tab page.
+    expect(events.filter((event) => event === "new page")).toHaveLength(origins.length);
+    expect(events).toContain("close stale");
+  }
+});
+
+test("a Chromium capture keeps site tabs and leaves out the search engine's new tab page", async () => {
+  const page = (url: string) => ({
+    url: () => url,
+    async evaluate() { return { origin: new URL(url).origin, localStorage: [] }; },
+  });
+  const context = {
+    pages: () => [page(SEARCH_NEW_TAB_URL), page("https://site.example/")],
+    async cookies() { return []; },
+    newCDPSession: cdpShowingNewTab,
+  };
+  expect(JSON.parse(await captureSession({ contexts: () => [context] }, {}))).toEqual({
+    cookies: [],
+    origins: [{ origin: "https://site.example", localStorage: [] }],
+    tabs: ["https://site.example/"],
+  });
+});
+
 bunAsNodeTest("worker imports all sites without replacing existing cookies and restores complete Cloud jars", async () => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-worker-cookie-import-"));
   const existing = { name: "session", value: "rotated", domain: "example.org", path: "/", secure: true };

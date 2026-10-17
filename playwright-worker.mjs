@@ -662,10 +662,11 @@ function registerNativeOrigins(context, origins) {
 export async function captureSession(browser, payload, options = {}) {
   const context = contextOf(browser);
   const pages = context.pages();
+  const shown = await shownPageUrls(context, pages, !!options.nativeStorage);
   // No window is not an intentional empty tab list (a live blank page is).
   const tabs = options.nativeStorage && pages.length === 0
     ? undefined
-    : pages.map((page) => canonicalUserPageUrl(page.url())).filter(Boolean);
+    : pages.map((page) => canonicalUserPageUrl(shown.get(page))).filter(Boolean);
   const seed = payload.captureSeed;
   if (seed !== undefined && (!seed || typeof seed !== "object" || Array.isArray(seed)
     || !Array.isArray(seed.origins)
@@ -676,9 +677,9 @@ export async function captureSession(browser, payload, options = {}) {
 
   const origins = new Set(seed?.origins ?? []);
   let telegramClient = seed?.telegramClient;
-  for (const page of context.pages()) {
+  for (const page of pages) {
     try {
-      const pageUrl = canonicalUserPageUrl(page.url());
+      const pageUrl = canonicalUserPageUrl(shown.get(page));
       if (!pageUrl) continue;
       const url = new URL(pageUrl);
       const origin = canonicalWebOrigin(url.origin);
@@ -762,6 +763,29 @@ function isInternalNewTabUrl(url) {
   return INTERNAL_NEW_TAB_URLS.has(url) || url === "about:newtab" || url === "about:home";
 }
 
+// Chromium shows the search engine's own new tab page (https://duckduckgo.com/chrome_newtab) as
+// chrome://newtab/, but Playwright reports the web address, so that page counted as a site tab.
+// The CDP target keeps the address that the tab shows. Firefox has no CDP.
+async function shownPageUrl(context, page, isFirefox) {
+  let url = "";
+  let cdp;
+  try {
+    url = page.url();
+    if (isFirefox || !/^https:/.test(url)) return url;
+    cdp = await context.newCDPSession(page);
+    const shown = (await cdp.send("Target.getTargetInfo"))?.targetInfo?.url;
+    return isInternalNewTabUrl(shown) ? shown : url;
+  } catch {
+    return url;
+  } finally {
+    await cdp?.detach().catch(() => {});
+  }
+}
+
+async function shownPageUrls(context, pages, isFirefox) {
+  return new Map(await Promise.all(pages.map(async (page) => [page, await shownPageUrl(context, page, isFirefox)])));
+}
+
 // In Firefox a new page from Playwright is a new window. A page can open a tab in its own window,
 // and "noopener" leaves that tab with no link to the page.
 async function openTabBeside(context, page) {
@@ -777,24 +801,20 @@ async function openTabBeside(context, page) {
 async function navigatePages(context, urls, replacePages = false, tabsInOneWindow = false) {
   const targets = (Array.isArray(urls) ? urls : []).map(canonicalUserPageUrl).filter(Boolean);
   const existing = [...context.pages()];
-  const existingUserPage = existing.some((page) => {
-    try { return canonicalUserPageUrl(page.url()) !== undefined; } catch { return false; }
-  });
-  let blank = existing.find((page) => {
-    try { return page.url() === "about:blank"; } catch { return false; }
-  }) || existing.find((page) => {
-    try { return isInternalNewTabUrl(page.url()); } catch { return false; }
-  }) || existing.find((page) => {
-    try { return page.url() === UNGOOGLED_FIRST_RUN_URL; } catch { return false; }
-  });
+  // Only Firefox opens the tabs in one window.
+  const shown = await shownPageUrls(context, existing, tabsInOneWindow);
+  const urlOf = (page) => shown.get(page) ?? "";
+  const existingUserPage = existing.some((page) => canonicalUserPageUrl(urlOf(page)) !== undefined);
+  let blank = existing.find((page) => urlOf(page) === "about:blank")
+    || existing.find((page) => isInternalNewTabUrl(urlOf(page)))
+    || existing.find((page) => urlOf(page) === UNGOOGLED_FIRST_RUN_URL);
   if (!replacePages && existingUserPage) blank = undefined;
   let firstError;
 
   if (replacePages) {
     if (!blank) blank = await context.newPage();
     for (const page of existing) {
-      let url = "";
-      try { url = page.url(); } catch {}
+      const url = urlOf(page);
       const disposable = canonicalUserPageUrl(url) !== undefined
         || (url === UNGOOGLED_FIRST_RUN_URL && page !== blank)
         || (isInternalNewTabUrl(url) && page !== blank)
@@ -804,9 +824,7 @@ async function navigatePages(context, urls, replacePages = false, tabsInOneWindo
     }
   } else {
     for (const page of existing) {
-      let url = "";
-      try { url = page.url(); } catch {}
-      if (url !== UNGOOGLED_FIRST_RUN_URL) continue;
+      if (urlOf(page) !== UNGOOGLED_FIRST_RUN_URL) continue;
       if (page === blank && !existingUserPage) {
         if (targets.length > 0) continue;
         try {
@@ -863,7 +881,11 @@ export async function restoreSession(browser, context, payload, options = {}) {
       const existing = context.pages();
       for (const page of existing) {
         if (page === shared) continue;
-        try { if (new URL(page.url()).origin === target.origin) await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }); } catch {}
+        try {
+          if (new URL(page.url()).origin !== target.origin) continue;
+          if (isInternalNewTabUrl(await shownPageUrl(context, page, !!options.nativeStorage))) continue;
+          await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 });
+        } catch {}
       }
       if (options.nativeStorage && !shared) {
         const empty = context.pages().find((candidate) => {

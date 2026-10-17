@@ -50,9 +50,12 @@ import { isDeepStrictEqual } from "node:util";
 import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig } from "./firefox-config.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
+  ALIASMODE_CHROMIUM_HOST_SCALE,
+  ALIASMODE_CHROMIUM_WINDOW_LABEL,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   ensureAliasmodeChromium,
   ensureCloakBrowserMacos,
+  hostDisplayScale,
   supportsChromium155Host,
 } from "./aliasmode-chromium.ts";
 
@@ -428,6 +431,8 @@ export interface LauncherOptions {
   /** Injectable host tuple for compatibility-policy tests. */
   hostPlatform?: NodeJS.Platform;
   hostArch?: string;
+  /** Scale of the host's primary display, such as 1.25 at 125%. Defaults to hostDisplayScale(). */
+  hostScale?: number;
   /** Label the window with the profile name + serial so operators can identify it. */
   labelWindow?: WindowLabeler;
   /** Keep a Chromium 155 window no larger than the profile's screen. Injectable for tests. */
@@ -732,6 +737,7 @@ export class Launcher {
   private enforceHostCompatibility: boolean;
   private hostPlatform: NodeJS.Platform;
   private hostArch: string;
+  private hostScale: number;
   private labelWindowFn: WindowLabeler;
   private skipDefaultWindowLabel: boolean;
   private watchWindowFitFn?: typeof watchWindowFit;
@@ -840,6 +846,7 @@ export class Launcher {
     this.enforceHostCompatibility = opts.enforceHostCompatibility ?? !this.unsafeDisableIdentityGates;
     this.hostPlatform = opts.hostPlatform ?? process.platform;
     this.hostArch = opts.hostArch ?? process.arch;
+    this.hostScale = opts.hostScale ?? hostDisplayScale();
     this.labelWindowFn = opts.labelWindow ?? defaultLabelWindow;
     this.skipDefaultWindowLabel = this.unsafeDisableIdentityGates && opts.labelWindow === undefined;
     this.watchWindowFitFn = opts.watchWindowFit ?? (this.unsafeDisableIdentityGates ? undefined : watchWindowFit);
@@ -1007,6 +1014,8 @@ export class Launcher {
       timezone: profile.timezone,
       ...(profile.locale ? { locale: profile.locale } : {}),
       screen: [profile.screenWidth, profile.screenHeight],
+      // Only when not 1, so the digest of every other launch does not change.
+      ...(this.deviceScale(profile) !== 1 ? { deviceScale: this.deviceScale(profile) } : {}),
       fingerprintSeed: profile.fingerprintSeed,
       // Only when present, so the digest of a profile without stored hardware does not change.
       ...(profile.hardware ? { hardware: profile.hardware } : {}),
@@ -1092,7 +1101,9 @@ export class Launcher {
     // above, so it doesn't change the fingerprint (it just looks like a normal
     // non-maximized window, which real users have). The WIDTH floor (800) stops a profile
     // that drew a small seed resolution (e.g. 1366 -> 683px) from opening as an unusable sliver.
-    const [winW, winH] = launchWindowSize(profile.screenWidth, profile.screenHeight, this.windowWidthScale, this.windowHeightScale);
+    // Chromium 155 on a scaled Windows display measures both in CSS pixels; see pageScreen.
+    const screen = this.pageScreen(profile);
+    const [winW, winH] = launchWindowSize(screen.screenWidth, screen.screenHeight, this.windowWidthScale, this.windowHeightScale);
     const args = [
       `--remote-debugging-port=${port}`,
       `--remote-debugging-address=127.0.0.1`,
@@ -1101,21 +1112,20 @@ export class Launcher {
       `--window-position=0,0`,
       `--no-first-run`,
       `--no-default-browser-check`,
-      // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus, and a
-      // minimized/occluded Chromium window is treated as backgrounded — it throttles JS timers and
-      // deprioritizes the renderer. That makes the CDP-driven login crawl and blow the 180s reconnect
-      // timeout (the operator saw browsers "only work when clicked" — focusing them un-throttles).
-      // These keep an unfocused window at full speed; they touch only internal scheduling, not any
-      // JS-visible surface, so the fingerprint is unchanged.
+      // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus, and
+      // Chromium treats a minimized window as backgrounded. This keeps its renderer at normal process
+      // priority for the CDP-driven login; a page cannot read that priority. Timer throttling and
+      // window occlusion stay as in Chrome: turning them off let a hidden tab run 10 ms timers ~98
+      // times a second instead of once, and kept a covered window "visible", which pages can measure.
+      // CDP commands, network loads and the fingerprint probe do not wait on page timers.
+      // --disable-background-mode lets Chromium exit when its last window closes.
       `--disable-background-mode`,
-      `--disable-background-timer-throttling`,
-      `--disable-backgrounding-occluded-windows`,
       `--disable-renderer-backgrounding`,
       // Cap the per-profile HTTP disk cache. Chromium otherwise sizes it from free disk,
       // and across thousands of Cloud profiles that reached 166 GB on one operator's
       // machine. Cookies/site data are separate stores; this only trims asset caching.
       `--disk-cache-size=${20 * 1024 * 1024}`,
-      ...deriveFingerprintFlags(profile),
+      ...deriveFingerprintFlags(screen),
     ];
     // Chromium builds with different signatures share one "Chromium Safe Storage" Keychain item,
     // and macOS stops the second build with a password prompt. The runtimes that the app
@@ -1127,10 +1137,16 @@ export class Launcher {
     // sessions. Chromium 155 then shows no card at all. With the blocklist ignored, it shows the
     // card that the profile seed selects, with WebGL 2 and WebGPU to match.
     if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--ignore-gpu-blocklist");
-    // Chromium 155 draws pages at the profile's 100% pixel ratio. When Windows scales the
-    // display to 125% or 150%, it stretches those pages and they look blurry. A window at
-    // 100% shows them pixel for pixel.
-    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--force-device-scale-factor=1");
+    // Chromium 155 draws pages at this scale. Without it, Windows stretches pages drawn at 100%
+    // on a 125% or 150% display and they look blurry. A build without the host-scale patch
+    // still draws at the profile's 100%, so it gets 1.
+    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push(`--force-device-scale-factor=${this.deviceScale(profile)}`);
+    // The engine shows the label in the native window title and leaves page titles alone.
+    if (this.nativeWindowLabel(profile)) {
+      const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profile.id));
+      // Windows drops trailing spaces from switch values, so the engine adds the space itself.
+      args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
+    }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
@@ -1211,6 +1227,26 @@ export class Launcher {
     ]);
   }
 
+  /** Chromium 155 on Windows draws pages at the primary display's scale; every other launch at 1. */
+  private deviceScale(profile: Profile): number {
+    return this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE ? this.hostScale : 1;
+  }
+
+  /**
+   * The profile with its screen in CSS pixels. At a display scale of 1.25, Chrome reports a
+   * 1920x1080 screen as 1536x864, and the window and window-fit use the same size.
+   */
+  private pageScreen(profile: Profile): Profile {
+    const scale = this.deviceScale(profile);
+    if (scale === 1) return profile;
+    return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
+  }
+
+  /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
+  private nativeWindowLabel(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
+  }
+
   private startWindowFit(profileId: string, ws: string, area: ScreenArea): void {
     this.windowFits.get(profileId)?.stop();
     const fit = this.watchWindowFitFn!(ws, area, {
@@ -1227,7 +1263,7 @@ export class Launcher {
     const launch = this.store.getLaunch(profileId);
     if (!profile?.chromiumRuntime || !launch || launch.headless || launch.engine === "firefox") return;
     const ws = await this.probeLaunchCdp(launch);
-    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profileId, ws, claimedScreenArea(profile, null));
+    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), null));
   }
 
   private markIdentityCertified(profileId: string): void {
@@ -1828,8 +1864,9 @@ export class Launcher {
       // Label the window so the operator can tell which account this browser is
       // among many open profiles (the cue AdsPower's panel gave). Registered
       // before navigation so the title script is in place when the platform page
-      // loads. Strictly best-effort — never fail or stall a launch on it.
-      if (!this.skipDefaultWindowLabel) {
+      // loads. Strictly best-effort — never fail or stall a launch on it. Chromium 155 on
+      // Windows got the label as a launch switch, so its pages get no title script.
+      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile)) {
         try {
           const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
           await this.labelWindowFn(ws, buildWindowLabel(profile.name, displayNo));
@@ -1967,7 +2004,7 @@ export class Launcher {
       // A page sees the real window against the profile's screen, so a window maximized on a
       // larger display would be bigger than that screen. Keep the window no larger than it.
       if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
-        this.startWindowFit(profileId, ws, claimedScreenArea(profile, sample));
+        this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), sample));
       }
       return { ws, port, nativeSessionRestored };
     } catch (err) {

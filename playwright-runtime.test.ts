@@ -963,7 +963,8 @@ bunAsNodeTest("profile card setup preserves a minimized browser window", async (
             }
             if (!browserDetached) throw new Error("browser CDP session was not detached");
             if (!["missing-page", "temporary"].includes(mode) && !detached) throw new Error("CDP session was not detached");
-            if (mode === "normal" && (!created || !raised)) throw new Error("visible profile card setup was incomplete");
+            if (mode === "normal" && !created) throw new Error("visible profile card setup was incomplete");
+            if (raised) throw new Error("the user's tab was activated, which focuses it");
             if (mode === "temporary" && (!created || raised)) throw new Error("temporary profile card setup was incomplete");
             if (!["normal", "temporary"].includes(mode) && (created || raised)) throw new Error("browser with unknown or minimized state was changed");
           },

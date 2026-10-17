@@ -26,6 +26,7 @@ test("capture entrypoint runs the Node worker and persists exportable observatio
       import { appendFile } from "node:fs/promises";
       const log = event => appendFile(${JSON.stringify(events)}, event + "\\n");
       export const chromium = { async connectOverCDP(endpoint) {
+        if (globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] !== false) throw new Error("focus emulation would reach open tabs");
         await log("connect");
         let closed = false;
         let handler;

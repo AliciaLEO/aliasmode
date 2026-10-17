@@ -40,6 +40,7 @@ import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { parseExport } from "./parse.ts";
 import { buildNewProfile } from "./create.ts";
 import { SessionRestoreError } from "./session.ts";
+import type { FingerprintSample } from "./diagnose.ts";
 
 const linuxTest = process.platform === "win32" ? test.skip : test;
 
@@ -4292,19 +4293,20 @@ test("windowWidthScale / windowHeightScale control the launched window size", as
   store.close();
 });
 
-test("buildArgs disables background throttling so minimized/occluded windows keep running at full speed", () => {
+test("buildArgs keeps a minimized window's renderer priority but Chrome's page timers and visibility", () => {
   const store = seeded();
   const f = fleet();
   const profile = store.getProfile("k1d0cd11")!;
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
   const args = launcher.buildArgs(profile, 9333, "/data", []);
   // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus.
-  // Keep minimized windows responsive, but let Chromium exit when the user closes
-  // the final visible window instead of retaining an invisible background process.
+  // Process priority is invisible to pages, and Chromium still exits when the user
+  // closes the final visible window instead of retaining a background process.
   expect(args).toContain("--disable-background-mode");
-  expect(args).toContain("--disable-background-timer-throttling");
-  expect(args).toContain("--disable-backgrounding-occluded-windows");
   expect(args).toContain("--disable-renderer-backgrounding");
+  // Pages can measure these: hidden-tab timer rate and a covered window's visibility.
+  expect(args).not.toContain("--disable-background-timer-throttling");
+  expect(args).not.toContain("--disable-backgrounding-occluded-windows");
   expect(args).toContain("--disk-cache-size=20971520");
   store.close();
 });
@@ -4704,6 +4706,105 @@ test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Wi
   // Each Chromium 155 profile draws its own canvas image. CloakBrowser varies it by itself.
   expect(await launchArgs("win32", "aliasmode")).toContain("--fingerprint-noise");
   expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--fingerprint-noise");
+});
+
+test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels, as Chrome does there", async () => {
+  const launch = async (
+    hostPlatform: NodeJS.Platform,
+    engine: "aliasmode" | "cloakbrowser",
+    screen: string,
+    hostScale: number,
+    options: { storedAvailableScreen?: string; capture?: FingerprintSample } = {},
+  ) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", screen }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    if (options.storedAvailableScreen) {
+      store.saveObservedFingerprint(chromium155.id, { availableScreen: options.storedAvailableScreen }, null);
+    }
+    const spawnedArgs: string[][] = [];
+    const areas: unknown[] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      hostScale,
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => options.capture ?? null,
+      watchWindowFit: (_ws, area) => {
+        areas.push(area);
+        return { stop: () => {} };
+      },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    const args = spawnedArgs[0]!;
+    return {
+      args: args.filter((arg) => /^--(force-device-scale-factor|fingerprint-screen-(width|height)|window-size)=/.test(arg)),
+      areas,
+    };
+  };
+
+  expect(await launch("win32", "aliasmode", "1920x1080", 1.25)).toEqual({
+    args: ["--window-size=998,778", "--fingerprint-screen-width=1536", "--fingerprint-screen-height=864", "--force-device-scale-factor=1.25"],
+    areas: [{ left: 0, top: 0, width: 1536, height: 864 }],
+  });
+  // A capture from an earlier launch at scale 1 is larger than this screen, so the whole screen
+  // stands in; a capture from this launch is already in CSS pixels.
+  expect((await launch("win32", "aliasmode", "1920x1080", 1.25, { storedAvailableScreen: "1920*1040" })).areas)
+    .toEqual([{ left: 0, top: 0, width: 1536, height: 864 }]);
+  const capture = { screen: { width: 1536, height: 864, availWidth: 1536, availHeight: 816, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1.25 } };
+  expect((await launch("win32", "aliasmode", "1920x1080", 1.25, { capture })).areas)
+    .toEqual([{ left: 0, top: 0, width: 1536, height: 816 }]);
+  // The window never exceeds a screen that the scale made smaller than the window floors.
+  expect((await launch("win32", "aliasmode", "1366x768", 1.75)).args).toEqual([
+    "--window-size=781,439", "--fingerprint-screen-width=781", "--fingerprint-screen-height=439", "--force-device-scale-factor=1.75",
+  ]);
+  // The Mac build and CloakBrowser keep the stored screen and no forced scale.
+  expect((await launch("darwin", "aliasmode", "1920x1080", 1.25)).args).toEqual([
+    "--window-size=1248,972", "--fingerprint-screen-width=1920", "--fingerprint-screen-height=1080",
+  ]);
+  expect((await launch("win32", "cloakbrowser", "1920x1080", 1.25)).args).toEqual([
+    "--window-size=1248,972", "--fingerprint-screen-width=1920", "--fingerprint-screen-height=1080",
+  ]);
+});
+
+test("Chromium 155 on Windows names its window with a launch switch instead of a page title script", async () => {
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), name: "sophie" };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const label = buildWindowLabel("sophie", profileDisplayNo(undefined, store.getSerial(chromium155.id)));
+    const scripted: string[] = [];
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => null,
+      labelWindow: async (_ws, text) => { scripted.push(text); },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    return { label, scripted, switches: spawnedArgs[0]!.filter((arg) => arg.startsWith("--aliasmode-window-label=")) };
+  };
+
+  const native = await launch("win32", "aliasmode");
+  expect(native.label).toBe("sophie · #1 — ");
+  // The engine adds the trailing space itself; Windows would strip it from a switch value.
+  expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
+  expect(native.scripted).toEqual([]);
+  // CloakBrowser has no such switch, and the Mac build is upstream's, so both keep the page script.
+  for (const [host, engine] of [["win32", "cloakbrowser"], ["darwin", "aliasmode"]] as const) {
+    const page = await launch(host, engine);
+    expect(page.switches).toEqual([]);
+    expect(page.scripted).toEqual([page.label]);
+  }
 });
 
 test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {

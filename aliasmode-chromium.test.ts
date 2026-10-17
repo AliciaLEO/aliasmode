@@ -11,6 +11,7 @@ import {
   ensureAliasmodeChromium,
   ensureCloakBrowserMacos,
   hostChromiumRuntime,
+  hostDisplayScale,
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
 import { buildNewProfile } from "./create.ts";
@@ -39,17 +40,22 @@ function fakeRelease(options: { archiveHash?: string; executableHash?: string } 
 
 test("installs AliasMode's own 155 build once, beside any earlier runtime", async () => {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-chromium-"));
-  mkdirSync(join(root, ".chromium-155.0.8059.31-aliasmode.1-stale"));
-  // The upstream runtime earlier betas installed stays put for browsers still running from it.
+  mkdirSync(join(root, ".chromium-155.0.8059.31-aliasmode.2-stale"));
+  // Earlier runtimes stay put for browsers still running from them.
   mkdirSync(join(root, "chromium-155.0.8059.31"));
+  mkdirSync(join(root, "chromium-155.0.8059.31-aliasmode.1"));
   const release = fakeRelease();
 
   const executable = await ensureAliasmodeChromium(root, release.deps);
   expect(executable).toBe(aliasmodeChromiumExecutable(root));
   expect(release.downloads).toEqual([ALIASMODE_CHROMIUM_ARCHIVE_URL]);
-  expect(ALIASMODE_CHROMIUM_ARCHIVE_URL)
-    .toStartWith("https://github.com/aliasmode/aliasmode-chromium/releases/download/");
-  expect(readdirSync(root).sort()).toEqual(["chromium-155.0.8059.31", "chromium-155.0.8059.31-aliasmode.1"]);
+  expect(ALIASMODE_CHROMIUM_ARCHIVE_URL).toBe(
+    "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.31-aliasmode.2/aliasmode-chromium-155.0.8059.31-windows-x64.zip",
+  );
+  expect(executable).toBe(join(root, "chromium-155.0.8059.31-aliasmode.2", "chrome.exe"));
+  expect(readdirSync(root).sort()).toEqual([
+    "chromium-155.0.8059.31", "chromium-155.0.8059.31-aliasmode.1", "chromium-155.0.8059.31-aliasmode.2",
+  ]);
 
   expect(await ensureAliasmodeChromium(root, release.deps)).toBe(executable);
   expect(release.downloads).toHaveLength(1);
@@ -117,6 +123,14 @@ test("macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser bin
   expect(hostChromiumRuntime("darwin", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
   expect(hostChromiumRuntime("win32", {})).toBeUndefined();
   expect(hostChromiumRuntime("linux", {})).toBeUndefined();
+});
+
+test("the host display scale comes from the desktop app, and 1 stands in for a missing or invalid value", () => {
+  expect(hostDisplayScale({ ALIASMODE_HOST_SCALE: "1.25" })).toBe(1.25);
+  expect(hostDisplayScale({ ALIASMODE_HOST_SCALE: "2" })).toBe(2);
+  for (const value of [undefined, "", "abc", "0", "0.5", "-1.5", "Infinity"]) {
+    expect(hostDisplayScale({ ALIASMODE_HOST_SCALE: value })).toBe(1);
+  }
 });
 
 test("installs the pinned CloakBrowser build for macOS from its tar archive root", async () => {

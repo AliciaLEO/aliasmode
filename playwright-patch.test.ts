@@ -147,6 +147,56 @@ describe("Playwright CDP compatibility patch", () => {
     }]);
   });
 
+  test("AliasMode's helpers attach to an open tab without emulating focus in it", async () => {
+    // A browser with one open tab, as AliasMode's helpers find it after a launch.
+    const tabMethods: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: (request, srv) => srv.upgrade(request) ? undefined : new Response("no", { status: 400 }),
+      websocket: {
+        message(ws, raw) {
+          const { id, method, sessionId } = JSON.parse(String(raw));
+          if (sessionId) tabMethods.push(method);
+          const result = method === "Browser.getVersion"
+            ? { product: "Chrome/155.0.0.0", userAgent: "Chrome/155.0.0.0" }
+            : method === "Page.getFrameTree"
+              ? { frameTree: { frame: { id: "tab", loaderId: "load", url: "https://example.com/", securityOrigin: "https://example.com", mimeType: "text/html" } } }
+              : {};
+          ws.send(JSON.stringify({ id, result, ...(sessionId ? { sessionId } : {}) }));
+          if (method === "Target.setAutoAttach" && !sessionId) {
+            ws.send(JSON.stringify({ method: "Target.attachedToTarget", params: {
+              sessionId: "tab-session",
+              targetInfo: { targetId: "tab", type: "page", title: "", url: "https://example.com/", attached: true, canAccessOpener: false, browserContextId: "default" },
+              waitingForDebugger: false,
+            } }));
+          }
+        },
+      },
+    });
+    const { chromium } = require("playwright-core");
+    const switchKey = Symbol.for("aliasmode.playwrightFocusEmulation");
+    const attach = async (focusEmulation: boolean | undefined) => {
+      tabMethods.length = 0;
+      (globalThis as any)[switchKey] = focusEmulation;
+      try {
+        const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${server.port}/devtools/browser/test`, { timeout: 5_000 });
+        await browser.close();
+      } finally {
+        delete (globalThis as any)[switchKey];
+      }
+      return [...tabMethods];
+    };
+    try {
+      const helper = await attach(false);
+      expect(helper).toContain("Runtime.runIfWaitingForDebugger");
+      expect(helper).not.toContain("Emulation.setFocusEmulationEnabled");
+      // Other Playwright users, such as the agent runner, keep Playwright's default.
+      expect(await attach(undefined)).toContain("Emulation.setFocusEmulationEnabled");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("Firefox hides storage helpers but keeps normal pages visible", async () => {
     const { FFBrowserContext } = require(fileURLToPath(new URL(
       "./node_modules/playwright-core/lib/server/firefox/ffBrowser.js", import.meta.url,

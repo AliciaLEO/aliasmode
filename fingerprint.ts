@@ -63,7 +63,8 @@ export const DEFAULT_WINDOW_HEIGHT_SCALE = 0.9;
 
 /**
  * The OS window size for a screen. The floors stop a small screen (e.g. 1024 -> 666px)
- * from opening as an unusable sliver.
+ * from opening as an unusable sliver. The window is never larger than the screen, which
+ * Chromium 155 refuses; a scaled display can make the screen smaller than the floors.
  */
 export function launchWindowSize(
   screenWidth: number,
@@ -71,7 +72,10 @@ export function launchWindowSize(
   widthScale = DEFAULT_WINDOW_WIDTH_SCALE,
   heightScale = DEFAULT_WINDOW_HEIGHT_SCALE,
 ): [number, number] {
-  return [Math.max(800, Math.round(screenWidth * widthScale)), Math.max(480, Math.round(screenHeight * heightScale))];
+  return [
+    Math.min(screenWidth, Math.max(800, Math.round(screenWidth * widthScale))),
+    Math.min(screenHeight, Math.max(480, Math.round(screenHeight * heightScale))),
+  ];
 }
 
 /** Parse AdsPower "1680*1050" (or "1680x1050") → width/height; default 1920x1080. */

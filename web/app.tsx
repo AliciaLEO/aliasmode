@@ -3321,11 +3321,11 @@ function App() {
         <div className="sidefoot">
           <a
             className="navitem"
-            href="https://t.me/aliasmode"
+            href="https://aliasmode.com/support/"
             target="_blank"
             rel="noreferrer"
             data-tip={t("Support")}
-            title={t("Support — AliasMode Telegram group")}
+            title={t("Support — chat with the AliasMode team")}
           >
             <Icon name="help" /><span className="navlabel">{t("Support")}</span>
           </a>

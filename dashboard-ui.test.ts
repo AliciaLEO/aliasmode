@@ -892,8 +892,8 @@ test("the sidebar offers extension management in both modes and a support link",
   expect(nav).not.toMatch(/\{isCloudMode\s*&&\s*\(?\s*<button[^>]*setView\("extensions"\)/);
   const extensions = nav.slice(nav.lastIndexOf("<button", nav.indexOf('data-tip={t("Manage extensions")}')), nav.indexOf("</button>", nav.indexOf('data-tip={t("Manage extensions")}')));
   expect(extensions).not.toContain("isCloudMode");
-  // Small support entry that forwards to the Telegram group.
-  expect(app).toContain('href="https://t.me/aliasmode"');
+  // Small support entry that opens the support chat on aliasmode.com.
+  expect(app).toContain('href="https://aliasmode.com/support/"');
   expect(app).toContain('<Icon name="help" /><span className="navlabel">{t("Support")}</span>');
   expect(styles).toContain("a.navitem");
 });

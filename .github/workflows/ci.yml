@@ -927,7 +927,7 @@ jobs:
             # A Cloud V3 payload must download and open the Chromium 155 beta, not CloakBrowser.
             & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\cloud-beta-state"
             if ($LASTEXITCODE -ne 0) { throw "Cloud Chromium 155 beta smoke exited with code $LASTEXITCODE" }
-            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.31-aliasmode.1\155.0.8059.31.manifest" -PathType Leaf)) {
+            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.31-aliasmode.2\155.0.8059.31.manifest" -PathType Leaf)) {
               throw "Cloud Chromium 155 beta smoke did not install the beta runtime"
             }
           } finally {

@@ -12,6 +12,10 @@ const ERROR_MESSAGES = {
   timeout: "Playwright operation timed out",
   runtime_unavailable: "Playwright runtime is unavailable",
 };
+// Playwright emulates focus in every tab it attaches to, so the user's open tabs would read
+// document.hasFocus() as true and get focus and blur events each time a helper connects.
+// The patched Playwright leaves focus alone while this is false.
+globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] = false;
 
 async function readStdin() {
   const chunks = [];
@@ -1263,10 +1267,11 @@ async function operate(chromium, operation, payload) {
               await cdp.detach().catch(() => {});
             }
           }
+          // The card opens as a background tab, so the user's tab stays in front without being
+          // activated again, which would focus it.
           if (canCreate) {
             const page = await context.newPage();
             await page.goto(payload.url, { waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
-            if (automation !== page) await automation.bringToFront().catch(() => {});
           }
         }
         await targetCdp.send("Target.getTargets");

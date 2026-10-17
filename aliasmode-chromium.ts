@@ -11,13 +11,19 @@ export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
 // AliasMode's own build of the patch series. Its package includes Chromium's
 // version manifest, which upstream's Windows archive omits. Each build gets its
 // own directory, so a browser still running from an earlier build keeps its files.
+// A new build changes only the release tag and the two SHA-256 values of its release.
+const WINDOWS_RELEASE = "aliasmode.2";
 const WINDOWS_BUILD = {
   root: `aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64`,
-  url: "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.31-aliasmode.1/aliasmode-chromium-155.0.8059.31-windows-x64.zip",
-  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-aliasmode.1`,
-  archiveSha256: "8d103e7d1c2322df88af0581b19e71857288584123b16467bbf42a2ce17e5d28",
+  url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64.zip`,
+  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}`,
+  archiveSha256: "PLACEHOLDER-aliasmode.2-archive-sha256",
   executable: "chrome.exe",
-  executableSha256: "3f2404d037ba019c9ae6ce70e532991e9e3d109c9fb00c82d3455a680e95872f",
+  executableSha256: "PLACEHOLDER-aliasmode.2-chrome.exe-sha256",
+  // From aliasmode.2, pages read and draw at --force-device-scale-factor, and
+  // --aliasmode-window-label names the window without touching page titles.
+  hostScale: true,
+  windowLabel: true,
 };
 const MACOS_BUILD = {
   root: `apostate-${ALIASMODE_CHROMIUM_VERSION}-macos-arm64`,
@@ -26,6 +32,8 @@ const MACOS_BUILD = {
   archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: "2dfa8b148e6d06598981c4a1e1bc0d7c2c7860d74401ad0d934d21a10c7916d7",
+  hostScale: false,
+  windowLabel: false,
 };
 // Apple Silicon macOS gets upstream's signed build; every other host keeps the Windows pins.
 const BUILD = process.platform === "darwin" ? MACOS_BUILD : WINDOWS_BUILD;
@@ -33,6 +41,10 @@ const ARCHIVE_ROOT = BUILD.root;
 export const ALIASMODE_CHROMIUM_ARCHIVE_URL = BUILD.url;
 export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
 export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
+/** The pinned build can draw pages at the display's own scale; an earlier build must get scale 1. */
+export const ALIASMODE_CHROMIUM_HOST_SCALE = BUILD.hostScale;
+/** The pinned build takes --aliasmode-window-label. */
+export const ALIASMODE_CHROMIUM_WINDOW_LABEL = BUILD.windowLabel;
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {
@@ -76,6 +88,15 @@ export function supportsChromium155Host(platform: NodeJS.Platform, arch: string)
 /** New Chromium profiles made on macOS use this runtime, unless a CloakBrowser binary is configured. */
 export function hostChromiumRuntime(platform = process.platform, env = process.env): "aliasmode" | undefined {
   return platform === "darwin" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;
+}
+
+/**
+ * The primary display's scale, which the desktop app passes in ALIASMODE_HOST_SCALE
+ * (1.25 at 125%). 1 when it is missing or is not a display scale.
+ */
+export function hostDisplayScale(env: NodeJS.ProcessEnv = process.env): number {
+  const scale = Number(env.ALIASMODE_HOST_SCALE);
+  return Number.isFinite(scale) && scale >= 1 ? scale : 1;
 }
 
 export interface AliasmodeChromiumDeps {

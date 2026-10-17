@@ -21,9 +21,12 @@ permissions:
   actions: read
   contents: read
 
-# The aliasmode/aliasmode-firefox build.yml run whose Windows archive the installer bundles
-# (release aliasmode-runtime-156.0.1-beta.36-r1).
+# The aliasmode/aliasmode-firefox build.yml run that built the Windows engine, and the release
+# whose archive the installer bundles. The release repackages that run's archive with the
+# 152 engine's font set; the run's own archive (1.3 GB) is too large for the NSIS installer.
 env:
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r2
+  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: 595b8e595985870db7aff80de8129e3f91b4010f2d526c09c9c0569f3c54f6b5
   ALIASMODE_FIREFOX_BUILD_RUN_ID: "39034521083"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
   ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r1
@@ -89,13 +92,16 @@ jobs:
           ) {
             throw "AliasMode Firefox source build provenance is invalid"
           }
-      - uses: actions/download-artifact@v4
-        with:
-          name: AliasModeBuilds-windows-x86_64
-          path: artifacts/firefox
-          github-token: ${{ github.token }}
-          repository: aliasmode/aliasmode-firefox
-          run-id: ${{ env.ALIASMODE_FIREFOX_BUILD_RUN_ID }}
+      - name: Download the released AliasMode Firefox archive
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "artifacts/firefox" | Out-Null
+          gh release download $env:ALIASMODE_FIREFOX_RELEASE --repo aliasmode/aliasmode-firefox --pattern "aliasmode-156.0.1-beta.36-win.x86_64.zip" --dir "artifacts/firefox"
+          $sha = (Get-FileHash -LiteralPath "artifacts/firefox/aliasmode-156.0.1-beta.36-win.x86_64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -cne $env:ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256) { throw "released AliasMode Firefox archive SHA-256 mismatch: $sha" }
       - name: Verify owned AliasMode Firefox artifact
         id: verify
         shell: pwsh

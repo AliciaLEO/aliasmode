@@ -240,7 +240,7 @@ for (const headless of [false, true]) {
       expect(args[0]).toContain(`--disable-extensions-except=${directory},/data/extensions/assigned`);
       const binding = JSON.parse(readFileSync(join(directory, "bind.json"), "utf8"));
       expect(binding.port).toBe(autofill.port);
-      const request = () => new Request(`http://127.0.0.1:${binding.port}/v1/fields`, {
+      const request = () => new Request(`http://127.0.0.1:${binding.port}/v1/menu`, {
         method: "POST", headers: { authorization: `Bearer ${binding.token}` }, body: JSON.stringify({ url: "https://x.com" }),
       });
       expect((await autofill.handle(request())).status).toBe(200);

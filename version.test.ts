@@ -521,6 +521,10 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(updaterAcceptance).toContain("Get-WebViewDebugPort $WebViewRoot $ExpectedDebugPort");
   expect(updaterAcceptance).toContain("$candidateDebugPortProbe.Server.ExclusiveAddressUse = $true");
   expect(updaterAcceptance).toContain('[void]$browserProcess.Handle');
+  // Chromium's own idle helpers may exit during the rejected update; the CDP owner may not.
+  expect(updaterAcceptance).toContain(
+    "$observations.browserStayedActiveAfterRejection = -not (Test-ProcessExited $oldBrowserMain)",
+  );
   expect(updaterAcceptance).toContain("$deadline = [TimeSpan]::FromMinutes(5)");
   expect(updaterAcceptance).toContain("sourceDebugArgumentSeen");
   expect(updaterAcceptance).toContain("$savedUserEnvironment[$name]");

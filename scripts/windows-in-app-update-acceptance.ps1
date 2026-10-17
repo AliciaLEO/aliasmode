@@ -1073,6 +1073,7 @@ try {
       @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] }).Count -ne 1) {
     throw "installed preservation browser process tree was not found"
   }
+  $oldBrowserMain = @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] })[0]
   try {
     foreach ($browserProcess in $oldBrowserProcesses) {
       [void]$browserProcess.Handle
@@ -1124,9 +1125,9 @@ try {
     $CandidateVersion `
     "click-update-and-wait-error"
   $observations.rootMismatchRejected = $true
-  $observations.browserStayedActiveAfterRejection = @(
-    $oldBrowserProcesses | Where-Object { -not (Test-ProcessExited $_) }
-  ).Count -eq $oldBrowserProcesses.Count
+  # Chromium ends idle helpers by itself (the data decoder after 5 s, an extension worker after
+  # 30 s), so the browser that owns the profile's CDP port is the one that must stay.
+  $observations.browserStayedActiveAfterRejection = -not (Test-ProcessExited $oldBrowserMain)
   if ((Test-ProcessExited $oldRecord.App) -or
       (Test-ProcessExited $oldRecord.Sidecar) -or
       -not $observations.browserStayedActiveAfterRejection) {

@@ -209,6 +209,10 @@ export function deriveFingerprintFlags(profile: Profile): string[] {
   if (!profile.chromiumRuntime && profile.hardware) {
     flags.push(`--fingerprint-hardware-concurrency=${profile.hardware.cores}`);
   }
+  // Without this flag every Chromium 155 profile on one computer draws the same canvas
+  // and WebGL image, so a site can link them. The noise comes from the profile seed,
+  // so each profile keeps its own image on every launch.
+  if (profile.chromiumRuntime) flags.push("--fingerprint-noise");
   return flags;
 }
 

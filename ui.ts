@@ -1234,9 +1234,9 @@ export async function handleUiRequest(
       }
       const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
       if (!options.cloudBrowser) store.applyGroupExtensionDefaults(profile, null, false);
-      // Cloud keeps its existing server-side identity flow. Local profiles only
-      // resolve proxy geography after the operator explicitly requests it.
-      if (options.cloudBrowser && profile.proxy) {
+      // Best-effort: match the browser clock to the proxy's exit location. A
+      // failed lookup keeps the host timezone.
+      if (profile.proxy) {
         await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
         syncFirefoxTimezone(profile);
       }
@@ -1365,7 +1365,7 @@ export async function handleUiRequest(
       }
       if (uploads.length === 0) return Response.json({ ok: false, error: "no files uploaded" }, { status: 400 });
       if (options.cloudBrowser) {
-        const prepared = await prepareImportBuffers(uploads, console.log, override);
+        const prepared = await prepareImportBuffers(uploads, console.log, override, undefined, options.timezoneFetch);
         await options.cloudBrowser.importProfiles(override.group!, prepared.imports.map(({ profile, sessionBundle }) => ({ ...profile, sessionBundle })));
         return Response.json({ ok: true, ...prepared.result });
       }
@@ -1379,7 +1379,7 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: true, ...result });
       }
-      return Response.json({ ok: true, ...await importBuffers(store, uploads, console.log, override) });
+      return Response.json({ ok: true, ...await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch) });
     } catch (error) {
       const status = error instanceof ProfileImportError
         ? error.status
@@ -1573,6 +1573,8 @@ export async function handleUiRequest(
       const errors: Array<{ id: string; error: string }> = [];
       const pending = new Map<string, Profile>();
       const cloudPending = new Map<string, Record<string, string>>();
+      const proxyChanged = new Set<string>();
+      const applied: Array<{ id: string; set: Record<string, string> }> = [];
       for (const [, value] of form) {
         if (!(value instanceof File)) continue;
         const bytes = new Uint8Array(await value.arrayBuffer());
@@ -1599,9 +1601,10 @@ export async function handleUiRequest(
           if (!p) { notFound.push(u.id); continue; }
           try {
             const previousGroup = p.group;
-            applyEdits(p, u.set);
+            if (applyEdits(p, u.set)) proxyChanged.add(u.id);
             store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in u.set);
             pending.set(u.id, p);
+            applied.push(u);
           } catch (error) {
             errors.push({ id: u.id, error: msg(error) });
           }
@@ -1630,12 +1633,41 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: errors.length === 0, updated, skipped, notFound, errors });
       }
-      const liveIds = [...pending.keys()].filter((id) => !!store.getLaunch(id));
-      if (liveIds.length > 0) {
-        return Response.json(
+      const openProfiles = () => {
+        const liveIds = [...pending.keys()].filter((id) => !!store.getLaunch(id));
+        return liveIds.length === 0 ? null : Response.json(
           { ok: false, error: `profile(s) ${liveIds.join(", ")} are currently open; no profiles were changed` },
           { status: 409 },
         );
+      };
+      const open = openProfiles();
+      if (open) return open;
+      // A new proxy gets its exit timezone. A failed lookup keeps the saved one.
+      const located = [...proxyChanged]
+        .map((id) => pending.get(id))
+        .filter((profile): profile is Profile => !!profile?.proxy)
+        .map((profile) => ({ ...profile, timezone: "" }));
+      if (located.length > 0) {
+        await attachTimezones(located, options.timezoneFetch).catch(() => {});
+        // Apply the rows again to current copies, so changes saved during the lookups are kept.
+        pending.clear();
+        for (const { id, set } of applied) {
+          const p = pending.get(id) ?? store.getProfile(id);
+          if (!p) continue;
+          const previousGroup = p.group;
+          applyEdits(p, set);
+          store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
+          pending.set(id, p);
+        }
+        for (const { id, timezone } of located) {
+          const p = pending.get(id);
+          if (p && timezone) {
+            p.timezone = timezone;
+            syncFirefoxTimezone(p);
+          }
+        }
+        const opened = openProfiles();
+        if (opened) return opened;
       }
       store.upsertProfiles([...pending.values()]);
       updated = pending.size;
@@ -2098,13 +2130,31 @@ export async function handleUiRequest(
       const body = (await req.json()) as { set?: unknown };
       const set = body.set && typeof body.set === "object" ? (body.set as Record<string, unknown>) : {};
       // Account details can be edited live; fingerprint changes require a closed browser.
-      const p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
+      let p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
       if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
       if (!remote && store.getLaunch(id) && fingerprintChanges(p, set)) {
         return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
-      const previousGroup = p.group;
-      applyEdits(p, set);
+      let previousGroup = p.group;
+      const proxyChanged = applyEdits(p, set);
+      // A new proxy gets its exit timezone, like a Cloud edit. A failed lookup keeps the saved one.
+      if (!remote && proxyChanged && p.proxy && !("timezone" in set) && !store.getLaunch(id)) {
+        const location = await lookupExitLocation(p.proxy, options.timezoneFetch);
+        // Apply the edit to the current copy, so changes saved during the lookup are kept.
+        p = store.getProfile(id);
+        if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+        const running = !!store.getLaunch(id);
+        if (running && fingerprintChanges(p, set)) {
+          return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+        }
+        previousGroup = p.group;
+        applyEdits(p, set);
+        // A browser opened during the lookup keeps the timezone it launched with.
+        if (location && !running) {
+          p.timezone = location.timezone;
+          syncFirefoxTimezone(p);
+        }
+      }
       if (!remote) store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
       if (remote) await remote.saveProfile(p);
       else {

@@ -4560,6 +4560,19 @@ test("a fresh launch refuses to spawn after an inconclusive profile-dir scan", a
   rmSync(dataRoot, { recursive: true, force: true });
 });
 
+(process.platform === "win32" ? test : test.skip)("the Windows process scan works when PATH has no PowerShell folder", async () => {
+  // A failed scan stops every saved profile with browser_launch/profile_directory.
+  const env: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+  );
+  env.PATH = (process.env.PATH ?? "").split(";").filter((dir) => !/WindowsPowerShell/i.test(dir)).join(";");
+  const child = Bun.spawn([
+    process.execPath, "-e",
+    'const { readHostProcessSnapshot } = await import("./launcher.ts"); process.stdout.write(String((await readHostProcessSnapshot()) !== null));',
+  ], { cwd: import.meta.dir, env, stdout: "pipe", stderr: "ignore" });
+  expect(await new Response(child.stdout).text()).toBe("true");
+}, 120_000);
+
 // --- fingerprint capture: bookkeeping that must never fail a launch ---
 
 test("a fingerprint probe that throws does not fail the launch", async () => {
@@ -4660,7 +4673,7 @@ test("Chromium 155 beta profiles launch the installed beta runtime without Cloak
   store.close();
 });
 
-test("Chromium 155 keeps WebGL on a Windows computer with no graphics card", async () => {
+test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Windows displays, and its own canvas", async () => {
   const launchArgs = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
     const store = new ProfileStore(":memory:");
     const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
@@ -4684,6 +4697,13 @@ test("Chromium 155 keeps WebGL on a Windows computer with no graphics card", asy
   // A Mac has a graphics card, and CloakBrowser reports a card by itself.
   expect(await launchArgs("darwin", "aliasmode")).not.toContain("--ignore-gpu-blocklist");
   expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--ignore-gpu-blocklist");
+  // Chromium 155 pages are drawn at 100%, so the Windows window must be at 100% too, or it is blurry.
+  expect(await launchArgs("win32", "aliasmode")).toContain("--force-device-scale-factor=1");
+  expect(await launchArgs("darwin", "aliasmode")).not.toContain("--force-device-scale-factor=1");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--force-device-scale-factor=1");
+  // Each Chromium 155 profile draws its own canvas image. CloakBrowser varies it by itself.
+  expect(await launchArgs("win32", "aliasmode")).toContain("--fingerprint-noise");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--fingerprint-noise");
 });
 
 test("Chromium 155 beta download failure is a public preflight error", async () => {

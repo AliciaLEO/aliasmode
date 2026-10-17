@@ -1224,7 +1224,7 @@ test("a short CSV update row preserves omitted trailing identity fields", async 
   s.close();
 });
 
-test("bulk proxy edits preserve stored timezones without a lookup", async () => {
+test("bulk proxy edits resolve changed timezones", async () => {
   const s = store();
   const first = s.getProfile("k1d0cd11")!;
   first.timezone = "America/Los_Angeles";
@@ -1243,16 +1243,13 @@ test("bulk proxy edits preserve stored timezones without a lookup", async () => 
     {} as any,
     s,
     null,
-    { timezoneFetch: timezoneFetch({
-      "first-proxy.example": "Europe/London",
-      "second-proxy.example": "Asia/Tokyo",
-    }, calls) },
+    { timezoneFetch: timezoneFetch({ "first-proxy.example": "Europe/London" }, calls) },
   );
 
   expect(res!.status).toBe(200);
-  expect(calls).toEqual([]);
-  expect(s.getProfile("k1d0cd11")!.timezone).toBe("America/Los_Angeles");
-  expect(s.getProfile("k1d0cd22")!.timezone).toBe("America/Los_Angeles");
+  expect(calls).toHaveLength(2);
+  expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
+  expect(s.getProfile("k1d0cd22")!.timezone).toBe("Europe/London");
   s.close();
 });
 
@@ -1321,7 +1318,7 @@ test("a malformed nonblank proxy edit is rejected without removing the existing 
   s.close();
 });
 
-test("a changed proxy preserves its stored timezone without a lookup", async () => {
+test("a changed proxy gets its exit timezone", async () => {
   const s = store();
   const before = s.getProfile("k1d0cd11")!;
   before.timezone = "America/Los_Angeles";
@@ -1340,11 +1337,87 @@ test("a changed proxy preserves its stored timezone without a lookup", async () 
   );
 
   expect(res!.status).toBe(200);
-  expect(calls).toEqual([]);
+  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
   expect(s.getProfile("k1d0cd11")).toMatchObject({
     proxy: { type: "socks5", host: "new-proxy.example", port: "1080", user: "user", pass: "pass" },
-    timezone: "America/Los_Angeles",
+    timezone: "Europe/Paris",
   });
+  s.close();
+});
+
+test("a proxy edit keeps changes saved during its timezone lookup", async () => {
+  for (const launch of [false, true]) {
+    const s = store();
+    const before = s.getProfile("k1d0cd11")!;
+    before.timezone = "America/Los_Angeles";
+    s.upsertProfile(before);
+    const res = await handleUiRequest(
+      new Request("http://x/ui/api/profiles/k1d0cd11/update", {
+        method: "POST",
+        body: JSON.stringify({ set: { proxyType: "http", proxy: "new-proxy.example:8080" } }),
+      }),
+      {} as any,
+      s,
+      null,
+      { timezoneFetch: async () => {
+        const updated = s.getProfile("k1d0cd11")!;
+        updated.name = "renamed during lookup";
+        s.upsertProfile(updated);
+        if (launch) s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
+        return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+      } },
+    );
+    expect(res!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")).toMatchObject({
+      name: "renamed during lookup",
+      proxy: { host: "new-proxy.example" },
+      // A browser opened during the lookup keeps the timezone it launched with.
+      timezone: launch ? "America/Los_Angeles" : "Europe/Paris",
+    });
+    s.close();
+  }
+});
+
+test("bulk proxy edits keep changes saved during the timezone lookups", async () => {
+  const s = store();
+  const form = new FormData();
+  form.append("files", new File(["id,proxy,proxytype\nk1d0cd11,new-proxy.example:8080,http"], "updates.csv", { type: "text/csv" }));
+  const res = await handleUiRequest(
+    new Request("http://x/ui/api/profiles/update-file", { method: "POST", body: form }),
+    {} as any,
+    s,
+    null,
+    { timezoneFetch: async () => {
+      const updated = s.getProfile("k1d0cd11")!;
+      updated.name = "renamed during lookup";
+      s.upsertProfile(updated);
+      return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
+    } },
+  );
+  expect(res!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")).toMatchObject({
+    name: "renamed during lookup",
+    proxy: { host: "new-proxy.example" },
+    timezone: "Europe/Paris",
+  });
+  s.close();
+});
+
+test("bulk proxy edits reject an open profile before any lookup", async () => {
+  const s = store();
+  s.recordLaunch({ profileId: "k1d0cd11", pid: 123, debugPort: 9333, ws: "ws://x", startedAt: 1 });
+  const form = new FormData();
+  form.append("files", new File(["id,proxy,proxytype\nk1d0cd11,new-proxy.example:8080,http"], "updates.csv", { type: "text/csv" }));
+  const calls: string[][] = [];
+  const res = await handleUiRequest(
+    new Request("http://x/ui/api/profiles/update-file", { method: "POST", body: form }),
+    {} as any,
+    s,
+    null,
+    { timezoneFetch: timezoneFetch({ "new-proxy.example": "Europe/Paris" }, calls) },
+  );
+  expect(res!.status).toBe(409);
+  expect(calls).toEqual([]);
   s.close();
 });
 
@@ -1926,9 +1999,32 @@ test("export route fails explicitly in remote mode", async () => {
   s.close();
 });
 
-test("create (local mode) does not look up a proxy timezone", async () => {
+test("create (local mode) sets the timezone from the proxy", async () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    const s = new ProfileStore(":memory:");
+    const calls: string[][] = [];
+    const res = await handleUiRequest(
+      new Request("http://x/ui/api/profiles", {
+        method: "POST",
+        body: JSON.stringify({ engine, name: "fresh", proxy: { type: "http", host: "new-proxy.example", port: "8080" } }),
+      }),
+      {} as any,
+      s,
+      null,
+      { timezoneFetch: timezoneFetch({ "new-proxy.example": "Europe/Paris" }, calls) },
+    );
+    const body = await res!.json();
+    expect(body.ok).toBe(true);
+    expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
+    const saved = s.getProfile(body.id)!;
+    expect(saved).toMatchObject({ timezone: "Europe/Paris", locale: "fr-FR" });
+    if (engine === "firefox") expect(saved.firefox!.config.timezone).toBe("Europe/Paris");
+    s.close();
+  }
+});
+
+test("create (local mode) keeps the host timezone when the proxy lookup fails", async () => {
   const s = new ProfileStore(":memory:");
-  const calls: string[][] = [];
   const res = await handleUiRequest(
     new Request("http://x/ui/api/profiles", {
       method: "POST",
@@ -1937,11 +2033,10 @@ test("create (local mode) does not look up a proxy timezone", async () => {
     {} as any,
     s,
     null,
-    { timezoneFetch: timezoneFetch({ "new-proxy.example": "Europe/Paris" }, calls) },
+    { timezoneFetch: async () => { throw new Error("offline"); } },
   );
   const body = await res!.json();
   expect(body.ok).toBe(true);
-  expect(calls).toEqual([]);
   expect(s.getProfile(body.id)!.timezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   s.close();
 });

@@ -4796,7 +4796,8 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
 
   const native = await launch("win32", "aliasmode");
   expect(native.label).toBe("sophie · #1 — ");
-  expect(native.switches).toEqual([`--aliasmode-window-label=${native.label}`]);
+  // The engine adds the trailing space itself; Windows would strip it from a switch value.
+  expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   expect(native.scripted).toEqual([]);
   // CloakBrowser has no such switch, and the Mac build is upstream's, so both keep the page script.
   for (const [host, engine] of [["win32", "cloakbrowser"], ["darwin", "aliasmode"]] as const) {

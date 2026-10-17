@@ -1089,7 +1089,8 @@ export class Launcher {
     // The engine shows the label in the native window title and leaves page titles alone.
     if (this.nativeWindowLabel(profile)) {
       const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profile.id));
-      args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo)}`);
+      // Windows drops trailing spaces from switch values, so the engine adds the space itself.
+      args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
     }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
     // We launch the raw stealth chromium binary, which behaves like stock

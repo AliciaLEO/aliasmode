@@ -17,9 +17,9 @@ const WINDOWS_BUILD = {
   root: `aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64`,
   url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64.zip`,
   dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}`,
-  archiveSha256: "PLACEHOLDER-aliasmode.2-archive-sha256",
+  archiveSha256: "7892833b6126b13314461eb77b231318acc001b0065b652138dd6ed69dcce9cd",
   executable: "chrome.exe",
-  executableSha256: "PLACEHOLDER-aliasmode.2-chrome.exe-sha256",
+  executableSha256: "3f2404d037ba019c9ae6ce70e532991e9e3d109c9fb00c82d3455a680e95872f",
   // From aliasmode.2, pages read and draw at --force-device-scale-factor, and
   // --aliasmode-window-label names the window without touching page titles.
   hostScale: true,

@@ -41,6 +41,7 @@ import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "
 import { assertSafeProfileId } from "./profile-id.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
+import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
@@ -374,6 +375,8 @@ export interface LauncherOptions {
   hostArch?: string;
   /** Label the window with the profile name + serial so operators can identify it. */
   labelWindow?: WindowLabeler;
+  /** Keep a Chromium 155 window no larger than the profile's screen. Injectable for tests. */
+  watchWindowFit?: typeof watchWindowFit;
   /** Cross-platform kill-by-pid for the no-handle (post-restart) path. Injectable for tests. */
   killPid?: (pid: number) => Promise<void>;
   /** Linux-only dedicated process-group signal. Injectable for tests. */
@@ -676,6 +679,8 @@ export class Launcher {
   private hostArch: string;
   private labelWindowFn: WindowLabeler;
   private skipDefaultWindowLabel: boolean;
+  private watchWindowFitFn?: typeof watchWindowFit;
+  private windowFits = new Map<string, { stop(): void }>();
   private killPidFn: (pid: number) => Promise<void>;
   private killProcessGroupFn: (processGroupId: number) => Promise<void>;
   private readProcessSnapshotFn?: () => Promise<HostProcessSnapshot | null>;
@@ -782,6 +787,7 @@ export class Launcher {
     this.hostArch = opts.hostArch ?? process.arch;
     this.labelWindowFn = opts.labelWindow ?? defaultLabelWindow;
     this.skipDefaultWindowLabel = this.unsafeDisableIdentityGates && opts.labelWindow === undefined;
+    this.watchWindowFitFn = opts.watchWindowFit ?? (this.unsafeDisableIdentityGates ? undefined : watchWindowFit);
     this.killPidFn = opts.killPid ?? killByPid;
     this.killProcessGroupFn = opts.killProcessGroup ?? killProcessGroup;
     this.readProcessSnapshotFn = opts.readProcessSnapshot
@@ -1693,9 +1699,10 @@ export class Launcher {
       // injection and any navigation, so the probe runs on a blank page rather
       // than an account one: reading canvas and WebGL inside a live x.com tab
       // is exactly the behaviour a detection script watches for.
+      let sample: FingerprintSample | null = null;
       const capturedFingerprint = await recordCapture({
         profile,
-        capture: () => this.captureFingerprintFn(ws),
+        capture: async () => (sample = await this.captureFingerprintFn(ws)),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
         log: (msg) => this.log(msg),
         // Mirrors buildArgs exactly: aliasmode forces the policy whenever the
@@ -1882,6 +1889,16 @@ export class Launcher {
       this.store.recordLaunch(info);
       this.markIdentityCertified(profileId);
       if (pendingSession) this.store.markSessionRestored(profileId, pendingSession);
+      // A page sees the real window against the profile's screen, so a window maximized on a
+      // larger display would be bigger than that screen. Keep the window no larger than it.
+      if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
+        this.windowFits.get(profileId)?.stop();
+        const fit = this.watchWindowFitFn(ws, claimedScreenArea(profile, sample), {
+          log: (msg) => this.log(`${profileId}: ${msg}`),
+          onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
+        });
+        this.windowFits.set(profileId, fit);
+      }
       return { ws, port, nativeSessionRestored };
     } catch (err) {
       // Roll back partial state so a failed start can't leak a zombie — including the relay, which
@@ -2496,6 +2513,7 @@ export class Launcher {
     // Delete durable ownership first. If SQLite refuses the write, leave every
     // in-memory resource intact so a later retry still knows what it owns.
     this.store.clearLaunch(profileId);
+    this.windowFits.get(profileId)?.stop();
     if (launch.firefoxOwner) forgetFirefoxOwner(launch.firefoxOwner);
     this.autofill?.retire(profileId, launch);
     this.liveReserved.delete(launch.debugPort);

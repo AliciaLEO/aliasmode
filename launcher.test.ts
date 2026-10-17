@@ -4706,6 +4706,38 @@ test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Wi
   expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--fingerprint-noise");
 });
 
+test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {
+  const watched = async (engine: "aliasmode" | "cloakbrowser", headless: boolean) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", screen: "1440x900" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const calls: Array<{ ws: string; area: unknown }> = [];
+    let stops = 0;
+    const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+      headless,
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => ({
+        screen: { width: 1440, height: 900, availWidth: 1440, availHeight: 852, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1 },
+      }),
+      watchWindowFit: (ws, area) => {
+        calls.push({ ws, area });
+        return { stop: () => { stops++; } };
+      },
+    });
+    const { ws } = await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    return { calls, stops, ws };
+  };
+  const headed = await watched("aliasmode", false);
+  expect(headed.calls).toEqual([{ ws: headed.ws, area: { left: 0, top: 0, width: 1440, height: 852 } }]);
+  expect(headed.stops).toBe(1);
+  expect((await watched("aliasmode", true)).calls).toEqual([]);
+  expect((await watched("cloakbrowser", false)).calls).toEqual([]);
+});
+
 test("Chromium 155 beta download failure is a public preflight error", async () => {
   const store = new ProfileStore(":memory:");
   const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);

@@ -445,7 +445,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(runtimeOwnershipShard).not.toContain("browser close --profile $preexistingProfileId");
   expect(runtimeOwnershipShard).not.toContain("Remove-PersistentProfile $helper $preexistingProfileId");
   for (const contract of [
-    '$metadata.firefox.version -ne "152.0.4-beta.30"',
+    '$metadata.firefox.version -ne "156.0.1-beta.36"',
     '"ALIASMODE_FIREFOX_BINARY_PATH"',
     '"ALIASMODE_FIREFOX_BINARY_SHA256"',
     "candidate Firefox metadata is invalid",

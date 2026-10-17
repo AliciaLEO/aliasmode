@@ -3,12 +3,13 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { firefoxLaunchConfig } from "./firefox-config.ts";
+import { firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
 import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
 
 const cleanup: Array<() => void> = [];
+const LABEL = "Firefox profile · #1";
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
 function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
@@ -20,7 +21,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     id: "firefox-one", accId: "", name: "Firefox profile", group: "", username: "", password: "", twofa: "",
     proxy: null, ua: "", timezone: "", screenWidth: 1920, screenHeight: 1080, fingerprintSeed: 1,
     cookies: [], seeded: false, engine: "firefox",
-    firefox: { version: 1, runtimeVersion: "152.0.4-beta.30", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0" } },
+    firefox: { version: 1, runtimeVersion: "156.0.1-beta.36", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" } },
   };
   store.upsertProfile(profile);
   const reservation = { endpoint: "http://127.0.0.1:41001", token: "a".repeat(64), generation: "11111111-1111-4111-8111-111111111111" };
@@ -31,6 +32,8 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   let snapshotIncomplete = false;
   let launches = 0;
   let receivedConfig: unknown;
+  let receivedPrefs: unknown;
+  let labeled = 0;
   let startupPreferences = "";
   let browserExecutable = "/fake/firefox.exe";
   let ownerExecutable = "node";
@@ -47,6 +50,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     store, dataRoot: root, firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
     enforceHostCompatibility: true, hostPlatform, hostArch, captureFingerprint: async () => null,
     navigate: async (_endpoint, urls) => { navigated.push([...urls]); }, ensureCookies: async () => ({ injected: false }),
+    labelWindow: async () => { labeled++; },
     applySession: async () => {}, log: () => {},
     readProcessSnapshot: async () => snapshots(),
     isPidAlive: (pid) => pid === 201 ? ownerAlive : pid === 202 ? browserAlive : false,
@@ -57,6 +61,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
         launches++;
         expect(store.getLaunch(profile.id)?.firefoxOwner?.generation).toBe(reservation.generation);
         receivedConfig = args.config;
+        receivedPrefs = args.prefs;
         startupPreferences = readFileSync(join(args.userDataDir, "user.js"), "utf8");
         ownerAlive = true;
         await hooks?.onSpawn?.({ ...reservation, pid: 201, browserPid: 0 });
@@ -80,7 +85,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   };
   return {
     store, profile: store.getProfile(profile.id)!, options, killed, launcher: new Launcher(options),
-    launches: () => launches, config: () => receivedConfig,
+    launches: () => launches, config: () => receivedConfig, prefs: () => receivedPrefs, labeled: () => labeled,
     startupPreferences: () => startupPreferences, navigated,
     setProcessPaths: (browser: string, owner: string) => {
       browserExecutable = browser;
@@ -97,10 +102,13 @@ test("Firefox launches one saved persona and retains ownership across manager re
   const opened = await f.launcher.start(f.profile.id);
   expect(opened.ws.startsWith("firefox://")).toBe(true);
   expect(opened.ws).not.toContain("a".repeat(64));
-  // The launch adds the per-profile seeds; the saved identity stays as it was.
-  expect(f.config()).toEqual(firefoxLaunchConfig(f.profile));
-  expect(f.config()).toHaveProperty("canvas:seed");
-  expect(f.store.getProfile(f.profile.id)!.firefox!.config).not.toHaveProperty("canvas:seed");
+  // The launch adds the per-profile seed, voices, devices and window label; the saved identity stays as it was.
+  expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
+  expect(f.config()).toMatchObject({ "aliasmode:windowLabel": LABEL, "voices:blockIfNotDefined": true, "mediaDevices:enabled": true });
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+  expect(f.store.getProfile(f.profile.id)!.firefox!.config).not.toHaveProperty("audio:seed");
+  // The engine shows the label in the native title, so no page script rewrites document.title.
+  expect(f.labeled()).toBe(0);
   expect(f.store.getLaunch(f.profile.id)?.engine).toBe("firefox");
   const restarted = new Launcher(f.options);
   expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
@@ -112,7 +120,7 @@ test("Firefox launches one saved persona and retains ownership across manager re
 
 test.each([false, true])("legacy Firefox keeps its old digest until confirmed close (stale=%s)", async (stale) => {
   const f = fixture();
-  const legacyConfig = { version: 1 as const, runtimeVersion: "152.0.4-beta.30", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0" } };
+  const legacyConfig = { version: 1 as const, runtimeVersion: "156.0.1-beta.36", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" } };
   (f.store as any).db.query("UPDATE profiles SET locale = '', firefox_config_json = ? WHERE id = ?")
     .run(JSON.stringify(legacyConfig), f.profile.id);
   const legacy = f.store.getProfile(f.profile.id)!;
@@ -140,7 +148,7 @@ test.each([false, true])("legacy Firefox keeps its old digest until confirmed cl
   const completed = f.store.getProfile(legacy.id)!;
   expect(completed.locale).toBe("en-US");
   expect(completed.firefox!.config.fonts).toBeArray();
-  expect(f.config()).toEqual(firefoxLaunchConfig(completed));
+  expect(f.config()).toEqual(firefoxLaunchConfig(completed, LABEL));
   expect(f.store.getLaunch(legacy.id)!.personaDigest).not.toBe(oldDigest);
   expect(f.launches()).toBe(2);
   expect(await restarted.stop(legacy.id)).toBe(true);
@@ -256,7 +264,7 @@ test("Firefox supports Darwin arm64 and Linux x64 personas without changing save
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     const opened = await f.launcher.start(f.profile.id);
-    expect(f.config()).toEqual(firefoxLaunchConfig(f.profile));
+    expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
     expect(f.store.getLaunch(f.profile.id)?.firefoxOwner).toMatchObject({ pid: 201, browserPid: 202 });
     const restarted = new Launcher(f.options);
     expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });

@@ -47,7 +47,7 @@ import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runt
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
-import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig } from "./firefox-config.ts";
+import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_HOST_SCALE,
@@ -2155,9 +2155,14 @@ export class Launcher {
       const proxy = launch.relayPort
         ? { server: `http://127.0.0.1:${launch.relayPort}` }
         : profile.proxy ? { server: `${profile.proxy.type}://${profile.proxy.host}:${profile.proxy.port}` } : undefined;
+      // The engine shows the label in the native window title and adds the " — " separator itself,
+      // so no page script edits document.title.
+      const windowLabel = this.skipDefaultWindowLabel
+        ? undefined
+        : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel), prefs: firefoxStartupPrefs(profile), proxy, headless,
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {
@@ -2200,10 +2205,6 @@ export class Launcher {
       if (!nativeSessionRestored && closedTabs !== undefined) {
         await this.navigate(launch.ws, closedTabs, true);
         nativeSessionRestored = closedTabs.length > 0;
-      }
-      if (!this.skipDefaultWindowLabel) {
-        const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
-        await this.labelWindowFn(launch.ws, buildWindowLabel(profile.name, displayNo)).catch(() => {});
       }
       if (pendingSession) {
         const home = platformHomeUrl(profile.platform, bundleTelegramClient(pendingSession));

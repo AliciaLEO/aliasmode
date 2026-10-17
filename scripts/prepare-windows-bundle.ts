@@ -22,8 +22,8 @@ export const PYTHON_WINDOWS_X64_VERSION = "3.13.7";
 export const PYTHON_WINDOWS_X64_URL = `https://www.python.org/ftp/python/${PYTHON_WINDOWS_X64_VERSION}/python-${PYTHON_WINDOWS_X64_VERSION}-embed-amd64.zip`;
 export const PYTHON_WINDOWS_X64_SHA256 = "f6cca216a359be84797cabb54149ce5e062afb16cc7567eb7fc51cacb2d86b65";
 
-export const ALIASMODE_FIREFOX_VERSION = "152.0.4-beta.30";
-export const ALIASMODE_FIREFOX_ARCHIVE_NAME = "aliasmode-152.0.4-beta.30-win.x86_64.zip";
+export const ALIASMODE_FIREFOX_VERSION = "156.0.1-beta.36";
+export const ALIASMODE_FIREFOX_ARCHIVE_NAME = "aliasmode-156.0.1-beta.36-win.x86_64.zip";
 export const ALIASMODE_FIREFOX_EXECUTABLE_NAME = "aliasmode.exe";
 
 const PYTHON_WHEELS = [

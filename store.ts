@@ -261,14 +261,15 @@ export class ProfileStore {
          AND id NOT IN (SELECT profile_id FROM launches)
          AND (locale = '' OR engine = 'firefox')`,
       ).all(profileId ?? null);
-      const update = this.db.query("UPDATE profiles SET locale = ?, firefox_config_json = ? WHERE id = ?");
+      const update = this.db.query("UPDATE profiles SET locale = ?, firefox_config_json = ?, ua = ? WHERE id = ?");
       for (const row of rows) {
         // Corrupt identities must still fail when read, not prevent the whole store from opening.
         let profile: Profile;
         try { profile = completeProfileFingerprint(rowToProfile(row)); } catch { continue; }
         const firefox = profile.firefox ? JSON.stringify(profile.firefox) : "";
-        if (profile.locale !== row.locale || firefox !== row.firefox_config_json) {
-          update.run(profile.locale!, firefox, profile.id);
+        // A Firefox engine update also changes the version in the user agent.
+        if (profile.locale !== row.locale || firefox !== row.firefox_config_json || profile.ua !== row.ua) {
+          update.run(profile.locale!, firefox, profile.ua, profile.id);
         }
       }
     })();

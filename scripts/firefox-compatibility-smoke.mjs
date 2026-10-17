@@ -453,7 +453,9 @@ try {
     context = await launch("previous-runtime-profile");
     duckDuckGoResponses = await syntheticDuckDuckGo(context);
     page = await openFixture(context);
-    assert.deepEqual(await identity(page), previousIdentity, "candidate preserves prior runtime identity");
+    // An engine update changes only the Firefox version in the user agent.
+    const unversioned = (value) => ({ ...value, ua: value.ua.replace(/\d+(?:\.\d+)+(?:-beta\.\d+)?/g, "N") });
+    assert.deepEqual(unversioned(await identity(page)), unversioned(previousIdentity), "candidate preserves prior runtime identity");
     assert.ok((await context.cookies()).some((cookie) => cookie.name === "previous-proof" && cookie.value === "saved"));
     assert.equal(await page.evaluate(() => localStorage.getItem("previous-proof")), "saved");
     assert.deepEqual(await databaseValue(page, null), { upgraded: true });

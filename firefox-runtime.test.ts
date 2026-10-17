@@ -9,7 +9,7 @@ import {
   type FirefoxOwner,
 } from "./firefox-runtime.ts";
 import { runPlaywrightWorker } from "./playwright-runtime.ts";
-import { firefoxLaunchOptions, observedFirefoxCaptureUrl } from "./firefox-worker.mjs";
+import { camouEnvironment, firefoxLaunchOptions, observedFirefoxCaptureUrl } from "./firefox-worker.mjs";
 
 async function ownerServer(handler: RequestListener) {
   const server = createServer(handler);
@@ -49,6 +49,29 @@ test("Firefox owner passes native proxy preferences", () => {
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe" }).firefoxUserPrefs).toEqual({
     "media.peerconnection.ice.default_address_only": true,
   });
+});
+
+test("Firefox owner sends the config and ASCII-only startup preferences in chunks and drops stale ones", () => {
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith("CAMOU_")));
+  const chunks = (name: string) => Object.keys(process.env).filter((key) => key.startsWith(`${name}_`)).sort((a, b) => Number(a.split("_")[2]) - Number(b.split("_")[2]))
+    .map((key) => process.env[key]!).join("");
+  try {
+    process.env.CAMOU_PREFS_3 = "stale";
+    const config = { voices: Array.from({ length: 120 }, (_, i) => ({ name: `Amélie ${i}`, lang: "fr-CA" })) };
+    camouEnvironment(config, { "intl.locale.requested": "fr-CA", label: "Zoë" });
+    expect(chunks("CAMOU_CONFIG")).toMatch(/^[\x00-\x7f]*$/);
+    expect(JSON.parse(chunks("CAMOU_CONFIG"))).toEqual(config);
+    expect(process.env.CAMOU_CONFIG_2).toBeString();
+    const prefs = chunks("CAMOU_PREFS");
+    expect(prefs).toMatch(/^[\x00-\x7f]*$/);
+    expect(JSON.parse(prefs)).toEqual({ "intl.locale.requested": "fr-CA", label: "Zoë" });
+    expect(process.env.CAMOU_PREFS_3).toBeUndefined();
+    camouEnvironment({}, undefined);
+    expect(Object.keys(process.env).filter((key) => key.startsWith("CAMOU_PREFS"))).toEqual([]);
+  } finally {
+    for (const key of Object.keys(process.env)) if (key.startsWith("CAMOU_")) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
 });
 
 test("Firefox owner excludes its temporary fingerprint page from capture history", () => {

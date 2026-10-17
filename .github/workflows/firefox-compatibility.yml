@@ -12,6 +12,8 @@ on:
       - scripts/firefox-owner-smoke-manager.mjs
       - launcher.ts
       - firefox-config.ts
+      - firefox-media.ts
+      - firefox-data/**
       - firefox-runtime.ts
       - firefox-install.ts
       - browser-install.ts
@@ -40,6 +42,8 @@ on:
       - scripts/firefox-owner-smoke-manager.mjs
       - launcher.ts
       - firefox-config.ts
+      - firefox-media.ts
+      - firefox-data/**
       - firefox-runtime.ts
       - firefox-install.ts
       - browser-install.ts
@@ -63,6 +67,13 @@ permissions:
   actions: read
   contents: read
 
+# The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r1).
+env:
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39034521083"
+  ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
+  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r1
+  ALIASMODE_FIREFOX_BUILD_SHA: 234063266ccac2c3885390a5c410b31a80805218
+
 jobs:
   windows:
     runs-on: windows-latest
@@ -85,7 +96,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $run = gh api repos/aliasmode/aliasmode-firefox/actions/runs/38060990951 | ConvertFrom-Json
+          $run = gh api "repos/aliasmode/aliasmode-firefox/actions/runs/$env:ALIASMODE_FIREFOX_BUILD_RUN_ID" | ConvertFrom-Json
           if (
             $run.name -cne "Build and Release" -or
             $run.path -cne ".github/workflows/build.yml" -or
@@ -93,9 +104,9 @@ jobs:
             $run.head_repository.full_name -cne "aliasmode/aliasmode-firefox" -or
             $run.status -cne "completed" -or
             $run.conclusion -cne "success" -or
-            $run.event -cne "push" -or
-            $run.head_branch -cne "firefox-engine" -or
-            $run.head_sha -cne "ab1519b7caef2c32c83c59f5028745ae71bb9478"
+            $run.event -cne $env:ALIASMODE_FIREFOX_BUILD_EVENT -or
+            $run.head_branch -cne $env:ALIASMODE_FIREFOX_BUILD_BRANCH -or
+            $run.head_sha -cne $env:ALIASMODE_FIREFOX_BUILD_SHA
           ) {
             throw "AliasMode Firefox source build provenance is invalid"
           }
@@ -105,7 +116,7 @@ jobs:
           path: artifacts/firefox
           github-token: ${{ github.token }}
           repository: aliasmode/aliasmode-firefox
-          run-id: "38060990951"
+          run-id: ${{ env.ALIASMODE_FIREFOX_BUILD_RUN_ID }}
       - name: Extract verified owned browser
         shell: pwsh
         run: |
@@ -116,7 +127,7 @@ jobs:
             $entries.Count -ne 1 -or
             $entries[0].PSIsContainer -or
             (($entries[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
-            $entries[0].Name -cne "aliasmode-152.0.4-beta.30-win.x86_64.zip"
+            $entries[0].Name -cne "aliasmode-156.0.1-beta.36-win.x86_64.zip"
           ) {
             throw "AliasMode Firefox artifact must contain exactly the approved archive"
           }
@@ -134,8 +145,8 @@ jobs:
           Write-Host "stdout: $version"
           Write-Host "stderr: $versionError"
           (Get-Item -LiteralPath $executables[0].FullName).VersionInfo | Select-Object ProductVersion, FileVersion, CompanyName, ProductName | Format-List
-          if ($process.ExitCode -ne 0 -or $version -notmatch '152\.0\.4') {
-            throw "owned AliasMode Firefox did not report Firefox 152.0.4"
+          if ($process.ExitCode -ne 0 -or $version -notmatch '156\.0\.1') {
+            throw "owned AliasMode Firefox did not report Firefox 156.0.1"
           }
           "ALIASMODE_FIREFOX_BINARY_PATH=$($executables[0].FullName)" | Add-Content $env:GITHUB_ENV
           "ALIASMODE_FIREFOX_BINARY_SHA256=$((Get-FileHash -LiteralPath $executables[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant())" | Add-Content $env:GITHUB_ENV
@@ -266,7 +277,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          run="$(gh api repos/aliasmode/aliasmode-firefox/actions/runs/38060990891)"
+          run="$(gh api "repos/aliasmode/aliasmode-firefox/actions/runs/$ALIASMODE_FIREFOX_BUILD_RUN_ID")"
           node -e '
             const run = JSON.parse(process.argv[1]);
             const expected = {
@@ -274,9 +285,9 @@ jobs:
               path: ".github/workflows/build.yml",
               status: "completed",
               conclusion: "success",
-              event: "push",
-              head_branch: "firefox-runtime-macos-linux",
-              head_sha: "ab1519b7caef2c32c83c59f5028745ae71bb9478",
+              event: process.env.ALIASMODE_FIREFOX_BUILD_EVENT,
+              head_branch: process.env.ALIASMODE_FIREFOX_BUILD_BRANCH,
+              head_sha: process.env.ALIASMODE_FIREFOX_BUILD_SHA,
             };
             for (const [key, value] of Object.entries(expected)) {
               if (run[key] !== value) throw new Error(`invalid source build ${key}`);
@@ -291,7 +302,7 @@ jobs:
           path: artifacts/firefox
           github-token: ${{ github.token }}
           repository: aliasmode/aliasmode-firefox
-          run-id: "38060990891"
+          run-id: ${{ env.ALIASMODE_FIREFOX_BUILD_RUN_ID }}
       - name: Install verified owned browser
         shell: bash
         run: |
@@ -331,7 +342,7 @@ jobs:
             grep -Eq 'Mach-O.*arm64' <<<"$binary_info"
           fi
           version="$("$ALIASMODE_FIREFOX_BINARY_PATH" --version 2>&1)"
-          [[ "$version" =~ 152\.0\.4 ]]
+          [[ "$version" =~ 156\.0\.1 ]]
           printf 'Firefox native binary: %s\n' "$binary_info"
           printf 'Firefox version: %s\n' "$version"
       - name: Prove source setup supplies Cloud browser runtimes
@@ -372,11 +383,11 @@ jobs:
           set -euo pipefail
           archive="$RUNNER_TEMP/previous-firefox.zip"
           destination="$RUNNER_TEMP/previous-firefox"
-          curl --fail --location --silent --show-error 'https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-152.0.4-beta.30-r1/aliasmode-152.0.4-beta.30-mac.arm64.zip' --output "$archive"
-          printf '%s  %s\n' fc2cf78d13f91e65772b99f3c059dd4ddc6f951c7b9c5bd3c4cc5bfbeb8db2ca "$archive" | shasum -a 256 --check
+          curl --fail --location --silent --show-error 'https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-152.0.4-beta.30-r4/aliasmode-152.0.4-beta.30-mac.arm64.zip' --output "$archive"
+          printf '%s  %s\n' a9847893bbe0472114cfc35b9f67ecb741f9a59002ac7d9e867634594792d320 "$archive" | shasum -a 256 --check
           ditto -x -k "$archive" "$destination"
           browser="$destination/AliasMode.app/Contents/MacOS/aliasmode"
-          printf '%s  %s\n' 5180e6170bb467755a2816f24586a9a5f6ab02a3336e8e0b2df9a58185b2e61d "$browser" | shasum -a 256 --check
+          printf '%s  %s\n' 20e2f8c93457eaf5cbd73a2580d1abdf436fbe54894e14fa7dc69469c1925ee9 "$browser" | shasum -a 256 --check
           printf 'ALIASMODE_PREVIOUS_FIREFOX_BINARY_PATH=%s\n' "$browser" >> "$GITHUB_ENV"
       - name: Prove persistent contexts, MCP, scripts, and storage
         shell: bash

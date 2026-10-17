@@ -32,7 +32,7 @@ fn main() {
     }
     assert_eq!(
         firefox.get("version").and_then(|value| value.as_str()),
-        Some("152.0.4-beta.30"),
+        Some("156.0.1-beta.36"),
         "Firefox metadata must use the approved runtime version"
     );
     let firefox_executable = firefox

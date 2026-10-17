@@ -47,8 +47,8 @@ function firefoxPayload(): PortableProfileV2 {
       extensionAssignments: [],
       firefox: {
         version: 1,
-        runtimeVersion: "152.0.4-beta.30",
-        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", timezone: "Etc/UTC" },
+        runtimeVersion: "156.0.1-beta.36",
+        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", timezone: "Etc/UTC" },
       },
     },
   };

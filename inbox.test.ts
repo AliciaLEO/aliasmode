@@ -130,8 +130,8 @@ test("Firefox re-imports preserve the saved config and reject identity replaceme
     engine: "firefox" as const,
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", nested: { value: true } },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", nested: { value: true } },
     },
   };
   store.upsertProfile(original);
@@ -169,7 +169,7 @@ test("sparse Local imports preserve timezones for Chromium and Firefox", async (
     timezone: "Europe/London",
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
+      runtimeVersion: "156.0.1-beta.36",
       config: { timezone: "Europe/London" },
     },
   };

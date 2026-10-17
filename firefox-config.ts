@@ -11,6 +11,7 @@ import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, Profile
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { deterministicSeed, launchWindowSize, platformFromUA, seedFraction } from "./fingerprint.ts";
 import { localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
+import { firefoxMediaDevices, firefoxVoices, type PersonaOs } from "./firefox-media.ts";
 
 const generatorAssetInputs = [
   ["fingerprint-network-definition.zip", fingerprintNetworkDefinitionPath],
@@ -23,7 +24,6 @@ const generatorAssets = Object.fromEntries(await Promise.all(generatorAssetInput
 (globalThis as typeof globalThis & { __aliasmodeGeneratorAssets?: Record<string, Buffer> }).__aliasmodeGeneratorAssets = generatorAssets;
 const { fromBrowserforge, generateFingerprint } = await import("camoufox-js/dist/fingerprints.js");
 
-type PersonaOs = "windows" | "macos" | "linux";
 interface GraphicsIdentity {
   weight: number;
   keys: Record<string, JsonValue>;
@@ -61,8 +61,8 @@ export function graphicsIdentity(platformOs: PersonaOs, seed: number): Record<st
   return structuredClone(options.at(-1)!.keys);
 }
 
-export const FIREFOX_RUNTIME_VERSION = "152.0.4-beta.30";
-const FIREFOX_UA_MAJOR_VERSION = "152";
+export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
+const FIREFOX_UA_MAJOR_VERSION = "156";
 
 /**
  * Generate an OS-matched identity once, for durable profile storage. With a seed the
@@ -146,22 +146,87 @@ export function fitFirefoxWindow(config: Record<string, JsonValue>): void {
   }
 }
 
-/** Engine 152 reads these as uint. Upstream 156 removed canvas:seed and fonts:spacing_seed. */
-const ENGINE_152_SEED_KEYS = ["canvas:seed", "audio:seed", "fonts:spacing_seed"] as const;
+/**
+ * Keys the 156 engine ignores (canvas:seed, fonts:spacing_seed; window.screenX/Y, as pages see the
+ * real window position) or that are a tell: navigator.globalPrivacyControl is true without the
+ * Sec-GPC header stock Firefox sends with it.
+ */
+const DROPPED_LAUNCH_KEYS = [
+  "canvas:seed", "fonts:spacing_seed", "window.screenX", "window.screenY", "navigator.globalPrivacyControl",
+];
 
 /**
- * The config one launch sends to the engine. Seeds and the window fit are derived here and
- * never stored, so saved Local and Cloud profiles keep their exact shape.
+ * The config one launch sends to the engine. Seeds, voices, media devices, the window label and
+ * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
+ * exact shape. A value the profile stores itself is kept.
  */
-export function firefoxLaunchConfig(profile: Profile): Record<string, JsonValue> {
-  const firefox = profile.firefox!;
-  const config = { ...firefox.config };
-  // Without seeds every profile on one computer draws the same canvas, audio and text widths.
-  if (firefox.runtimeVersion.startsWith("152.")) {
-    for (const key of ENGINE_152_SEED_KEYS) config[key] ??= deterministicSeed(`${profile.fingerprintSeed}:${key}`);
+export function firefoxLaunchConfig(profile: Profile, windowLabel?: string): Record<string, JsonValue> {
+  const config = { ...profile.firefox!.config };
+  for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
+  const seed = (key: string) => deterministicSeed(`${profile.fingerprintSeed}:${key}`);
+  // Without a seed every profile on one computer gives the same audio output.
+  config["audio:seed"] ??= seed("audio:seed");
+  const os = firefoxPersonaOs(profile, config);
+  // Without its own list the engine shows this computer's voices.
+  config.voices ??= firefoxVoices(os, firefoxStartupLocale(profile), seed("voices"));
+  config["voices:blockIfNotDefined"] ??= true;
+  if (!Object.keys(config).some((key) => key.startsWith("mediaDevices:"))) {
+    Object.assign(config, firefoxMediaDevices(os, seed("mediaDevices")));
   }
+  // The engine shows the label in the native window title only, adding its own separator.
+  if (windowLabel) config["aliasmode:windowLabel"] = windowLabel;
   fitFirefoxWindow(config);
   return config;
+}
+
+/** The profile's language for the browser interface, Intl and form messages (as upstream Camoufox sets it). */
+function firefoxStartupLocale(profile: Profile): string {
+  return configuredFirefoxLocale(profile.firefox!.config) ?? normalizeProfileLocale(profile.locale) ?? "en-US";
+}
+
+/**
+ * Preferences the engine applies at startup (CAMOU_PREFS_n). Without intl.locale.requested the
+ * 156 engine keeps an English interface and Intl locale whatever the profile's language. The
+ * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. The
+ * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off.
+ */
+export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
+  return {
+    "intl.locale.requested": firefoxStartupLocale(profile),
+    "gfx.blacklist.webgpu": 4,
+    "browser.startup.couldRestoreSession.count": -1,
+  };
+}
+
+function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue>): PersonaOs {
+  const ua = typeof config["navigator.userAgent"] === "string" ? config["navigator.userAgent"] : "";
+  const os = profile.platformOs || platformFromUA(profile.ua) || platformFromUA(ua);
+  if (os === "windows" || os === "macos" || os === "linux") return os;
+  return config["navigator.platform"] === "MacIntel" ? "macos"
+    : String(config["navigator.platform"] ?? "").startsWith("Linux") ? "linux" : "windows";
+}
+
+/**
+ * A profile saved for an older AliasMode Firefox moves to the current engine, as a normal browser
+ * update would: the runtime and the Firefox version in its user agent change, nothing else.
+ * A newer runtime is left alone, and the launcher then refuses it.
+ */
+function updateFirefoxRuntime(profile: Profile): Profile {
+  const firefox = profile.firefox!;
+  const major = Number.parseInt(firefox.runtimeVersion, 10);
+  if (firefox.runtimeVersion === FIREFOX_RUNTIME_VERSION || !(major < Number(FIREFOX_UA_MAJOR_VERSION))) return profile;
+  const update = (ua: string) => ua
+    .replace(/\brv:\d+\.\d+/, `rv:${FIREFOX_UA_MAJOR_VERSION}.0`)
+    .replace(/\bFirefox\/\d+\.\d+/, `Firefox/${FIREFOX_UA_MAJOR_VERSION}.0`);
+  const config = { ...firefox.config };
+  for (const key of ["navigator.userAgent", "headers.User-Agent"]) {
+    if (typeof config[key] === "string") config[key] = update(config[key]);
+  }
+  return {
+    ...profile,
+    ua: update(profile.ua),
+    firefox: { ...firefox, runtimeVersion: FIREFOX_RUNTIME_VERSION, config },
+  };
 }
 
 function configuredFirefoxLocale(config: Record<string, JsonValue>): string | undefined {
@@ -182,7 +247,8 @@ export function completeProfileFingerprint(profile: Profile): Profile {
     ?? localeForTimezone(profile.timezone);
   if (profile.engine !== "firefox" || !profile.firefox) return { ...profile, locale };
 
-  const config = { ...profile.firefox.config };
+  profile = updateFirefoxRuntime(profile);
+  const config = { ...profile.firefox!.config };
   const tag = new Intl.Locale(locale);
   const previousLocale = configuredFirefoxLocale(config);
   config["locale:language"] = tag.language;
@@ -198,13 +264,10 @@ export function completeProfileFingerprint(profile: Profile): Profile {
     config["navigator.languages"] = [...new Set([locale, tag.language])];
   }
   if (config.fonts === undefined) {
-    const ua = typeof config["navigator.userAgent"] === "string" ? config["navigator.userAgent"] : "";
-    const platform = profile.platformOs || platformFromUA(profile.ua) || platformFromUA(ua)
-      || (config["navigator.platform"] === "MacIntel" ? "macos"
-        : String(config["navigator.platform"] ?? "").startsWith("Linux") ? "linux" : "windows");
+    const platform = firefoxPersonaOs(profile, config);
     config.fonts = [...fonts[platform === "macos" ? "mac" : platform === "linux" ? "lin" : "win"]];
   }
-  return { ...profile, locale, firefox: { ...profile.firefox, config } };
+  return { ...profile, locale, firefox: { ...profile.firefox!, config } };
 }
 
 export function syncFirefoxTimezone(profile: Profile): void {

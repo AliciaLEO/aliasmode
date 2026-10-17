@@ -34,6 +34,8 @@ export interface StartFirefoxOwnerInput {
   userDataDir: string;
   sessionGeneration?: string;
   config: Record<string, JsonValue>;
+  /** Preferences the engine applies at startup (CAMOU_PREFS_n). */
+  prefs?: Record<string, JsonValue>;
   proxy?: { server: string; username?: string; password?: string; bypass?: string };
   headless?: boolean;
   args?: string[];
@@ -220,10 +222,11 @@ export async function startFirefoxOwner(
     || typeof input.executableSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.executableSha256)
     || typeof input.userDataDir !== "string" || !input.userDataDir
     || !input.config || typeof input.config !== "object" || Array.isArray(input.config)
+    || (input.prefs !== undefined && (!input.prefs || typeof input.prefs !== "object" || Array.isArray(input.prefs)))
     || (input.timeoutMs !== undefined && (!Number.isSafeInteger(input.timeoutMs) || input.timeoutMs < 1))) {
     throw new FirefoxOwnerError("invalid_request", "Firefox owner input is invalid");
   }
-  try { JSON.stringify(input.config); } catch { throw new FirefoxOwnerError("invalid_request", "Firefox owner input is invalid"); }
+  try { JSON.stringify([input.config, input.prefs]); } catch { throw new FirefoxOwnerError("invalid_request", "Firefox owner input is invalid"); }
   if (await sha256File(input.executablePath) !== input.executableSha256) {
     throw new FirefoxOwnerError("operation_failed", "Firefox executable changed before launch");
   }

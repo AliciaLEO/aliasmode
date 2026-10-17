@@ -49,8 +49,8 @@ test("store persists a Firefox identity and rejects in-place engine conversion",
     engine: "firefox",
     firefox: {
       version: 1,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", nested: { value: true } },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", nested: { value: true } },
     },
   };
 
@@ -64,6 +64,49 @@ test("store persists a Firefox identity and rejects in-place engine conversion",
     "unsupported Firefox profile config version",
   );
   store.close();
+});
+
+test("a Firefox 152 profile moves to the 156 engine when the store opens or the profile closes, never while it runs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aliasmode-firefox-156-"));
+  const path = join(dir, "profiles.sqlite");
+  const ua152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
+  const ua156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
+  const legacy = {
+    version: 1 as const, runtimeVersion: "152.0.4-beta.30",
+    config: { "navigator.userAgent": ua152, "navigator.platform": "Win32", "screen.width": 1920, timezone: "UTC", fonts: ["Arial"] },
+  };
+  try {
+    let store = new ProfileStore(path);
+    for (const id of ["closed152", "running152"]) {
+      store.upsertProfile({ ...parseExport(SAMPLE).profiles[0]!, id, ua: ua156, engine: "firefox", locale: "de-DE",
+        firefox: { ...legacy, runtimeVersion: "156.0.1-beta.36", config: { ...legacy.config, "navigator.userAgent": ua156 } } });
+    }
+    store.recordLaunch({ profileId: "running152", pid: 1, debugPort: 4321, ws: "firefox://x", startedAt: 1, engine: "firefox" } as any);
+    store.close();
+    // Saved by the previous app version.
+    const db = new Database(path);
+    db.query("UPDATE profiles SET ua = ?, firefox_config_json = ?").run(ua152, JSON.stringify(legacy));
+    db.close();
+
+    store = new ProfileStore(path);
+    const closed = store.getProfile("closed152")!;
+    expect(closed.ua).toBe(ua156);
+    expect(closed.firefox!.runtimeVersion).toBe("156.0.1-beta.36");
+    const { "navigator.userAgent": migratedUa, ...rest } = closed.firefox!.config;
+    expect(migratedUa).toBe(ua156);
+    // Everything else of the identity stays, apart from the usual locale completion.
+    expect(rest).toMatchObject({ "navigator.platform": "Win32", "screen.width": 1920, timezone: "UTC", fonts: ["Arial"] });
+    expect(closed.locale).toBe("de-DE");
+    // The open browser keeps the identity it started with until it closes.
+    expect(store.getProfile("running152")!.firefox).toEqual(legacy);
+    expect(store.getProfile("running152")!.ua).toBe(ua152);
+    store.clearLaunch("running152");
+    expect(store.getProfile("running152")!.firefox).toEqual(closed.firefox);
+    expect(store.getProfile("running152")!.ua).toBe(ua156);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("store persists Firefox launch ownership without exposing it through profile data", () => {

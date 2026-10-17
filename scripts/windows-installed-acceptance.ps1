@@ -105,7 +105,7 @@ function Install-AcceptanceArtifact(
     throw "candidate browser metadata is invalid"
   }
   if (
-    $metadata.firefox.version -ne "152.0.4-beta.30" -or
+    $metadata.firefox.version -ne "156.0.1-beta.36" -or
     [string]$metadata.firefox.executable -notmatch '(?i)(?:^|[\\/])aliasmode\.exe$' -or
     [string]$metadata.firefox.sha256 -notmatch '^[a-f0-9]{64}$'
   ) {

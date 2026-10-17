@@ -368,8 +368,8 @@ function productionCloudPayload(engine: CloudTestEngine, profileId: string): Ope
       engine: "firefox",
       firefox: {
         version: 1,
-        runtimeVersion: "152.0.4-beta.30",
-        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", timezone: "UTC" },
+        runtimeVersion: "156.0.1-beta.36",
+        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", timezone: "UTC" },
       },
     },
     session: base.session,
@@ -539,7 +539,7 @@ test("Firefox Cloud checkpoints use owner polling and preserve V2 through offlin
     profile: {
       ...legacy.profile,
       engine: "firefox",
-      firefox: { version: 1, runtimeVersion: "152.0.4-beta.30", config: { timezone: "UTC" } },
+      firefox: { version: 1, runtimeVersion: "156.0.1-beta.36", config: { timezone: "UTC" } },
     },
   };
   options.cloud.openProfile = async () => ({

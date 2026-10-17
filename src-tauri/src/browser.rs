@@ -7,7 +7,7 @@ use std::{
 };
 
 const CLOAKBROWSER_WRAPPER_VERSION: &str = "0.4.11";
-const FIREFOX_VERSION: &str = "152.0.4-beta.30";
+const FIREFOX_VERSION: &str = "156.0.1-beta.36";
 const FIREFOX_EXECUTABLE_NAME: &str = if cfg!(windows) {
     "aliasmode.exe"
 } else {

@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
-import { createFirefoxProfileConfig, firefoxLaunchConfig, fitFirefoxWindow } from "./firefox-config.ts";
-import type { JsonValue, Profile } from "./types.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow } from "./firefox-config.ts";
+import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
+import type { FirefoxProfileConfig, JsonValue, Profile } from "./types.ts";
 
-const SEED_KEYS = ["canvas:seed", "audio:seed", "fonts:spacing_seed"];
-
-function profile(fingerprintSeed: number, config: Record<string, JsonValue> = {}, runtimeVersion = "152.0.4-beta.30"): Profile {
+function profile(fingerprintSeed: number, config: Record<string, JsonValue> = {}, runtimeVersion = "156.0.1-beta.36"): Profile {
   return {
     id: `firefox-${fingerprintSeed}`, accId: "", name: "", group: "", username: "", password: "", twofa: "",
     proxy: null, ua: "", timezone: "", screenWidth: 1920, screenHeight: 1080, fingerprintSeed,
@@ -13,27 +12,101 @@ function profile(fingerprintSeed: number, config: Record<string, JsonValue> = {}
   };
 }
 
-test("each Firefox launch gets canvas, audio and font seeds from its profile seed, never stored", () => {
-  const one = profile(3983315515);
+const isUint = (value: JsonValue | undefined) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 0xffff_ffff;
+const isStrings = (value: JsonValue | undefined) => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/** The engine crashes on a value of the wrong type (settings/properties.json of the 156 engine). */
+function expectEngineTypes(config: Record<string, JsonValue>) {
+  expect(isUint(config["audio:seed"])).toBe(true);
+  expect(config["voices:blockIfNotDefined"]).toBeBoolean();
+  expect(config["mediaDevices:enabled"]).toBeBoolean();
+  for (const kind of ["micros", "webcams", "speakers"]) expect(isUint(config[`mediaDevices:${kind}`])).toBe(true);
+  for (const [count, list] of [["micros", "microphone"], ["webcams", "webcam"], ["speakers", "speaker"]]) {
+    for (const suffix of ["Labels", "Groups"]) {
+      const values = config[`mediaDevices:${list}${suffix}`];
+      expect(isStrings(values)).toBe(true);
+      expect((values as string[]).length).toBe(config[`mediaDevices:${count}`] as number);
+    }
+  }
+  expect(Array.isArray(config.voices)).toBe(true);
+  for (const voice of config.voices as Record<string, JsonValue>[]) {
+    expect(Object.keys(voice).sort()).toEqual(["isDefault", "isLocalService", "lang", "name", "voiceUri"]);
+    for (const key of ["lang", "name", "voiceUri"]) expect(voice[key]).toBeString();
+    for (const key of ["isDefault", "isLocalService"]) expect(voice[key]).toBeBoolean();
+  }
+}
+
+test("each Firefox launch gets an audio seed, voices and media devices from its profile seed, never stored", () => {
+  const one = profile(3983315515, { "navigator.globalPrivacyControl": true, "canvas:seed": 7, "fonts:spacing_seed": 8 });
   const saved = structuredClone(one.firefox);
   const first = firefoxLaunchConfig(one);
-  const seeds = SEED_KEYS.map((key) => first[key] as number);
-  for (const seed of seeds) {
-    expect(Number.isInteger(seed)).toBe(true);
-    expect(seed).toBeGreaterThanOrEqual(1);
-    expect(seed).toBeLessThanOrEqual(0xffff_ffff);
+  expectEngineTypes(first);
+  expect((first.voices as JsonValue[]).length).toBeGreaterThan(0);
+  expect(first["voices:blockIfNotDefined"]).toBe(true);
+  expect(first["mediaDevices:enabled"]).toBe(true);
+  // 156 ignores the canvas and font seeds; privacy control without its Sec-GPC header is a tell.
+  for (const key of ["canvas:seed", "fonts:spacing_seed", "navigator.globalPrivacyControl", "aliasmode:windowLabel"]) {
+    expect(first).not.toHaveProperty(key);
   }
-  expect(new Set(seeds).size).toBe(3);
   expect(firefoxLaunchConfig(structuredClone(one))).toEqual(first);
   expect(one.firefox).toEqual(saved);
-  const other = firefoxLaunchConfig(profile(2354318635));
-  for (const key of SEED_KEYS) expect(other[key]).not.toBe(first[key]);
+  expect(firefoxLaunchConfig(profile(2354318635))["audio:seed"]).not.toBe(first["audio:seed"]);
 });
 
-test("Firefox launch seeds keep a stored seed and are left out for other engine versions", () => {
-  expect(firefoxLaunchConfig(profile(7, { "canvas:seed": 42 }))["canvas:seed"]).toBe(42);
-  const later = firefoxLaunchConfig(profile(7, {}, "156.0-beta.1"));
-  for (const key of SEED_KEYS) expect(later).not.toHaveProperty(key);
+test("a Firefox launch keeps a seed, voice list or media device set that the profile stores", () => {
+  const config = firefoxLaunchConfig(profile(7, { "audio:seed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false }));
+  expect(config).toMatchObject({ "audio:seed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false });
+  expect(Object.keys(config).filter((key) => key.startsWith("mediaDevices:"))).toEqual(["mediaDevices:enabled"]);
+});
+
+test.each([
+  ["Win32", "de-DE", /^urn:moz-tts:sapi:Microsoft [A-Za-z]+ - German \(Germany\)\?de-DE$/],
+  ["MacIntel", "en-US", /^urn:moz-tts:osx:com\.apple\./],
+  ["Linux x86_64", "en-US", /^urn:moz-tts:speechd:[^ ]+\?[a-z]/],
+] as const)("Firefox voices and media devices follow the %s persona and %s locale", (platform, locale, uri) => {
+  const config = firefoxLaunchConfig({ ...profile(11, { "navigator.platform": platform, "navigator.language": locale }), locale });
+  expectEngineTypes(config);
+  const voices = config.voices as Array<{ voiceUri: string; isDefault: boolean }>;
+  expect(voices.some((voice) => uri.test(voice.voiceUri))).toBe(true);
+  expect(voices.every((voice) => !voice.isDefault)).toBe(true);
+  if (platform === "Linux x86_64") expect(config["mediaDevices:microphoneLabels"]).toContainEqual(expect.stringMatching(/^Monitor of /));
+});
+
+test("a Firefox launch shows the window label in the native title and starts in the profile's language", () => {
+  const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
+  expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");
+  expect(firefoxStartupPrefs(german)).toEqual({
+    "intl.locale.requested": "de-DE", "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
+  });
+  expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
+});
+
+test("a Firefox profile saved for engine 152 moves to 156 like a browser update, everywhere it is completed", () => {
+  const ua = (version: string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${version}) Gecko/20100101 Firefox/${version}`;
+  const legacy: Profile = {
+    ...profile(9, { "navigator.userAgent": ua("152.0"), "headers.User-Agent": ua("152.0"), "navigator.appVersion": "5.0 (Windows)", fonts: ["Arial"] }, "152.0.4-beta.30"),
+    ua: ua("152.0"), locale: "en-US", timezone: "UTC",
+  };
+  const current = completeProfileFingerprint(legacy);
+  expect(current.firefox!.runtimeVersion).toBe("156.0.1-beta.36");
+  expect(current.ua).toBe(ua("156.0"));
+  expect(current.firefox!.config).toMatchObject({ "navigator.userAgent": ua("156.0"), "headers.User-Agent": ua("156.0") });
+  // Nothing else of the identity changes.
+  const unchanged = completeProfileFingerprint({ ...legacy, firefox: { ...legacy.firefox!, runtimeVersion: "156.0.1-beta.36" } });
+  expect({ ...current.firefox!.config, "navigator.userAgent": "", "headers.User-Agent": "" })
+    .toEqual({ ...unchanged.firefox!.config, "navigator.userAgent": "", "headers.User-Agent": "" });
+  expect({ ...current, ua: "", firefox: undefined }).toEqual({ ...unchanged, ua: "", firefox: undefined });
+  expect(completeProfileFingerprint(current)).toEqual(current);
+  // Cloud and export payloads carry the same shape with the new runtime.
+  const payload = encodePortableProfile(completeProfileFingerprint(legacy) as Profile & { engine: "firefox"; firefox: FirefoxProfileConfig });
+  expect(payload.schemaVersion).toBe(2);
+  expect(Object.keys(payload.profile.firefox).sort()).toEqual(["config", "runtimeVersion", "version"]);
+  expect(payload.profile.firefox.runtimeVersion).toBe("156.0.1-beta.36");
+  expect(decodePortableProfile(payload).profile.firefox).toEqual(current.firefox);
+  // A profile from a newer engine is left for the launcher to refuse.
+  const newer = { ...legacy, firefox: { ...legacy.firefox!, runtimeVersion: "157.0-beta.1" } };
+  expect(completeProfileFingerprint(newer).firefox!.runtimeVersion).toBe("157.0-beta.1");
+  expect(completeProfileFingerprint(newer).ua).toBe(ua("152.0"));
 });
 
 test("an existing Firefox window never exceeds its available screen", () => {
@@ -45,18 +118,18 @@ test("an existing Firefox window never exceeds its available screen", () => {
   }));
   expect(tall).toMatchObject({
     "screen.width": 1920, "screen.height": 1080, "screen.availHeight": 1032, "screen.availLeft": 1920,
-    "window.outerWidth": 1920, "window.outerHeight": 1032, "window.screenX": 1920, "window.screenY": 0,
+    "window.outerWidth": 1920, "window.outerHeight": 1032,
   });
-  // A wide screen keeps its stored size; only the window's position comes back inside it.
+  // The 156 engine shows pages the real window position, so the stored one is not sent.
+  expect(tall).not.toHaveProperty("window.screenX");
+  expect(tall).not.toHaveProperty("window.screenY");
+  // A wide screen keeps its stored size and window.
   const wide = firefoxLaunchConfig(profile(2, {
     "window.screenX": 3307, "window.screenY": 180,
     "screen.width": 5120, "screen.height": 1440, "screen.availWidth": 5120, "screen.availHeight": 1400,
     "window.outerWidth": 1920, "window.outerHeight": 1080,
   }));
-  expect(wide).toMatchObject({
-    "screen.width": 5120, "screen.height": 1440,
-    "window.outerWidth": 1920, "window.outerHeight": 1080, "window.screenX": 3200, "window.screenY": 180,
-  });
+  expect(wide).toMatchObject({ "screen.width": 5120, "screen.height": 1440, "window.outerWidth": 1920, "window.outerHeight": 1080 });
 });
 
 test("a Firefox window on a second monitor stays on that monitor's available area", () => {

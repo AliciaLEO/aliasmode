@@ -208,7 +208,7 @@ test("Firefox profiles do not materialize group extension defaults", () => {
   const s = new ProfileStore(":memory:");
   const firefox = {
     engine: "firefox" as const,
-    firefox: { version: 1 as const, runtimeVersion: "152.0.4-beta.30", config: {} },
+    firefox: { version: 1 as const, runtimeVersion: "156.0.1-beta.36", config: {} },
   };
   s.upsertProfile(profile({ id: "chromium", group: "Sales", extensions: ["old"] }));
   s.upsertProfile(profile({ id: "firefox-member", group: "Sales", extensions: [], ...firefox }));

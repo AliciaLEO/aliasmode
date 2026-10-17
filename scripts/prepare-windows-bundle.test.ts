@@ -141,7 +141,7 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
       firefox: {
         executable: "firefox/aliasmode.exe",
         sha256: firefox.executableSha256,
-        version: "152.0.4-beta.30",
+        version: "156.0.1-beta.36",
         archiveSha256: firefox.archiveSha256,
       },
     });

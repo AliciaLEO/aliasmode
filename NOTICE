@@ -9,3 +9,7 @@ The dashboard bundles the Inter typeface (web/fonts/inter-latin.woff2 and
 web/fonts/inter-latin-ext.woff2), Copyright (c) 2016 The Inter Project Authors,
 licensed under the SIL Open Font License, Version 1.1. The full license text is
 in web/fonts/Inter-LICENSE.txt.
+
+The speech voice and media device data in firefox-data/ comes from Camoufox,
+Copyright (c) 2024-2026 daijro and the Camoufox contributors, licensed under the
+MIT License. The full license text is in firefox-data/LICENSE.

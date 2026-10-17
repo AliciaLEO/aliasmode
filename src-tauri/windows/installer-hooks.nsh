@@ -1,9 +1,3 @@
-; Tauri compresses the installer as one solid block, and makensis must map that whole
-; uncompressed block, which fails near 2 GB ("error mmapping datablock"). The bundled
-; browsers passed that size, so compress each file on its own: makensis then maps only
-; the compressed data. Tauri sets its compressor just before including this file.
-SetCompressor /FINAL zlib
-
 ; The bundled sidecar owns the browsers, so the app always stops it before an
 ; update installs. A crash, a forced close, or an interrupted shutdown can still
 ; leave one running, and the default template only closes the main executable.

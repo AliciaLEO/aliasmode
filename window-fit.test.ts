@@ -34,11 +34,14 @@ test("fullscreen and minimized windows are left alone", () => {
   expect(fitWindow({ left: -32000, top: -32000, width: 160, height: 28, windowState: "minimized" }, AREA)).toBeNull();
 });
 
-test("the claimed area is the captured available screen, or the profile's screen without a capture", () => {
+test("the claimed area is the captured available screen, then the stored capture, then the profile's screen", () => {
   const profile = { ...buildNewProfile({ screen: "1440x900" }, () => false) };
   const screen = { width: 1440, height: 900, availWidth: 1440, availHeight: 852, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1 };
   expect(claimedScreenArea(profile, { screen })).toEqual(AREA);
   expect(claimedScreenArea(profile, { screen: { ...screen, availTop: 33, availHeight: 781 } })).toEqual({ ...AREA, top: 33, height: 781 });
+  // A capture that failed at this launch still has the taskbar from an earlier one.
+  expect(claimedScreenArea({ ...profile, fpObserved: { availableScreen: "1440*852" } }, null)).toEqual(AREA);
+  expect(claimedScreenArea({ ...profile, fpObserved: { availableScreen: "2560*1392" } }, null)).toEqual({ left: 0, top: 0, width: 1440, height: 900 });
   expect(claimedScreenArea(profile, null)).toEqual({ left: 0, top: 0, width: 1440, height: 900 });
 });
 

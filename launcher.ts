@@ -41,7 +41,7 @@ import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "
 import { assertSafeProfileId } from "./profile-id.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
-import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
+import { claimedScreenArea, watchWindowFit, type ScreenArea } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
@@ -1156,6 +1156,25 @@ export class Launcher {
     ]);
   }
 
+  private startWindowFit(profileId: string, ws: string, area: ScreenArea): void {
+    this.windowFits.get(profileId)?.stop();
+    const fit = this.watchWindowFitFn!(ws, area, {
+      log: (msg) => this.log(`${profileId}: ${msg}`),
+      onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
+    });
+    this.windowFits.set(profileId, fit);
+  }
+
+  /** A browser adopted from before an app restart gets the same window watch as a fresh launch. */
+  private async watchSurvivorWindow(profileId: string): Promise<void> {
+    if (!this.watchWindowFitFn || this.windowFits.has(profileId)) return;
+    const profile = this.store.getProfile(profileId);
+    const launch = this.store.getLaunch(profileId);
+    if (!profile?.chromiumRuntime || !launch || launch.headless || launch.engine === "firefox") return;
+    const ws = await this.probeLaunchCdp(launch);
+    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profileId, ws, claimedScreenArea(profile, null));
+  }
+
   private markIdentityCertified(profileId: string): void {
     const key = this.identityCertificationKey(profileId);
     if (key) this.certifiedLaunches.set(profileId, key);
@@ -1474,6 +1493,7 @@ export class Launcher {
               : `profile ${profileId} already running on port ${existing.debugPort} (reattached after restart)`,
           );
           this.liveReserved.add(existing.debugPort);
+          void this.watchSurvivorWindow(profileId);
           return {
             ws: currentWs,
             port: existing.debugPort,
@@ -1892,12 +1912,7 @@ export class Launcher {
       // A page sees the real window against the profile's screen, so a window maximized on a
       // larger display would be bigger than that screen. Keep the window no larger than it.
       if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
-        this.windowFits.get(profileId)?.stop();
-        const fit = this.watchWindowFitFn(ws, claimedScreenArea(profile, sample), {
-          log: (msg) => this.log(`${profileId}: ${msg}`),
-          onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
-        });
-        this.windowFits.set(profileId, fit);
+        this.startWindowFit(profileId, ws, claimedScreenArea(profile, sample));
       }
       return { ws, port, nativeSessionRestored };
     } catch (err) {
@@ -3169,6 +3184,7 @@ export class Launcher {
     profile = this.requireUnchangedProfile(profileId, snapshot, "survivor CDP verification");
     if (!profile.proxy) {
       this.markIdentityCertified(profileId);
+      void this.watchSurvivorWindow(profileId);
       return;
     }
     let current = this.store.getLaunch(profileId);
@@ -3183,6 +3199,7 @@ export class Launcher {
     }
     this.markIdentityCertified(profileId);
     this.log(`survivor identity verified for ${profileId}: host persona + relay restored`);
+    void this.watchSurvivorWindow(profileId);
   }
 
   /** Return a proven durable survivor-policy mismatch, or null for transport uncertainty. */
@@ -3290,7 +3307,10 @@ export class Launcher {
         stopped++;
         return;
       }
-      if (await this.certifiedActive(launch.profileId)) certified++;
+      if (await this.certifiedActive(launch.profileId)) {
+        certified++;
+        void this.watchSurvivorWindow(launch.profileId);
+      }
       else stopped++;
     };
     const CONCURRENCY = 8;

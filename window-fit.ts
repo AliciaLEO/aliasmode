@@ -26,12 +26,20 @@ export interface WindowBounds extends Partial<ScreenArea> {
   windowState?: string;
 }
 
-/** The profile's available screen as its pages read it, or its whole screen when the launch capture failed. */
+/**
+ * The profile's available screen as its pages read it. Without a capture from this launch, the
+ * last stored capture still names the area above the taskbar; the whole screen is the last resort.
+ */
 export function claimedScreenArea(profile: Profile, sample: FingerprintSample | null): ScreenArea {
   const screen = sample?.screen;
-  return screen?.availWidth && screen.availHeight
-    ? { left: screen.availLeft ?? 0, top: screen.availTop ?? 0, width: screen.availWidth, height: screen.availHeight }
-    : { left: 0, top: 0, width: profile.screenWidth, height: profile.screenHeight };
+  if (screen?.availWidth && screen.availHeight) {
+    return { left: screen.availLeft ?? 0, top: screen.availTop ?? 0, width: screen.availWidth, height: screen.availHeight };
+  }
+  const [width, height] = (profile.fpObserved?.availableScreen ?? "").split("*").map(Number);
+  if (width && height && width <= profile.screenWidth && height <= profile.screenHeight) {
+    return { left: 0, top: 0, width, height };
+  }
+  return { left: 0, top: 0, width: profile.screenWidth, height: profile.screenHeight };
 }
 
 /**

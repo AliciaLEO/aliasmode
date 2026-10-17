@@ -4738,6 +4738,41 @@ test("a headed Chromium 155 window is kept on the profile's available screen unt
   expect((await watched("cloakbrowser", false)).calls).toEqual([]);
 });
 
+test("a Chromium 155 window that survives an app restart is watched again", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode", screen: "1440x900" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const options = (calls: Array<{ ws: string; area: unknown }>) => ({
+    headless: false,
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+    captureFingerprint: async () => ({
+      screen: { width: 1440, height: 900, availWidth: 1440, availHeight: 852, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1 },
+    }),
+    watchWindowFit: (ws: string, area: unknown) => {
+      calls.push({ ws, area });
+      return { stop: () => {} };
+    },
+  });
+  const before: Array<{ ws: string; area: unknown }> = [];
+  const launcherA = newLauncher(store, f, [], undefined, undefined, options(before));
+  await launcherA.start(profile.id);
+  (launcherA as any).closeRelay(profile.id);
+
+  const after: Array<{ ws: string; area: unknown }> = [];
+  const launcherB = newLauncher(store, f, [], undefined, undefined, options(after));
+  await launcherB.reconcileOrphans();
+  const { ws } = await launcherB.start(profile.id);
+  await launcherB.start(profile.id);
+  for (let i = 0; i < 20 && after.length === 0; i++) await Bun.sleep(1);
+
+  // The stored capture from the first launch still names the area above the taskbar.
+  expect(after).toEqual([{ ws, area: { left: 0, top: 0, width: 1440, height: 852 } }]);
+  await launcherB.stop(profile.id);
+  store.close();
+});
+
 test("Chromium 155 beta download failure is a public preflight error", async () => {
   const store = new ProfileStore(":memory:");
   const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);

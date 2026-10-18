@@ -865,6 +865,55 @@ test("Cloud browser suppresses the platform home when the bundle has saved tabs"
   state.store.close();
 });
 
+test("Cloud browser reopens a saved session that holds a nameless cookie", async () => {
+  // `document.cookie = "value"` makes a cookie with an empty name. The browser
+  // reports it, the checkpoint saves it, and the next open must restore it.
+  const nameless = { name: "", value: "nameless-value", domain: "site.example", path: "/" };
+  const state = setup();
+  const options = (state.coordinator as any).options;
+  let savedPayload = payload();
+  options.readSession = async () => JSON.stringify({
+    ...payload().session, cookies: [...payload().session.cookies, nameless], origins: [], tabs: [],
+  });
+  options.cloud.closeOpen = async (_id: string, request: { payload: PortableProfileV1 }) => {
+    savedPayload = structuredClone(request.payload);
+    return { ok: true, status: "accepted", version: 5 };
+  };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete" });
+  expect(savedPayload.session.cookies).toContainEqual(nameless);
+
+  options.cloud.openProfile = async () => ({
+    ok: true, registrationId: "registration2", baseVersion: 5, payload: savedPayload, activeOpens: [],
+  });
+  const restored: string[] = [];
+  options.applySession = async (_ws: string, bundle: string) => { restored.push(bundle); };
+  const reopened = new CloudBrowserCoordinator(options);
+  expect(await reopened.open("profile1", ["--window-size=1200,800"])).toMatchObject({ ok: true });
+  expect(JSON.parse(restored[0]!).cookies).toContainEqual(nameless);
+  await reopened.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud browser reports a payload it cannot store as invalid_payload and logs why", async () => {
+  const state = setup({
+    session: { cookies: [{ name: "token", value: "session-secret-value", domain: "", path: "/" }] },
+  });
+
+  const result = await state.coordinator.open("profile1", ["--window-size=1200,800"]);
+
+  expect(result).toEqual({ ok: false, error: "Cloud profile open failed at payload_restore (invalid_payload)" });
+  expect(state.logs).toContain(
+    "profile1: Cloud open failed at payload_restore (invalid_payload, Error): profile cookie 0 requires non-empty domain and path",
+  );
+  expect(JSON.stringify(state.logs)).not.toContain("session-secret-value");
+  expect(state.events).not.toContain("start");
+  expect(state.abandonCalls()).toBe(1);
+  state.queue.close();
+  state.store.close();
+});
+
 test("Cloud browser keeps the platform home fallback for legacy bundles", async () => {
   const state = setup();
 

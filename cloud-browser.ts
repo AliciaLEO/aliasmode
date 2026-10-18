@@ -917,7 +917,9 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       }
       this.diagnosticEvents.record("open_failed");
       this.log(`${profileId}: open FAILED at ${lastLoggedStage} after ${Date.now() - openStartedAt}ms`);
-      const code = errorCode(error);
+      // payload_restore only checks the downloaded profile and stores it on this
+      // device: a failure there is the payload, never the network.
+      const code = stage === "payload_restore" ? "invalid_payload" : errorCode(error);
       const failureStage = error instanceof SessionRestoreError
         ? `session_restore/${error.operation}`
         : error instanceof BrowserLaunchError
@@ -925,9 +927,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           : stage;
       // Before registration only the local pending-sync queue is touched, so a
       // failure there is a local queue/database error whose message holds no
-      // session material and is the only clue an operator gets.
+      // session material and is the only clue an operator gets. Payload checks
+      // name the field that failed (e.g. "profile cookie 3 ..."), not session or login values.
       // Launcher identity checks name only local runtime state; restore errors may carry page detail.
-      const localDetail = error instanceof Error && (stage === "pending_sync" || identityCheckFailed)
+      const localDetail = error instanceof Error && (stage === "pending_sync" || stage === "payload_restore" || identityCheckFailed)
         ? `: ${error.message}` : "";
       const guidance = error instanceof BrowserLaunchError && error.guidance ? `: ${error.guidance}` : "";
       this.log(`${profileId}: Cloud open failed at ${failureStage} (${code}, ${safeErrorType(error)})${localDetail}${guidance}`);

@@ -616,3 +616,14 @@ test("a new expectation clears a verdict computed against the previous one", () 
   expect(back.fpVerdict).toBeUndefined();
   store.close();
 });
+
+test("every profile save, single or in a batch, reaches the save hook", () => {
+  const store = new ProfileStore(":memory:");
+  const saved: string[] = [];
+  store.onProfileSaved = (profile) => saved.push(profile.id);
+  const [first, second] = parseExport("id=hook0001\nname=one\n******************\nid=hook0002\nname=two\n******************").profiles;
+  store.upsertProfile(first!);
+  store.upsertProfiles([second!]);
+  expect(saved).toEqual(["hook0001", "hook0002"]);
+  store.close();
+});

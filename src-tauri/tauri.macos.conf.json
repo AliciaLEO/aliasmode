@@ -10,9 +10,6 @@
       "icons/icon.icns",
       "icons/icon.png"
     ],
-    "resources": {
-      "resources/cloakbrowser/": null
-    },
     "macOS": {
       "signingIdentity": "-",
       "hardenedRuntime": false

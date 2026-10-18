@@ -101,8 +101,9 @@ function Install-AcceptanceArtifact(
   } catch {
     throw "candidate browser metadata is malformed"
   }
-  if ($metadata.executable -ne "chrome.exe" -or [string]$metadata.sha256 -notmatch '^[a-f0-9]{64}$') {
-    throw "candidate browser metadata is invalid"
+  # The installer carries no CloakBrowser: the app downloads it on first use.
+  if ($null -ne $metadata.executable -or $null -ne $metadata.sha256) {
+    throw "candidate browser metadata still names a bundled CloakBrowser"
   }
   if (
     $metadata.firefox.version -ne "156.0.1-beta.36" -or
@@ -128,6 +129,9 @@ function Install-AcceptanceArtifact(
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw "installed AliasMode executable is missing"
   }
+  if (Test-Path -LiteralPath (Join-Path $Destination "cloakbrowser")) {
+    throw "installer still carries CloakBrowser"
+  }
   $sidecars = @(Get-ChildItem $Destination -Recurse -File -Filter "aliasmode-sidecar*.exe")
   if ($sidecars.Count -ne 1) { throw "expected exactly one installed sidecar, found $($sidecars.Count)" }
 
@@ -139,15 +143,39 @@ function Install-AcceptanceArtifact(
   }
 }
 
-function Set-BrowserRuntimeEnvironment($Installation, [string]$InstallRoot) {
-  $runtime = Join-Path $InstallRoot "playwright"
-  $browser = Join-Path $InstallRoot "cloakbrowser\chrome.exe"
+# The pinned CloakBrowser build that the app downloads on first use.
+$cloakBrowserDirectory = "cloakbrowser-146.0.7680.177.5"
+$cloakBrowserArchiveUrl = "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-windows-x64.zip"
+$cloakBrowserArchiveSha256 = "b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe"
+$cloakBrowserExecutableSha256 = "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80"
+
+# Direct sidecar smokes get one pinned CloakBrowser download per shard instead of one per state root.
+function Get-PinnedCloakBrowser([string]$Root) {
+  $browser = Join-Path (Join-Path $Root $cloakBrowserDirectory) "chrome.exe"
   if (-not (Test-Path -LiteralPath $browser -PathType Leaf)) {
-    throw "installed CloakBrowser executable is missing"
+    New-Item -ItemType Directory -Force (Split-Path $browser -Parent) | Out-Null
+    $archive = Join-Path $Root "cloakbrowser-windows-x64.zip"
+    & curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --output $archive $cloakBrowserArchiveUrl
+    if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser download failed" }
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserArchiveSha256) {
+      throw "pinned CloakBrowser archive SHA-256 mismatch"
+    }
+    & tar.exe -xf $archive -C (Split-Path $browser -Parent)
+    if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser extraction failed" }
+    Remove-Item -LiteralPath $archive -Force
   }
+  if ((Get-FileHash -LiteralPath $browser -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserExecutableSha256) {
+    throw "pinned CloakBrowser executable SHA-256 mismatch"
+  }
+  return $browser
+}
+
+function Set-BrowserRuntimeEnvironment([string]$InstallRoot, [string]$BrowserRoot) {
+  $runtime = Join-Path $InstallRoot "playwright"
+  $browser = Get-PinnedCloakBrowser $BrowserRoot
   [Environment]::SetEnvironmentVariable("ALIASMODE_PLAYWRIGHT_RUNTIME", $runtime, "Process")
   [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", $browser, "Process")
-  [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_SHA256", $Installation.BrowserMetadata.sha256, "Process")
+  [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_SHA256", $cloakBrowserExecutableSha256, "Process")
   [Environment]::SetEnvironmentVariable("ALIASMODE_SESSION_LAUNCH", "0", "Process")
   return [pscustomobject]@{ PlaywrightRuntime = $runtime; BrowserPath = $browser }
 }
@@ -596,6 +624,7 @@ $checks = [ordered]@{
   customScriptRunners = $false
   firefoxCliLifecycle = $false
   chromiumBetaLifecycle = $false
+  cloakBrowserDownload = $false
   nativeNetworkObservation = $false
   browserMetadataHash = $false
   nativeHeadfulLaunch = $false
@@ -953,7 +982,8 @@ public static class AliasModeWindow {
       $profileId = $profile.result.id
       $runtimeDescriptor = Read-ValidRuntimeDescriptor $descriptorPath $bundleVersion
       $nativeNetworkObservationConfigPath = Join-Path $runRoot "native-network-observation.json"
-      $chromiumBinaryPath = Join-Path $installRoot "cloakbrowser\chrome.exe"
+      # No CloakBrowser is bundled: this first open downloads the pinned build into the data folder.
+      $chromiumBinaryPath = Join-Path (Join-Path (Join-Path $appDataRoot "runtimes") $cloakBrowserDirectory) "chrome.exe"
       Set-NativeNetworkObservationPhase $nativeNetworkObservationConfigPath "chromium-lifecycle" @(
         @{ pid = [int]$runtimeDescriptor.desktopPid; kind = "app" },
         @{ pid = [int]$runtimeDescriptor.sidecarPid; kind = "sidecar" }
@@ -983,6 +1013,14 @@ public static class AliasModeWindow {
       if ($LASTEXITCODE -ne 0 -or -not $status.ok -or -not $status.result.running) {
         throw "installed JSON CLI did not report its browser as running: $($status.error)"
       }
+      if ((Get-FileHash -LiteralPath $chromiumBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserExecutableSha256) {
+        throw "downloaded CloakBrowser does not match its pin"
+      }
+      $runtimeLeftovers = @(Get-ChildItem -LiteralPath (Join-Path $appDataRoot "runtimes") -Force | Where-Object Name -Like ".cloakbrowser-*")
+      if ($runtimeLeftovers.Count -ne 0) {
+        throw "CloakBrowser download left a partial or temporary file"
+      }
+      $checks.cloakBrowserDownload = $true
 
       Set-AcceptanceStage "runtime-desktop-custom-scripts"
       if ($opened.result.port -le 0) { throw "installed JSON CLI did not return a browser CDP port" }
@@ -1399,19 +1437,12 @@ try {
     }
     "browser" {
       Set-AcceptanceStage "browser-metadata-hash"
-      if ($installation.BrowserMetadata.executable -ne "chrome.exe") {
-        throw "Windows browser metadata does not target chrome.exe"
-      }
-      $browserRuntime = Set-BrowserRuntimeEnvironment $installation $installRoot
+      $browserRuntime = Set-BrowserRuntimeEnvironment $installRoot (Join-Path $runRoot "browsers")
       if (-not (Test-Path -LiteralPath (Join-Path $browserRuntime.PlaywrightRuntime "node\node.exe") -PathType Leaf)) {
         throw "installed official Node runtime is missing"
       }
       if (-not (Test-Path -LiteralPath (Join-Path $browserRuntime.PlaywrightRuntime "node_modules\playwright-core\package.json") -PathType Leaf)) {
         throw "installed Playwright runtime is missing"
-      }
-      $actualBrowserHash = (Get-FileHash -LiteralPath $browserRuntime.BrowserPath -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($actualBrowserHash -ne $installation.BrowserMetadata.sha256) {
-        throw "installed CloakBrowser SHA-256 does not match browser metadata"
       }
       $checks.browserMetadataHash = $true
 
@@ -1507,7 +1538,7 @@ try {
     }
     "cloud" {
       Set-AcceptanceStage "cloud-preparing"
-      $browserRuntime = Set-BrowserRuntimeEnvironment $installation $installRoot
+      $browserRuntime = Set-BrowserRuntimeEnvironment $installRoot (Join-Path $runRoot "browsers")
       $playwrightRuntime = $browserRuntime.PlaywrightRuntime
       $cloudAcceptanceRoot = Join-Path $runRoot "cloud-restore"
       Remove-Item -LiteralPath $cloudAcceptanceRoot -Recurse -Force -ErrorAction SilentlyContinue

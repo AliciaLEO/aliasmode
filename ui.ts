@@ -1242,8 +1242,6 @@ export async function handleUiRequest(
       }
       const created = options.cloudBrowser ? await options.cloudBrowser.create(profile) : undefined;
       if (!created) store.upsertProfile(profile);
-      // Start the one-time beta download now so the first open is not waiting on it.
-      if (profile.chromiumRuntime) launcher.prepareChromiumRuntime();
       return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });

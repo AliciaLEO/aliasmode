@@ -10,7 +10,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { CLOAKBROWSER_WRAPPER_VERSION, installCloakBrowser } from "../browser-install.ts";
 import { extractZipTo } from "../unzip.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 
@@ -56,10 +55,8 @@ export interface PreparedFirefoxMetadata {
   archiveSha256: string;
 }
 
+/** CloakBrowser is not bundled: the app downloads it on first use. */
 export interface PreparedBrowserMetadata {
-  executable: string;
-  sha256: string;
-  wrapperVersion: typeof CLOAKBROWSER_WRAPPER_VERSION;
   firefox: PreparedFirefoxMetadata;
 }
 
@@ -75,7 +72,6 @@ export interface PrepareWindowsBundleOptions {
   arch?: string;
   compileSidecar?: (output: string) => Promise<void>;
   compileAgent?: (output: string) => Promise<void>;
-  installBrowser?: (cwd: string, cacheDir: string) => Promise<{ path: string; sha256: string }>;
   hashFile?: (path: string) => Promise<string>;
   downloadNode?: () => Promise<Uint8Array>;
   installNode?: (playwrightRoot: string) => Promise<void>;
@@ -325,19 +321,15 @@ export async function prepareWindowsBundle(
   const binaries = join(tauri, "binaries");
   const resources = join(tauri, "resources");
   const staging = join(tauri, "target", "desktop-staging");
-  const browserCache = join(tauri, "target", "cloakbrowser-cache");
-  const resourceRoot = join(resources, "cloakbrowser");
   const firefoxRoot = join(resources, "firefox");
   const playwrightRoot = join(resources, "playwright");
   const sidecar = join(binaries, "aliasmode-sidecar-x86_64-pc-windows-msvc.exe");
   const agentHelper = join(binaries, "aliasmode-mcp-x86_64-pc-windows-msvc.exe");
 
   rmSync(staging, { recursive: true, force: true });
-  rmSync(resourceRoot, { recursive: true, force: true });
   rmSync(firefoxRoot, { recursive: true, force: true });
   rmSync(playwrightRoot, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
-  mkdirSync(browserCache, { recursive: true });
   mkdirSync(generated, { recursive: true });
   mkdirSync(binaries, { recursive: true });
   mkdirSync(resources, { recursive: true });
@@ -389,35 +381,7 @@ export async function prepareWindowsBundle(
   }
   stageAgentRuntime(cwd, playwrightRoot);
 
-  const installed = await (options.installBrowser ?? ((dir, cacheDir) => installCloakBrowser({ cwd: dir, cacheDir })))(
-    staging,
-    browserCache,
-  );
-  const cacheReal = realpathSync(browserCache);
-  const installedReal = realpathSync(installed.path);
-  if (!statSync(installedReal).isFile() || !isWithin(cacheReal, installedReal)) {
-    throw new Error("official CloakBrowser installer reported a path outside its cache directory");
-  }
-
-  const runtimeRoot = dirname(installedReal);
-  const executableRelative = relative(runtimeRoot, installedReal).replaceAll("\\", "/");
-  if (executableRelative !== "chrome.exe") {
-    throw new Error("official CloakBrowser installer did not provide Windows chrome.exe");
-  }
-  cpSync(runtimeRoot, resourceRoot, { recursive: true, errorOnExist: false });
-  rmSync(join(resourceRoot, "chromedriver.exe"), { force: true });
-  const copiedExecutable = join(resourceRoot, executableRelative);
-  const copiedHash = (await (options.hashFile ?? sha256File)(copiedExecutable)).toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(copiedHash) || copiedHash !== installed.sha256.toLowerCase()) {
-    throw new Error("packaged CloakBrowser executable does not match the installed SHA-256");
-  }
-
-  const metadata: PreparedBrowserMetadata = {
-    executable: executableRelative,
-    sha256: copiedHash,
-    wrapperVersion: CLOAKBROWSER_WRAPPER_VERSION,
-    firefox,
-  };
+  const metadata: PreparedBrowserMetadata = { firefox };
   writeFileSync(join(generated, "browser.json"), `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
   writeFileSync(join(generated, "VERSION.txt"), `${ALIASMODE_VERSION}\n`, "utf8");
   return metadata;
@@ -426,7 +390,7 @@ export async function prepareWindowsBundle(
 if (import.meta.main) {
   try {
     const metadata = await prepareWindowsBundle();
-    console.log(`prepared AliasMode Windows bundle with CloakBrowser SHA-256 ${metadata.sha256} and Firefox SHA-256 ${metadata.firefox.sha256}`);
+    console.log(`prepared AliasMode Windows bundle with Firefox SHA-256 ${metadata.firefox.sha256}`);
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);

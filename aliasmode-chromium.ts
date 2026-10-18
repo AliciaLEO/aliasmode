@@ -1,11 +1,14 @@
 /**
  * Browser runtimes that are downloaded on first use instead of being bundled:
- * the opt-in Chromium 155 beta, and CloakBrowser for the macOS and Linux apps. Each is
- * pinned by archive and executable SHA-256 like the bundled CloakBrowser kernel.
+ * the opt-in Chromium 155 beta, and CloakBrowser. Each is pinned by archive and
+ * executable SHA-256, and lives in the app's data folder, which survives app updates.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, sha256File } from "./browser-install.ts";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
+import {
+  CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
+  CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, sha256File,
+} from "./browser-install.ts";
 
 export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
 // AliasMode's own build of the patch series. Its package includes Chromium's
@@ -95,7 +98,7 @@ const CLOAKBROWSER_MACOS: PinnedRuntime = {
   executableSha256: CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
 };
 
-// The Linux app ships no CloakBrowser either; it downloads CloakBrowser's own Linux build on first use.
+// The Linux app downloads CloakBrowser's own Linux build on first use.
 export const CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 = "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8";
 const CLOAKBROWSER_LINUX: PinnedRuntime = {
   label: "CloakBrowser",
@@ -106,6 +109,30 @@ const CLOAKBROWSER_LINUX: PinnedRuntime = {
   executable: "chrome",
   executableSha256: CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
 };
+
+// The Windows app downloads the build it bundled before, so profiles keep their exact kernel.
+const CLOAKBROWSER_WINDOWS: PinnedRuntime = {
+  label: "CloakBrowser",
+  dir: `cloakbrowser-${CLOAKBROWSER_VERSION}`,
+  url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_VERSION}/cloakbrowser-windows-x64.zip`,
+  archiveSha256: CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
+  archiveRoot: "",
+  executable: "chrome.exe",
+  executableSha256: CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256,
+};
+
+/** The CloakBrowser build that the app downloads on this computer; none where CloakBrowser does not run. */
+function cloakBrowser(platform: NodeJS.Platform, arch: string): PinnedRuntime | undefined {
+  if (platform === "darwin" && arch === "arm64") return CLOAKBROWSER_MACOS;
+  if (platform === "linux" && arch === "x64") return CLOAKBROWSER_LINUX;
+  if (platform === "win32" && arch === "x64") return CLOAKBROWSER_WINDOWS;
+  return undefined;
+}
+
+/** SHA-256 of the CloakBrowser executable that the app downloads on this computer. */
+export function cloakBrowserExecutableSha256(platform: NodeJS.Platform, arch: string): string | undefined {
+  return cloakBrowser(platform, arch)?.executableSha256;
+}
 
 /** The computers that can run Chromium 155. */
 export function supportsChromium155Host(platform: NodeJS.Platform, arch: string): boolean {
@@ -147,9 +174,11 @@ export function hostDisplayScale(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 export interface AliasmodeChromiumDeps {
+  /** One download attempt. It continues the partial file that an earlier attempt or app run left. */
   download?: (url: string, output: string) => Promise<void>;
   extract?: (archive: string, directory: string) => Promise<void>;
   hashFile?: (path: string) => Promise<string>;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 async function run(command: string[]): Promise<void> {
@@ -167,6 +196,48 @@ async function renameWhenUnlocked(from: string, to: string): Promise<void> {
       const code = (error as NodeJS.ErrnoException).code ?? "";
       if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
       await Bun.sleep(500);
+    }
+  }
+}
+
+/**
+ * curl, not fetch: on Windows curl.exe trusts the Windows certificate store, so a company
+ * proxy that inspects TLS works. A download that gets under 1 KB/s for a minute stops,
+ * and the next attempt continues it.
+ */
+async function curlDownload(url: string, output: string, platform: NodeJS.Platform): Promise<void> {
+  const child = Bun.spawn([
+    platform === "win32" ? "curl.exe" : "curl", "--fail", "--location", "--silent", "--show-error",
+    "--continue-at", "-", "--connect-timeout", "30", "--speed-limit", "1024", "--speed-time", "60",
+    "--output", output, url,
+  ], { stdout: "ignore", stderr: "ignore" });
+  const code = await child.exited;
+  // 33: the server cannot continue the saved part, so the next attempt starts over.
+  if (code === 33) rmSync(output, { force: true });
+  if (code !== 0) throw new Error(`curl exited with code ${code}`);
+}
+
+const DOWNLOAD_ATTEMPTS = 5;
+
+function fileSize(path: string): number {
+  return statSync(path, { throwIfNoEntry: false })?.size ?? 0;
+}
+
+/** Retry a broken download. Only attempts that add no bytes count toward the limit. */
+async function downloadWithRetry(
+  url: string,
+  partial: string,
+  download: (url: string, output: string) => Promise<void>,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  for (let failures = 0; ;) {
+    const before = fileSize(partial);
+    try {
+      await download(url, partial);
+      return;
+    } catch (error) {
+      if (fileSize(partial) <= before && ++failures >= DOWNLOAD_ATTEMPTS) throw error;
+      await sleep(Math.min(30_000, 1000 * 2 ** failures));
     }
   }
 }
@@ -189,6 +260,11 @@ function extractCommand(url: string, file: string, directory: string, platform: 
   return platform === "darwin" ? ["ditto", "-x", "-k", file, directory] : ["tar.exe", "-xf", file, "-C", directory];
 }
 
+/** The download in progress keeps this name across attempts and app runs, so it can continue. */
+function partialName(spec: PinnedRuntime): string {
+  return `.${spec.dir}.${spec.archiveSha256.slice(0, 16)}.part`;
+}
+
 async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, platform: NodeJS.Platform): Promise<string> {
   const hashFile = deps.hashFile ?? sha256File;
   const target = join(root, spec.dir);
@@ -202,17 +278,23 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
   for (const entry of readdirSync(root)) {
     if (entry.startsWith(tempPrefix)) rmSync(join(root, entry), { recursive: true, force: true });
   }
+  const partial = join(root, partialName(spec));
+  await downloadWithRetry(
+    spec.url,
+    partial,
+    deps.download ?? ((url, output) => curlDownload(url, output, platform)),
+    deps.sleep ?? Bun.sleep,
+  );
+  if (await hashFile(partial) !== spec.archiveSha256) {
+    rmSync(partial, { force: true });
+    throw new Error(`${spec.label} archive did not match its pinned SHA-256`);
+  }
   const temp = join(root, `${tempPrefix}${process.pid}-${Date.now()}`);
   const archive = join(temp, "runtime.archive");
   const extracted = join(temp, "extracted");
   mkdirSync(extracted, { recursive: true });
   try {
-    await (deps.download ?? ((url, output) => run([
-      platform === "win32" ? "curl.exe" : "curl", "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors", "--output", output, url,
-    ])))(spec.url, archive);
-    if (await hashFile(archive) !== spec.archiveSha256) {
-      throw new Error(`${spec.label} archive did not match its pinned SHA-256`);
-    }
+    await renameWhenUnlocked(partial, archive);
     await (deps.extract ?? ((file, directory) => run(extractCommand(spec.url, file, directory, platform))))(archive, extracted);
     const runtime = spec.archiveRoot ? join(extracted, spec.archiveRoot) : extracted;
     if (await hashFile(join(runtime, spec.executable)) !== spec.executableSha256) {
@@ -244,12 +326,40 @@ export function ensureAliasmodeChromium(root: string, deps: AliasmodeChromiumDep
   return ensure(chromium155(platform), root, deps, platform);
 }
 
-/** Install the pinned CloakBrowser build for Apple Silicon macOS and return its executable. */
-export function ensureCloakBrowserMacos(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
-  return ensure(CLOAKBROWSER_MACOS, root, deps, "darwin");
+/** Install the pinned CloakBrowser build of this computer and return its executable. */
+export function ensureCloakBrowser(root: string, platform = process.platform, arch: string = process.arch, deps: AliasmodeChromiumDeps = {}): Promise<string> {
+  const spec = cloakBrowser(platform, arch);
+  if (!spec) return Promise.reject(new Error(`CloakBrowser does not run on ${platform} ${arch}`));
+  return ensure(spec, root, deps, platform);
 }
 
-/** Install the pinned CloakBrowser build for Linux x64 and return its executable. */
-export function ensureCloakBrowserLinux(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
-  return ensure(CLOAKBROWSER_LINUX, root, deps, "linux");
+function within(directory: string, path: string): boolean {
+  const rel = relative(directory, path);
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+/**
+ * Remove downloaded Chromium and CloakBrowser runtimes that are no longer pinned, with their
+ * partial downloads. A runtime that holds one of `inUse` (a live browser's executable) stays
+ * until a later start. Other folders under the runtimes root are left alone.
+ */
+export function pruneBrowserRuntimes(root: string, inUse: readonly string[], platform = process.platform, arch: string = process.arch): void {
+  let entries: string[];
+  let real: string;
+  try {
+    entries = readdirSync(root);
+    real = realpathSync(root);
+  } catch {
+    return;
+  }
+  const pins = [chromium155(platform), ...(cloakBrowser(platform, arch) ? [cloakBrowser(platform, arch)!] : [])];
+  const keep = new Set(pins.flatMap((spec) => [spec.dir, partialName(spec)]));
+  for (const entry of entries) {
+    if (!/^\.?(chromium|cloakbrowser)-/.test(entry) || keep.has(entry)) continue;
+    // An install running now owns its temporary folder; the next install removes stale ones.
+    if (pins.some((spec) => entry.startsWith(`.${spec.dir}-`))) continue;
+    const path = join(real, entry);
+    if (inUse.some((executable) => within(path, executable))) continue;
+    try { rmSync(path, { recursive: true, force: true }); } catch {}
+  }
 }

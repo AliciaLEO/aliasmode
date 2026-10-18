@@ -113,7 +113,7 @@ bun run desktop:prepare
 bun run desktop:build:nsis
 ```
 
-The build obtains CloakBrowser through the pinned official wrapper, verifies the staged executable hash, and packages the third-party runtime as a bundled resource included at no extra cost. AliasMode verifies the installed executable again before startup and before every browser launch.
+The installer does not include CloakBrowser. The app downloads the pinned CloakBrowser build into its data folder when a Chromium profile needs it, and starts that download when the app starts. AliasMode verifies the archive and executable SHA-256 hashes before every browser launch, and the download survives app updates.
 
 ### Import from Cloakpit
 
@@ -184,7 +184,7 @@ The website copies two contracts from this repository:
 
 AliasMode Firefox is AliasMode's own antidetect engine, built on top of Camoufox and published at [aliasmode/aliasmode-firefox](https://github.com/aliasmode/aliasmode-firefox) under MPL-2.0. AliasMode downloads it from that repository's releases and verifies the archive and executable SHA-256 hashes before launch. Firefox profiles do not support Chrome extensions or CDP.
 
-For Chromium profiles, AliasMode installs CloakBrowser through its approved official installer and pins the resulting executable hash. The runtime is included at no extra cost: no separate CloakBrowser purchase, subscription, or account is required. The CloakBrowser binary is a third-party component and is not part of this repository or the Apache-2.0 license.
+For Chromium profiles, AliasMode downloads CloakBrowser from its official releases on first use and verifies the pinned archive and executable SHA-256 hashes. The runtime is included at no extra cost: no separate CloakBrowser purchase, subscription, or account is required. The CloakBrowser binary is a third-party component and is not part of this repository or the Apache-2.0 license.
 
 ## Security
 

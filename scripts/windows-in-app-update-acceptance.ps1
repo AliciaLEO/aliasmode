@@ -254,11 +254,12 @@ function Wait-DesktopReady(
   throw "installed public desktop did not become ready"
 }
 
-function Get-InstalledBrowserProcesses([string]$InstallRoot) {
+# Browsers run from the runtimes that the app downloads into its data folder.
+function Get-InstalledBrowserProcesses([string]$DataRoot) {
   $result = [Collections.Generic.List[Diagnostics.Process]]::new()
   foreach ($record in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
     if ($record.ExecutablePath -and
-        (Test-PathWithin ([string]$record.ExecutablePath) (Join-Path $InstallRoot "cloakbrowser"))) {
+        (Test-PathWithin ([string]$record.ExecutablePath) (Join-Path $DataRoot "runtimes"))) {
       $process = Get-Process -Id $record.ProcessId -ErrorAction SilentlyContinue
       if ($process) { $result.Add($process) }
     }
@@ -1051,9 +1052,10 @@ try {
   $profileName = "in-app-update-preservation-sentinel"
   $observations.profileCreated = $true
   $encodedProfileId = [Uri]::EscapeDataString($profileId)
+  # The first open also downloads CloakBrowser into the data folder.
   $opened = Invoke-RestMethod "$($oldRecord.Origin)/ui/api/profiles/$encodedProfileId/open" `
     -Method Post `
-    -TimeoutSec 120 `
+    -TimeoutSec 300 `
     -NoProxy
   if ($opened.ok -ne $true -or [int]$opened.port -le 0) {
     throw "public $publicVersion could not open the preservation browser"
@@ -1062,7 +1064,7 @@ try {
     Select-Object -ExpandProperty OwningProcess -Unique)
   if ($browserOwner.Count -ne 1) { throw "preservation browser CDP owner was not unique" }
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    $oldBrowserProcesses = @(Get-InstalledBrowserProcesses $installRoot)
+    $oldBrowserProcesses = @(Get-InstalledBrowserProcesses $appDataRoot)
     if ($oldBrowserProcesses.Count -gt 0 -and
         @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] }).Count -eq 1) {
       break
@@ -1194,7 +1196,7 @@ try {
       -not $observations.oldBrowserExited) {
     throw "public $publicVersion process tree survived update handoff"
   }
-  if (@(Get-InstalledBrowserProcesses $installRoot).Count -ne 0) {
+  if (@(Get-InstalledBrowserProcesses $appDataRoot).Count -ne 0) {
     throw "installed browser process survived update handoff"
   }
   $observations.candidateReady = $true

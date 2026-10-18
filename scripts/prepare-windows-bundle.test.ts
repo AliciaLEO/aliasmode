@@ -96,16 +96,12 @@ async function installPython(root: string): Promise<void> {
   writeFileSync(join(python, "Lib", "site-packages", "playwright", "driver", "node.exe"), "driver");
 }
 
-test("Windows bundle preparation packages CloakBrowser and owned Firefox with verified hashes", async () => {
+test("Windows bundle preparation packages owned Firefox with verified hashes and no CloakBrowser", async () => {
   const cwd = workspace();
-  const browserBytes = "official-browser";
   const firefox = firefoxArchive();
   const staging = join(cwd, "src-tauri", "target", "desktop-staging");
-  const browserCache = join(cwd, "src-tauri", "target", "cloakbrowser-cache");
   mkdirSync(staging, { recursive: true });
-  mkdirSync(browserCache, { recursive: true });
   writeFileSync(join(staging, "stale"), "remove");
-  writeFileSync(join(browserCache, "cached-download"), "keep");
   try {
     const metadata = await prepareWindowsBundle({
       cwd,
@@ -119,25 +115,10 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
         writeFileSync(join(root, "node", "node.exe"), "node");
       },
       installPython,
-      installBrowser: async (installCwd, cacheDir) => {
-        expect(installCwd).toBe(staging);
-        expect(cacheDir).toBe(browserCache);
-        expect(existsSync(join(staging, "stale"))).toBe(false);
-        expect(readFileSync(join(cacheDir, "cached-download"), "utf8")).toBe("keep");
-        const runtime = join(cacheDir, "cloakbrowser");
-        mkdirSync(join(runtime, "locales"), { recursive: true });
-        writeFileSync(join(runtime, "chrome.exe"), browserBytes);
-        writeFileSync(join(runtime, "chromedriver.exe"), "driver");
-        writeFileSync(join(runtime, "chrome.dll"), "dll");
-        writeFileSync(join(runtime, "locales", "en-US.pak"), "locale");
-        return { path: join(runtime, "chrome.exe"), sha256: sha256(browserBytes) };
-      },
     });
 
+    // The app downloads CloakBrowser on first use, so the installer carries none.
     expect(metadata).toEqual({
-      executable: "chrome.exe",
-      sha256: sha256(browserBytes),
-      wrapperVersion: "0.4.11",
       firefox: {
         executable: "firefox/aliasmode.exe",
         sha256: firefox.executableSha256,
@@ -145,8 +126,8 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
         archiveSha256: firefox.archiveSha256,
       },
     });
-    expect(readFileSync(join(cwd, "src-tauri", "resources", "cloakbrowser", "chrome.dll"), "utf8")).toBe("dll");
-    expect(existsSync(join(cwd, "src-tauri", "resources", "cloakbrowser", "chromedriver.exe"))).toBe(false);
+    expect(existsSync(join(staging, "stale"))).toBe(false);
+    expect(existsSync(join(cwd, "src-tauri", "resources", "cloakbrowser"))).toBe(false);
     expect(readFileSync(join(cwd, "src-tauri", "resources", "firefox", "firefox", "aliasmode.exe"), "utf8")).toBe("owned-firefox");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node", "node.exe"), "utf8")).toBe("node");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "python", "python.exe"), "utf8")).toBe("python");
@@ -165,90 +146,6 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
     expect(readFileSync(join(cwd, "src-tauri", "binaries", "aliasmode-mcp-x86_64-pc-windows-msvc.exe"), "utf8")).toBe("agent");
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "generated", "browser.json"), "utf8"))).toEqual(metadata);
     expect(readFileSync(join(cwd, "src-tauri", "generated", "VERSION.txt"), "utf8")).toBe(`${ALIASMODE_VERSION}\n`);
-    expect(readFileSync(join(browserCache, "cached-download"), "utf8")).toBe("keep");
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("Windows bundle preparation rejects a non-Windows browser payload", async () => {
-  const cwd = workspace();
-  try {
-    await expect(prepareWindowsBundle({
-      cwd,
-      platform: "win32",
-      arch: "x64",
-      firefoxArchive: firefoxArchive(),
-      compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
-      installNode: async (root) => {
-        mkdirSync(join(root, "node"), { recursive: true });
-        writeFileSync(join(root, "node", "node.exe"), "node");
-      },
-      installPython,
-      installBrowser: async (_staging, cacheDir) => {
-        const runtime = join(cacheDir, "cloakbrowser");
-        mkdirSync(runtime, { recursive: true });
-        writeFileSync(join(runtime, "chrome"), "browser");
-        writeFileSync(join(runtime, "libEGL.so"), "linux");
-        return { path: join(runtime, "chrome"), sha256: sha256("browser") };
-      },
-    })).rejects.toThrow("Windows chrome.exe");
-    expect(existsSync(join(cwd, "src-tauri", "generated", "browser.json"))).toBe(false);
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("Windows bundle preparation rejects installer paths outside its cache", async () => {
-  const cwd = workspace();
-  const outside = join(cwd, "outside", "chrome.exe");
-  mkdirSync(join(cwd, "outside"), { recursive: true });
-  writeFileSync(outside, "browser");
-  try {
-    await expect(prepareWindowsBundle({
-      cwd,
-      platform: "win32",
-      arch: "x64",
-      firefoxArchive: firefoxArchive(),
-      compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
-      installNode: async (root) => {
-        mkdirSync(join(root, "node"), { recursive: true });
-        writeFileSync(join(root, "node", "node.exe"), "node");
-      },
-      installPython,
-      installBrowser: async () => ({ path: outside, sha256: sha256("browser") }),
-    })).rejects.toThrow("outside its cache directory");
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("Windows bundle preparation rejects a changed packaged executable", async () => {
-  const cwd = workspace();
-  try {
-    await expect(prepareWindowsBundle({
-      cwd,
-      platform: "win32",
-      arch: "x64",
-      firefoxArchive: firefoxArchive(),
-      compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
-      installNode: async (root) => {
-        mkdirSync(join(root, "node"), { recursive: true });
-        writeFileSync(join(root, "node", "node.exe"), "node");
-      },
-      installPython,
-      installBrowser: async (_staging, cacheDir) => {
-        const runtime = join(cacheDir, "cloakbrowser");
-        mkdirSync(runtime, { recursive: true });
-        const executable = join(runtime, "chrome.exe");
-        writeFileSync(executable, "browser");
-        return { path: executable, sha256: sha256("browser") };
-      },
-      hashFile: async (path) => path.includes("firefox") ? sha256("owned-firefox") : sha256("replaced"),
-    })).rejects.toThrow("does not match the installed SHA-256");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

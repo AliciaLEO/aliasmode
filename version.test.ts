@@ -14,6 +14,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     version: string;
     bundle: {
       createUpdaterArtifacts: boolean | string;
+      resources: Record<string, string>;
       windows: {
         webviewInstallMode: { type: string };
         nsis: { compression: string; installMode: string; installerIcon: string };
@@ -118,10 +119,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
     installedAcceptance.indexOf('    "runtime-desktop" {'),
     installedAcceptance.indexOf('    "browser" {'),
   );
-  const cacheStep = (job: string) => {
-    const start = job.indexOf("      - name: Cache pinned CloakBrowser");
-    return job.slice(start, job.indexOf("\n      - ", start + 1));
-  };
   const baselineStep = (job: string, nextStep: string) => job.slice(
     job.indexOf("      - name: Prepare bundle with verified official baseline Bun"),
     job.indexOf(nextStep),
@@ -142,16 +139,10 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(updaterConfig.bundle.windows.webviewInstallMode.type).toBe("downloadBootstrapper");
   expect(browserInstallSource).toContain('CLOAKBROWSER_VERSION = "146.0.7680.177.5"');
   expect(browserInstallSource).toContain('env.CLOAKBROWSER_AUTO_UPDATE = "false"');
-  expect(ciWorkflow).toContain("name: Cache pinned CloakBrowser");
-  expect(ciWorkflow).toContain("path: src-tauri/target/cloakbrowser-cache");
-  expect(releaseWorkflow).not.toContain("name: Cache pinned CloakBrowser");
-  expect(ciWorkflow).toContain("cloakbrowser-version=146.0.7680.177.5");
-  expect(ciWorkflow).toContain(
-    "cloakbrowser-archive-sha256=b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe",
-  );
-  expect(ciWorkflow).toContain(
-    "cloakbrowser-executable-sha256=03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80",
-  );
+  // The installer carries no CloakBrowser: the app downloads it on first use.
+  expect(tauriConfig.bundle.resources).not.toHaveProperty("resources/cloakbrowser/");
+  expect(ciWorkflow).not.toContain("cloakbrowser-cache");
+  expect(ciWorkflow).not.toContain("cloakbrowser-version=");
   expect(releasesSource).toContain('const UPDATE_MANIFEST: &str = "latest-v2.json";');
   expect(releasesSource).toContain(".on_before_exit(move || {");
   expect(releasesSource).toContain("let _ = sidecar.kill_owned();");
@@ -167,10 +158,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciSuccessorJob).toContain("shared-key: windows_full");
   expect(ciSuccessorJob).toContain("workspaces: src-tauri -> target");
   expect(ciSuccessorJob).toContain("cache-on-failure: true");
-  expect(ciSuccessorJob.indexOf("uses: Swatinem/rust-cache@v2")).toBeLessThan(
-    ciSuccessorJob.indexOf("name: Cache pinned CloakBrowser"),
-  );
-  expect(cacheStep(ciSuccessorJob)).toBe(cacheStep(windowsFullJob));
   expect(ciSuccessorVersionFiles).toBe([
     "            $versionFiles = @(",
     '              ".\\package.json",',
@@ -240,7 +227,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(signSuccessorInputStep).toContain('Status -cne "NotSigned"');
   expect(signSuccessorInputStep).toContain("Copy-Item $installer $signedInstaller");
   expect(signSuccessorInputStep).not.toContain("TAURI_SIGNING_PRIVATE_KEY");
-  expect(signSuccessorJob).not.toContain("Cache pinned CloakBrowser");
   expect(signSuccessorJob).not.toContain("prepare-windows-bundle.ts");
   expect(signSuccessorJob).not.toContain("build-windows-installer.ps1");
   expect(signSuccessorJob).not.toContain("src-tauri -> target");
@@ -310,13 +296,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciWorkflow).toContain("node-version: 22.23.2");
   expect(windowsFullJob).toContain("\n    needs: windows_cache\n");
   expect(windowsFullJob).not.toContain("windows_prepare");
-  expect(cacheStep(windowsFullJob)).toBe(cacheStep(windowsPrepareJob));
-  expect(windowsFullJob.indexOf("uses: Swatinem/rust-cache@v2")).toBeLessThan(
-    windowsFullJob.indexOf("name: Cache pinned CloakBrowser"),
-  );
-  expect(cacheStep(windowsFullJob)).toContain(
-    "key: cloakbrowser-windows-x64-v1-146.0.7680.177.5-b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe-03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80",
-  );
   const fullBaselineStep = baselineStep(
     windowsFullJob,
     "      - name: Build full offline installer",

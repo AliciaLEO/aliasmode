@@ -1,19 +1,20 @@
 import { test, expect } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   aliasmodeChromiumArchive,
   aliasmodeChromiumExecutable,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
+  cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
-  ensureCloakBrowserLinux,
-  ensureCloakBrowserMacos,
+  ensureCloakBrowser,
   hostChromiumRuntime,
   hostDisplayScale,
   LINUX_CHROMIUM_APPARMOR_PROFILE,
   linuxChromiumSandboxBlocked,
+  pruneBrowserRuntimes,
   supportsChromium155Host,
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
@@ -178,12 +179,12 @@ test("installs the pinned CloakBrowser build for macOS from its tar archive root
     },
     hashFile: async (path) => readFileSync(path, "utf8"),
   };
-  const executable = await ensureCloakBrowserMacos(root, deps);
+  const executable = await ensureCloakBrowser(root, "darwin", "arm64", deps);
   expect(executable).toBe(join(root, "cloakbrowser-145.0.7632.109.2", "Chromium.app", "Contents", "MacOS", "Chromium"));
   expect(downloads).toEqual([
     "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v145.0.7632.109.2/cloakbrowser-darwin-arm64.tar.gz",
   ]);
-  expect(await ensureCloakBrowserMacos(root, deps)).toBe(executable);
+  expect(await ensureCloakBrowser(root, "darwin", "arm64", deps)).toBe(executable);
   expect(downloads).toHaveLength(1);
   expect(readdirSync(root)).toEqual(["cloakbrowser-145.0.7632.109.2"]);
 });
@@ -199,13 +200,135 @@ test("installs the pinned CloakBrowser build for Linux from its tar archive root
     extract: async (_archive, directory) => writeFileSync(join(directory, "chrome"), CLOAKBROWSER_LINUX_EXECUTABLE_SHA256),
     hashFile: async (path) => readFileSync(path, "utf8"),
   };
-  const executable = await ensureCloakBrowserLinux(root, deps);
+  const executable = await ensureCloakBrowser(root, "linux", "x64", deps);
   expect(executable).toBe(join(root, "cloakbrowser-146.0.7680.177.5", "chrome"));
   expect(downloads).toEqual([
     "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-linux-x64.tar.gz",
   ]);
-  expect(await ensureCloakBrowserLinux(root, deps)).toBe(executable);
+  expect(await ensureCloakBrowser(root, "linux", "x64", deps)).toBe(executable);
   expect(downloads).toHaveLength(1);
+});
+
+const WINDOWS_CLOAKBROWSER_ARCHIVE = "b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe";
+const WINDOWS_CLOAKBROWSER_EXECUTABLE = "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80";
+
+test("installs the CloakBrowser build that the Windows app bundled before, from its zip archive root", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
+  const downloads: string[] = [];
+  const deps: AliasmodeChromiumDeps = {
+    download: async (url, output) => {
+      downloads.push(url);
+      writeFileSync(output, WINDOWS_CLOAKBROWSER_ARCHIVE);
+    },
+    extract: async (_archive, directory) => {
+      writeFileSync(join(directory, "chrome.exe"), WINDOWS_CLOAKBROWSER_EXECUTABLE);
+      writeFileSync(join(directory, "chrome.dll"), "dll");
+    },
+    hashFile: async (path) => readFileSync(path, "utf8"),
+  };
+  // The same executable keeps the launch identity of every existing Windows profile.
+  expect(cloakBrowserExecutableSha256("win32", "x64")).toBe(WINDOWS_CLOAKBROWSER_EXECUTABLE);
+  expect(cloakBrowserExecutableSha256("win32", "arm64")).toBeUndefined();
+  const executable = await ensureCloakBrowser(root, "win32", "x64", deps);
+  expect(executable).toBe(join(root, "cloakbrowser-146.0.7680.177.5", "chrome.exe"));
+  expect(downloads).toEqual([
+    "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-windows-x64.zip",
+  ]);
+  expect(readdirSync(join(root, "cloakbrowser-146.0.7680.177.5")).sort()).toEqual(["chrome.dll", "chrome.exe"]);
+  expect(readdirSync(root)).toEqual(["cloakbrowser-146.0.7680.177.5"]);
+  await expect(ensureCloakBrowser(root, "win32", "arm64", deps)).rejects.toThrow("CloakBrowser does not run");
+});
+
+/** A Windows CloakBrowser release whose download breaks `breaks` times, each after `step` bytes. */
+function brokenDownload(breaks: number, step: number) {
+  const outputs: string[] = [];
+  const offsets: number[] = [];
+  const sleeps: number[] = [];
+  const deps: AliasmodeChromiumDeps = {
+    download: async (_url, output) => {
+      outputs.push(output);
+      const have = existsSync(output) ? statSync(output).size : 0;
+      offsets.push(have);
+      const rest = WINDOWS_CLOAKBROWSER_ARCHIVE.slice(have);
+      if (offsets.length > breaks) {
+        appendFileSync(output, rest);
+        return;
+      }
+      appendFileSync(output, rest.slice(0, step));
+      throw new Error("connection reset");
+    },
+    extract: async (_archive, directory) => writeFileSync(join(directory, "chrome.exe"), WINDOWS_CLOAKBROWSER_EXECUTABLE),
+    hashFile: async (path) => readFileSync(path, "utf8"),
+    sleep: async (ms) => { sleeps.push(ms); },
+  };
+  return { deps, outputs, offsets, sleeps };
+}
+
+test("a broken download continues from the saved part, and attempts that add bytes do not use up the retries", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
+  const release = brokenDownload(7, 4);
+  await ensureCloakBrowser(root, "win32", "x64", release.deps);
+  expect(release.offsets).toEqual([0, 4, 8, 12, 16, 20, 24, 28]);
+  // One partial file, outside the temporary install folders.
+  expect(new Set(release.outputs)).toEqual(new Set([join(root, ".cloakbrowser-146.0.7680.177.5.b213795cb32c3169.part")]));
+  expect(release.sleeps).toHaveLength(7);
+  expect(readdirSync(root)).toEqual(["cloakbrowser-146.0.7680.177.5"]);
+});
+
+test("a download that adds nothing stops after five attempts and keeps its part for the next try", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
+  const failing = brokenDownload(Infinity, 0);
+  await expect(ensureCloakBrowser(root, "win32", "x64", failing.deps)).rejects.toThrow("connection reset");
+  expect(failing.offsets).toEqual([0, 0, 0, 0, 0]);
+  expect(failing.sleeps).toEqual([2000, 4000, 8000, 16000]);
+  expect(existsSync(join(root, "cloakbrowser-146.0.7680.177.5"))).toBe(false);
+
+  // A part saved by an earlier app run survives the cleanup of temporary folders and continues.
+  const partial = join(root, ".cloakbrowser-146.0.7680.177.5.b213795cb32c3169.part");
+  writeFileSync(partial, WINDOWS_CLOAKBROWSER_ARCHIVE.slice(0, 10));
+  mkdirSync(join(root, ".cloakbrowser-146.0.7680.177.5-123-456"));
+  const resumed = brokenDownload(0, 0);
+  await ensureCloakBrowser(root, "win32", "x64", resumed.deps);
+  expect(resumed.offsets).toEqual([10]);
+  expect(readdirSync(root)).toEqual(["cloakbrowser-146.0.7680.177.5"]);
+});
+
+test("a completed download that does not match its pin is deleted, so the next try starts over", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
+  const partial = join(root, ".cloakbrowser-146.0.7680.177.5.b213795cb32c3169.part");
+  writeFileSync(partial, "corrupted bytes from an earlier run");
+  const release = brokenDownload(0, 0);
+  await expect(ensureCloakBrowser(root, "win32", "x64", release.deps)).rejects.toThrow("CloakBrowser archive did not match its pinned SHA-256");
+  expect(readdirSync(root)).toEqual([]);
+  await ensureCloakBrowser(root, "win32", "x64", release.deps);
+  expect(release.offsets).toEqual([35, 0]);
+});
+
+test("removes runtimes and parts that are no longer pinned, but not one a live browser runs from", () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-runtimes-"));
+  const pinned155 = basename(dirname(aliasmodeChromiumExecutable(root, "win32")));
+  const kept = [
+    "cloakbrowser-146.0.7680.177.5",
+    ".cloakbrowser-146.0.7680.177.5.b213795cb32c3169.part",
+    ".cloakbrowser-146.0.7680.177.5-99-1",
+    pinned155,
+    // A live browser still runs from this one.
+    "chromium-155.0.8059.31",
+    // Other runtimes under the same root are not this module's.
+    "firefox-fonts",
+    "python-3.13.7",
+  ];
+  const removed = [
+    "cloakbrowser-145.0.7632.109.2",
+    "chromium-155.0.8059.31-aliasmode.1",
+    ".chromium-155.0.8059.31-aliasmode.1.7892833b6126b133.part",
+    ".chromium-155.0.8059.31-aliasmode.1-12-34",
+  ];
+  for (const entry of [...kept, ...removed]) mkdirSync(join(root, entry));
+  const live = join(root, "chromium-155.0.8059.31", "chrome.exe");
+  pruneBrowserRuntimes(root, [live, "D:\\elsewhere\\chrome.exe"], "win32", "x64");
+  expect(readdirSync(root).sort()).toEqual(kept.sort());
+  pruneBrowserRuntimes(join(root, "missing"), [], "win32", "x64");
 });
 
 test("Linux blocks the Chrome sandbox only when AppArmor restricts user namespaces and our profile is missing", () => {

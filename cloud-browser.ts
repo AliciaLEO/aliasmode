@@ -136,7 +136,7 @@ type CloudBrowserLauncher = Pick<
 
 export interface CloudBrowserOptions {
   cloud: CloudBrowserClient;
-  launcher: CloudBrowserLauncher;
+  launcher: CloudBrowserLauncher & Partial<Pick<Launcher, "prefetchBrowserRuntimes">>;
   store: ProfileStore;
   queue: () => PendingSyncQueue | undefined;
   accountId: () => string | undefined;
@@ -607,6 +607,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     if (created.profile.id !== profile.id) {
       throw new Error("Cloud returned a mismatched created profile");
     }
+    // This device saves a Cloud profile only when it opens it, so start its browser download now.
+    this.options.launcher.prefetchBrowserRuntimes?.([profile]);
     return { id: profile.id };
   }
 
@@ -624,6 +626,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     ) {
       throw new Error("Cloud returned a mismatched profile import result");
     }
+    this.options.launcher.prefetchBrowserRuntimes?.(profiles);
     return imported;
   }
 

@@ -19,7 +19,6 @@
     "icon": ["icons/icon.ico"],
     "externalBin": ["binaries/aliasmode-sidecar"],
     "resources": {
-      "resources/cloakbrowser/": "cloakbrowser/",
       "resources/firefox/": "firefox/",
       "resources/playwright/": "playwright/"
     },

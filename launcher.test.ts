@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -5014,21 +5014,25 @@ test("the macOS app opens a CloakBrowser profile with the downloaded macOS build
   store.close();
 });
 
-test("a failed CloakBrowser download on macOS is a public preflight error", async () => {
-  const store = new ProfileStore(":memory:");
-  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
-  store.upsertProfile(profile);
-  const launcher = new ProductionLauncher({
-    store,
-    binaryPath: "",
-    dataRoot: testDataRoot(store),
-    hostPlatform: "darwin",
-    hostArch: "arm64",
-    ensureDownloadedCloakBrowser: async () => { throw new Error("offline"); },
-    spawn: () => { throw new Error("must not spawn"); },
-  });
-  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "cloakbrowser_download"));
-  store.close();
+test("a failed CloakBrowser download is a public preflight error on every desktop system", async () => {
+  for (const [hostPlatform, hostArch] of [["darwin", "arm64"], ["linux", "x64"], ["win32", "x64"]] as const) {
+    const store = new ProfileStore(":memory:");
+    const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+    store.upsertProfile(profile);
+    const launcher = new ProductionLauncher({
+      store,
+      binaryPath: "",
+      dataRoot: testDataRoot(store),
+      hostPlatform,
+      hostArch,
+      ensureDownloadedCloakBrowser: async () => { throw new Error("offline"); },
+      spawn: () => { throw new Error("must not spawn"); },
+    });
+    const error = await launcher.start(profile.id).catch((caught) => caught);
+    expect(error).toEqual(new BrowserLaunchError("preflight", "cloakbrowser_download"));
+    expect(error.guidance).toContain("Check your internet connection");
+    store.close();
+  }
 });
 
 test("the Linux app opens a CloakBrowser profile with the downloaded Linux build and no desktop keyring", async () => {
@@ -5056,6 +5060,99 @@ test("the Linux app opens a CloakBrowser profile with the downloaded Linux build
   expect(spawnedArgs[0]).toContain("--password-store=basic");
   expect(spawnedArgs[0]).not.toContain("--use-mock-keychain");
   expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("the Windows app opens a CloakBrowser profile with the downloaded build and its pinned kernel hash", async () => {
+  const store = new ProfileStore(":memory:");
+  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "win32",
+    hostArch: "x64",
+    chromiumRuntimeRoot: "C:\\fake\\runtimes",
+    ensureDownloadedCloakBrowser: async (root) => `${root}\\cloakbrowser-146.0.7680.177.5\\chrome.exe`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["C:\\fake\\runtimes\\cloakbrowser-146.0.7680.177.5\\chrome.exe"]);
+  // The same executable the installer bundled before, so live browsers and personas stay valid.
+  expect(store.getLaunch(profile.id)?.binarySha256).toBe("03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80");
+  expect(spawnedArgs[0]).not.toContain("--use-mock-keychain");
+  expect(spawnedArgs[0]).not.toContain("--password-store=basic");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("prefetch downloads each runtime and font pack that saved profiles need, and removes unpinned runtimes first", async () => {
+  const store = new ProfileStore(":memory:");
+  const root = join(tmpdir(), `aliasmode-prefetch-${crypto.randomUUID()}`);
+  mkdirSync(join(root, "cloakbrowser-145.0.7632.109.2"), { recursive: true });
+  mkdirSync(join(root, "chromium-155.0.8059.31-aliasmode.1"));
+  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const firefox = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
+  store.upsertProfile(cloak);
+  // A browser that still runs from an older runtime keeps it.
+  store.recordLaunch({
+    profileId: cloak.id, pid: 1, debugPort: 9333, ws: "", startedAt: 1,
+    binaryPath: join(root, "chromium-155.0.8059.31-aliasmode.1", "chrome.exe"),
+  });
+  const downloads: string[] = [];
+  const fontPacks: string[] = [];
+  let failCloakBrowser = true;
+  const logs: string[] = [];
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    chromiumRuntimeRoot: root,
+    hostPlatform: "win32",
+    hostArch: "x64",
+    ensureDownloadedCloakBrowser: async () => {
+      downloads.push("cloakbrowser");
+      if (failCloakBrowser) throw new Error("offline");
+      return "unused";
+    },
+    ensureAliasmodeChromium: async () => { downloads.push("chromium155"); return "unused"; },
+    ensureFirefoxFontPack: async (_root, pack) => { fontPacks.push(pack.os); return "unused"; },
+    log: (message) => logs.push(message),
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+
+  launcher.prefetchBrowserRuntimes([firefox]);
+  expect(downloads).toEqual([]);
+  expect(fontPacks).toEqual(["macos"]);
+  expect(readdirSync(root)).toEqual(["chromium-155.0.8059.31-aliasmode.1"]);
+  launcher.prefetchBrowserRuntimes([firefox, cloak, beta]);
+  launcher.prefetchBrowserRuntimes([cloak, beta]);
+  await Bun.sleep(0);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+  expect(logs).toEqual(["CloakBrowser download failed: offline"]);
+  // A failed background download waits for the next open or app start instead of looping.
+  failCloakBrowser = false;
+  launcher.prefetchBrowserRuntimes([cloak]);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+
+  // A configured CloakBrowser binary needs no download.
+  const configured = new ProductionLauncher({
+    store, binaryPath: "C:\\cloak\\chrome.exe", dataRoot: testDataRoot(store), chromiumRuntimeRoot: root,
+    hostPlatform: "win32", hostArch: "x64",
+    ensureDownloadedCloakBrowser: async () => { downloads.push("configured"); return "unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  configured.prefetchBrowserRuntimes([cloak]);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+  rmSync(root, { recursive: true, force: true });
   store.close();
 });
 
@@ -5100,7 +5197,7 @@ test("Chromium 155 beta is refused on unsupported hosts before any download", as
     spawn: () => { throw new Error("must not spawn"); },
   });
   await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium155_host"));
-  launcher.prepareChromiumRuntime();
+  launcher.prefetchBrowserRuntimes([profile]);
   expect(downloads).toBe(0);
   store.close();
 });

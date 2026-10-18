@@ -413,6 +413,12 @@ function makeLauncher(
   });
 }
 
+/** Download the browser runtimes that saved and newly saved profiles need, so a first open does not wait. */
+function prefetchBrowserRuntimes(launcher: Launcher, store: ProfileStore): void {
+  store.onProfileSaved = (profile) => launcher.prefetchBrowserRuntimes([profile]);
+  launcher.prefetchBrowserRuntimes(store.listProfiles());
+}
+
 function makeCloudBrowser(
   launcher: Launcher,
   store: ProfileStore,
@@ -2723,6 +2729,7 @@ async function main() {
         console.log(`local instance "${owner}" (hub lock attribution: this box's operator id)`);
         const launcher = makeLauncher(store, rest, true, profileDataRoot, undefined, join(paths.root, "runtimes"));
         await launcher.reconcileOrphans();
+        prefetchBrowserRuntimes(launcher, store);
         const coord = new RemoteCoordinator({
           hub: new HubClient(hubUrl, password, owner),
           launcher,
@@ -2829,9 +2836,9 @@ async function main() {
         await launcher.certifySurvivors();
       }
       console.log("startup: browser recovery checks complete");
-      launcher.prefetchFirefoxFontPacks(store.listProfiles());
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
+      prefetchBrowserRuntimes(launcher, store);
       if (configuredMode.mode === "cloud") {
         console.log("cloud mode: waiting for verified authentication before loading profiles");
         if (cloudBrowser && !desktopHealth) installCloudShutdown(cloudBrowser, mcpTunnel);
@@ -2937,6 +2944,7 @@ async function main() {
       if (savedMode.mode !== "cloud") await launcher.certifySurvivors();
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
+      prefetchBrowserRuntimes(launcher, store);
       if (cloudBrowser) installCloudShutdown(cloudBrowser);
       serveDashboard({
         launcher,

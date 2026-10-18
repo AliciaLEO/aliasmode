@@ -1,8 +1,4 @@
-use crate::{
-    browser::{BrowserRuntime, FirefoxRuntime},
-    credentials,
-    runtime_descriptor::RuntimeDescriptorState,
-};
+use crate::{browser::FirefoxRuntime, credentials, runtime_descriptor::RuntimeDescriptorState};
 use reqwest::{redirect::Policy, Client};
 use serde::Deserialize;
 use std::{
@@ -390,7 +386,6 @@ fn should_present_unexpected_exit(shutting_down: bool) -> bool {
 pub async fn launch_and_verify(
     app: &AppHandle,
     data_dir: &Path,
-    browser: Option<&BrowserRuntime>,
     firefox: &FirefoxRuntime,
     playwright_runtime: &Path,
     nonce: &str,
@@ -407,11 +402,6 @@ pub async fn launch_and_verify(
         .env("ALIASMODE_PLAYWRIGHT_RUNTIME", playwright_runtime)
         .env("ALIASMODE_FIREFOX_BINARY_PATH", &firefox.executable)
         .env("ALIASMODE_FIREFOX_BINARY_SHA256", &firefox.sha256);
-    if let Some(browser) = browser {
-        command = command
-            .env("CLOAKBROWSER_BINARY_PATH", &browser.executable)
-            .env("CLOAKBROWSER_BINARY_SHA256", &browser.sha256);
-    }
     // Chromium 155 on Windows draws pages at the primary display's scale, as Chrome does there.
     // New profiles get a screen no smaller than that display.
     if let Ok(Some(monitor)) = app.primary_monitor() {

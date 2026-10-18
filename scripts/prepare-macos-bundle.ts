@@ -1,6 +1,5 @@
 /** Stages the macOS arm64 bundle inputs: sidecar, AliasMode Firefox and the agent runtime. */
-import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sha256File } from "../browser-install.ts";
 import { FIREFOX_RUNTIME_VERSION, firefoxBuildForHost, installFirefox } from "../firefox-install.ts";
@@ -11,66 +10,9 @@ import { compileSidecar, stageAgentRuntime } from "./prepare-windows-bundle.ts";
 const BUN_TARGET = "bun-darwin-arm64";
 const RUST_TARGET = "aarch64-apple-darwin";
 
-// The same CPython and Playwright versions as the Windows bundle, in their macOS arm64 builds.
-const PYTHON_ARCHIVE = {
-  url: "https://github.com/astral-sh/python-build-standalone/releases/download/20250918/cpython-3.13.7%2B20250918-aarch64-apple-darwin-install_only_stripped.tar.gz",
-  sha256: "10f26ea5fc7c4d9c012faf372898a801f34b8fd7730c677576263224d56835fe",
-};
-const PYTHON_WHEELS = [
-  {
-    url: "https://files.pythonhosted.org/packages/e0/40/59d34a756e02f8c670f0fee987d46f7ee53d05447d43cd114ca015cb168c/playwright-1.58.0-py3-none-macosx_11_0_arm64.whl",
-    sha256: "70c763694739d28df71ed578b9c8202bb83e8fe8fb9268c04dd13afe36301f71",
-  },
-  {
-    url: "https://files.pythonhosted.org/packages/f3/57/0db4940cd7bb461365ca8d6fd53e68254c9dbbcc2b452e69d0d41f10a85e/greenlet-3.1.1-cp313-cp313-macosx_11_0_universal2.whl",
-    sha256: "05175c27cb459dcfc05d026c4232f9de8913ed006d42713cb8a5137bd49375f1",
-  },
-  {
-    url: "https://files.pythonhosted.org/packages/9b/4d/b9add7c84060d4c1906abe9a7e5359f2a60f7a9a4f67268b2766673427d8/pyee-13.0.0-py3-none-any.whl",
-    sha256: "48195a3cddb3b1515ce0695ed76036b5ccc2ef3a9f963ff9f77aec0139845498",
-  },
-  {
-    url: "https://files.pythonhosted.org/packages/18/67/36e9267722cc04a6b9f15c7f3441c2363321a3ea07da7ae0c0707beb2a9c/typing_extensions-4.15.0-py3-none-any.whl",
-    sha256: "f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548",
-  },
-];
-
 async function run(command: string[]): Promise<void> {
   const child = Bun.spawn(command, { stdout: "inherit", stderr: "inherit" });
   if (await child.exited !== 0) throw new Error(`${command[0]} exited with code ${child.exitCode}`);
-}
-
-async function downloadPinned(url: string, sha256: string, output: string): Promise<void> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`download failed: ${url}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (createHash("sha256").update(bytes).digest("hex") !== sha256) throw new Error(`SHA-256 mismatch: ${url}`);
-  writeFileSync(output, bytes);
-}
-
-interface PinnedFile { url: string; sha256: string }
-
-/** Stages CPython and the Playwright wheels for Python scripts; system tools keep file modes. */
-export async function installPython(
-  staging: string,
-  playwrightRoot: string,
-  pins: { archive: PinnedFile; wheels: PinnedFile[] } = { archive: PYTHON_ARCHIVE, wheels: PYTHON_WHEELS },
-): Promise<void> {
-  const archive = join(staging, "python.tar.gz");
-  await downloadPinned(pins.archive.url, pins.archive.sha256, archive);
-  await run(["tar", "-xzf", archive, "-C", playwrightRoot]);
-  const python = join(playwrightRoot, "python");
-  // The archive's convenience symlinks are not needed, and the bundler copies plain files only.
-  await run(["find", python, "-type", "l", "-delete"]);
-  const sitePackages = join(python, "lib", "python3.13", "site-packages");
-  for (const [index, wheel] of pins.wheels.entries()) {
-    const file = join(staging, `wheel-${index}.whl`);
-    await downloadPinned(wheel.url, wheel.sha256, file);
-    await run(["unzip", "-q", "-o", file, "-d", sitePackages]);
-  }
-  for (const required of [join(python, "bin", "python3.13"), join(sitePackages, "playwright", "driver", "node")]) {
-    if (!statSync(required, { throwIfNoEntry: false })?.isFile()) throw new Error("Python script runtime is incomplete");
-  }
 }
 
 export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
@@ -97,7 +39,6 @@ export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
   const firefoxSha256 = await sha256File(join(firefoxRoot, build.executablePath));
 
   cpSync(await installSourceNode(staging), join(playwrightRoot, "node", "node"));
-  await installPython(staging, playwrightRoot);
   stageAgentRuntime(cwd, playwrightRoot);
 
   const metadata = {

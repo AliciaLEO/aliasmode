@@ -272,4 +272,6 @@ test("the Windows installer stops a leftover sidecar before overwriting it", () 
   expect(helperKill).toBeGreaterThan(0);
   expect(helperKill).toBeLessThan(hooks.indexOf(`taskkill /IM "aliasmode-sidecar.exe"`));
   expect(hooks).not.toContain(`/T /IM "aliasmode-mcp.exe"`);
+  // An update removes the Python runtime that earlier versions bundled.
+  expect(hooks).toContain(`RMDir /r "$INSTDIR\\playwright\\python"`);
 });

@@ -101,8 +101,9 @@ function Install-AcceptanceArtifact(
   } catch {
     throw "candidate browser metadata is malformed"
   }
-  if ($metadata.executable -ne "chrome.exe" -or [string]$metadata.sha256 -notmatch '^[a-f0-9]{64}$') {
-    throw "candidate browser metadata is invalid"
+  # The installer carries no CloakBrowser: the app downloads it on first use.
+  if ($null -ne $metadata.executable -or $null -ne $metadata.sha256) {
+    throw "candidate browser metadata still names a bundled CloakBrowser"
   }
   if (
     $metadata.firefox.version -ne "156.0.1-beta.36" -or
@@ -128,6 +129,9 @@ function Install-AcceptanceArtifact(
   if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) {
     throw "installed AliasMode executable is missing"
   }
+  if (Test-Path -LiteralPath (Join-Path $Destination "cloakbrowser")) {
+    throw "installer still carries CloakBrowser"
+  }
   $sidecars = @(Get-ChildItem $Destination -Recurse -File -Filter "aliasmode-sidecar*.exe")
   if ($sidecars.Count -ne 1) { throw "expected exactly one installed sidecar, found $($sidecars.Count)" }
 
@@ -139,15 +143,39 @@ function Install-AcceptanceArtifact(
   }
 }
 
-function Set-BrowserRuntimeEnvironment($Installation, [string]$InstallRoot) {
-  $runtime = Join-Path $InstallRoot "playwright"
-  $browser = Join-Path $InstallRoot "cloakbrowser\chrome.exe"
+# The pinned CloakBrowser build that the app downloads on first use.
+$cloakBrowserDirectory = "cloakbrowser-146.0.7680.177.5"
+$cloakBrowserArchiveUrl = "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-windows-x64.zip"
+$cloakBrowserArchiveSha256 = "b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe"
+$cloakBrowserExecutableSha256 = "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80"
+
+# Direct sidecar smokes get one pinned CloakBrowser download per shard instead of one per state root.
+function Get-PinnedCloakBrowser([string]$Root) {
+  $browser = Join-Path (Join-Path $Root $cloakBrowserDirectory) "chrome.exe"
   if (-not (Test-Path -LiteralPath $browser -PathType Leaf)) {
-    throw "installed CloakBrowser executable is missing"
+    New-Item -ItemType Directory -Force (Split-Path $browser -Parent) | Out-Null
+    $archive = Join-Path $Root "cloakbrowser-windows-x64.zip"
+    & curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --output $archive $cloakBrowserArchiveUrl
+    if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser download failed" }
+    if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserArchiveSha256) {
+      throw "pinned CloakBrowser archive SHA-256 mismatch"
+    }
+    & tar.exe -xf $archive -C (Split-Path $browser -Parent)
+    if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser extraction failed" }
+    Remove-Item -LiteralPath $archive -Force
   }
+  if ((Get-FileHash -LiteralPath $browser -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserExecutableSha256) {
+    throw "pinned CloakBrowser executable SHA-256 mismatch"
+  }
+  return $browser
+}
+
+function Set-BrowserRuntimeEnvironment([string]$InstallRoot, [string]$BrowserRoot) {
+  $runtime = Join-Path $InstallRoot "playwright"
+  $browser = Get-PinnedCloakBrowser $BrowserRoot
   [Environment]::SetEnvironmentVariable("ALIASMODE_PLAYWRIGHT_RUNTIME", $runtime, "Process")
   [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_PATH", $browser, "Process")
-  [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_SHA256", $Installation.BrowserMetadata.sha256, "Process")
+  [Environment]::SetEnvironmentVariable("CLOAKBROWSER_BINARY_SHA256", $cloakBrowserExecutableSha256, "Process")
   [Environment]::SetEnvironmentVariable("ALIASMODE_SESSION_LAUNCH", "0", "Process")
   return [pscustomobject]@{ PlaywrightRuntime = $runtime; BrowserPath = $browser }
 }
@@ -407,7 +435,7 @@ function Select-McpBrowser([Diagnostics.Process]$Process, [string]$ProfileId, [i
   $Process.StandardInput.WriteLine($request)
   $selected = Read-McpResponse $Process $Id
   if ($selected.result.isError -eq $true) {
-    throw "installed MCP host could not select the pre-existing browser"
+    throw "installed MCP host could not select the pre-existing browser: $($selected.result.content[0].text)"
   }
 }
 
@@ -596,6 +624,7 @@ $checks = [ordered]@{
   customScriptRunners = $false
   firefoxCliLifecycle = $false
   chromiumBetaLifecycle = $false
+  cloakBrowserDownload = $false
   nativeNetworkObservation = $false
   browserMetadataHash = $false
   nativeHeadfulLaunch = $false
@@ -724,12 +753,15 @@ public static class AliasModeWindow {
         (Join-Path $playwrightRuntime "agent\playwright-runner.mjs"),
         (Join-Path $playwrightRuntime "agent\script-runner.mjs"),
         (Join-Path $playwrightRuntime "agent\script-runner.py"),
-        (Join-Path $playwrightRuntime "python\python.exe"),
         (Join-Path $playwrightRuntime "agent\runtime-client.mjs")
       )) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
           throw "installed agent runtime file is missing: $path"
         }
+      }
+      # Python scripts download their runtime on first use; the installer carries no Python.
+      if (Test-Path -LiteralPath (Join-Path $playwrightRuntime "python")) {
+        throw "installed agent runtime still bundles Python"
       }
       if ((& $node --version).Trim() -ne "v22.23.2") {
         throw "installed Node runtime version is incorrect"
@@ -836,7 +868,7 @@ public static class AliasModeWindow {
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"browser_close","arguments":{}}}')
         $closed = Read-McpResponse $mcp 31
         if ($closed.result.isError -eq $true) {
-          throw "installed MCP host could not close the selected browser"
+          throw "installed MCP host could not close the selected browser: $($closed.result.content[0].text)"
         }
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":32,"method":"tools/list","params":{}}')
         $closedTools = Read-McpResponse $mcp 32
@@ -953,7 +985,8 @@ public static class AliasModeWindow {
       $profileId = $profile.result.id
       $runtimeDescriptor = Read-ValidRuntimeDescriptor $descriptorPath $bundleVersion
       $nativeNetworkObservationConfigPath = Join-Path $runRoot "native-network-observation.json"
-      $chromiumBinaryPath = Join-Path $installRoot "cloakbrowser\chrome.exe"
+      # No CloakBrowser is bundled: this first open downloads the pinned build into the data folder.
+      $chromiumBinaryPath = Join-Path (Join-Path (Join-Path $appDataRoot "runtimes") $cloakBrowserDirectory) "chrome.exe"
       Set-NativeNetworkObservationPhase $nativeNetworkObservationConfigPath "chromium-lifecycle" @(
         @{ pid = [int]$runtimeDescriptor.desktopPid; kind = "app" },
         @{ pid = [int]$runtimeDescriptor.sidecarPid; kind = "sidecar" }
@@ -983,6 +1016,14 @@ public static class AliasModeWindow {
       if ($LASTEXITCODE -ne 0 -or -not $status.ok -or -not $status.result.running) {
         throw "installed JSON CLI did not report its browser as running: $($status.error)"
       }
+      if ((Get-FileHash -LiteralPath $chromiumBinaryPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $cloakBrowserExecutableSha256) {
+        throw "downloaded CloakBrowser does not match its pin"
+      }
+      $runtimeLeftovers = @(Get-ChildItem -LiteralPath (Join-Path $appDataRoot "runtimes") -Force | Where-Object Name -Like ".cloakbrowser-*")
+      if ($runtimeLeftovers.Count -ne 0) {
+        throw "CloakBrowser download left a partial or temporary file"
+      }
+      $checks.cloakBrowserDownload = $true
 
       Set-AcceptanceStage "runtime-desktop-custom-scripts"
       if ($opened.result.port -le 0) { throw "installed JSON CLI did not return a browser CDP port" }
@@ -1041,10 +1082,42 @@ async def run(*, log, **_):
     log("python-error-ready")
     raise RuntimeError("fixture failure")
 '@, [Text.UTF8Encoding]::new($false))
+      # The app's own runs: a JavaScript script runs on the bundled Node and leaves Python alone.
+      # The first Python script downloads the pinned Python runtime into the data folder, then runs.
+      $pythonRuntimeRoot = Join-Path $appDataRoot "runtimes\python-3.13.7-playwright-1.58.0"
+      if (Test-Path -LiteralPath $pythonRuntimeRoot) { throw "the Python runtime existed before any Python script" }
+      $scriptApi = "http://127.0.0.1:$($runtimeDescriptor.port)/ui/api/scripts"
+      $scriptHeaders = @{ Authorization = "Bearer $($runtimeDescriptor.nonce)" }
+      function Invoke-AppScript([string]$Language, [string]$Source, [string]$Marker) {
+        $body = @{ name = "ci-app-$Language"; description = ""; language = $Language; source = $Source } | ConvertTo-Json -Compress
+        $created = Invoke-RestMethod -Method Post -Uri $scriptApi -Headers $scriptHeaders -ContentType "application/json" -Body $body -TimeoutSec 30
+        if (-not $created.ok) { throw "the app did not save the $Language script: $($created.error)" }
+        $runBody = @{ scriptId = $created.script.id; profileIds = @($profileId); inputs = @{}; useCredentials = $false } | ConvertTo-Json -Compress -Depth 4
+        $started = Invoke-RestMethod -Method Post -Uri "$scriptApi/run" -Headers $scriptHeaders -ContentType "application/json" -Body $runBody -TimeoutSec 30
+        if (-not $started.ok) { throw "the app did not start the $Language script: $($started.error)" }
+        $deadline = (Get-Date).AddMinutes(10)
+        do {
+          Start-Sleep -Seconds 1
+          $appRun = (Invoke-RestMethod -Uri "$scriptApi/run" -Headers $scriptHeaders -TimeoutSec 30).run
+        } while ($appRun.status -ne "finished" -and (Get-Date) -lt $deadline)
+        $appLog = (Invoke-RestMethod -Uri "$scriptApi/log?runId=$($started.run.id)&offset=0" -Headers $scriptHeaders -TimeoutSec 30).text
+        Write-Host "app $Language script log:`n$appLog"
+        if ($appRun.status -ne "finished" -or $appRun.profiles[0].status -ne "succeeded" -or $appLog -notmatch [regex]::Escape($Marker)) {
+          throw "the app's $Language script did not succeed: $($appRun.profiles[0].status) $($appRun.profiles[0].error)"
+        }
+      }
+      Invoke-AppScript "javascript" 'export default async ({ page, log }) => { await page.goto("data:text/html,js"); log("app-node-script-ran"); };' "app-node-script-ran"
+      if (Test-Path -LiteralPath $pythonRuntimeRoot) { throw "a JavaScript script downloaded the Python runtime" }
+      Invoke-AppScript "python" "async def run(*, page, log, **_):`n    await page.goto(`"data:text/html,py`")`n    log(`"app-python-script-ran`")`n" "app-python-script-ran"
+      $python = Join-Path $pythonRuntimeRoot "python.exe"
+      if (-not (Test-Path -LiteralPath (Join-Path $pythonRuntimeRoot "aliasmode-runtime.sha256") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "the Python script did not install the Python runtime"
+      }
+
       $node = Join-Path $playwrightRuntime "node\node.exe"
       $nodeRunner = Join-Path $playwrightRuntime "agent\script-runner.mjs"
       $pythonRunner = Join-Path $playwrightRuntime "agent\script-runner.py"
-      $python = Join-Path $playwrightRuntime "python\python.exe"
       Invoke-CustomScriptRunner $node $nodeRunner $nodeSuccess $scriptInput "node-success" "success"
       Invoke-CustomScriptRunner $python $pythonRunner $pythonSuccess $scriptInput "python-success" "success" -RuntimeArgs @("-u", "-X", "utf8")
       Invoke-CustomScriptRunner $node $nodeRunner $nodeError $scriptInput "node-error-ready" "error"
@@ -1399,19 +1472,12 @@ try {
     }
     "browser" {
       Set-AcceptanceStage "browser-metadata-hash"
-      if ($installation.BrowserMetadata.executable -ne "chrome.exe") {
-        throw "Windows browser metadata does not target chrome.exe"
-      }
-      $browserRuntime = Set-BrowserRuntimeEnvironment $installation $installRoot
+      $browserRuntime = Set-BrowserRuntimeEnvironment $installRoot (Join-Path $runRoot "browsers")
       if (-not (Test-Path -LiteralPath (Join-Path $browserRuntime.PlaywrightRuntime "node\node.exe") -PathType Leaf)) {
         throw "installed official Node runtime is missing"
       }
       if (-not (Test-Path -LiteralPath (Join-Path $browserRuntime.PlaywrightRuntime "node_modules\playwright-core\package.json") -PathType Leaf)) {
         throw "installed Playwright runtime is missing"
-      }
-      $actualBrowserHash = (Get-FileHash -LiteralPath $browserRuntime.BrowserPath -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($actualBrowserHash -ne $installation.BrowserMetadata.sha256) {
-        throw "installed CloakBrowser SHA-256 does not match browser metadata"
       }
       $checks.browserMetadataHash = $true
 
@@ -1507,7 +1573,7 @@ try {
     }
     "cloud" {
       Set-AcceptanceStage "cloud-preparing"
-      $browserRuntime = Set-BrowserRuntimeEnvironment $installation $installRoot
+      $browserRuntime = Set-BrowserRuntimeEnvironment $installRoot (Join-Path $runRoot "browsers")
       $playwrightRuntime = $browserRuntime.PlaywrightRuntime
       $cloudAcceptanceRoot = Join-Path $runRoot "cloud-restore"
       Remove-Item -LiteralPath $cloudAcceptanceRoot -Recurse -Force -ErrorAction SilentlyContinue

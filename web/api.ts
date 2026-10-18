@@ -9,6 +9,7 @@ import type {
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
+import type { PythonRuntimeStatus } from "../python-runtime.ts";
 import type { FolderInfo } from "../folders.ts";
 import {
   CLOUD_DIAGNOSTIC_TYPES,
@@ -1018,6 +1019,23 @@ export async function startScriptRun(input: { scriptId: string; profileIds: stri
 
 export async function stopScriptRun(): Promise<ScriptRun> {
   return (await scriptRequest("/ui/api/scripts/stop", { method: "POST", body: "{}" })).run as ScriptRun;
+}
+
+function pythonRuntimeStatus(body: any): PythonRuntimeStatus | null {
+  if (body.python === null) return null;
+  if (!body.python || typeof body.python.state !== "string" || !Number.isFinite(body.python.totalBytes)) {
+    throw new Error("Python runtime returned invalid data");
+  }
+  return body.python as PythonRuntimeStatus;
+}
+
+/** The downloaded Python runtime of Python scripts; null when this app does not download one. */
+export async function fetchPythonRuntime(): Promise<PythonRuntimeStatus | null> {
+  return pythonRuntimeStatus(await scriptRequest("/ui/api/scripts/python-runtime"));
+}
+
+export async function downloadPythonRuntime(): Promise<PythonRuntimeStatus | null> {
+  return pythonRuntimeStatus(await scriptRequest("/ui/api/scripts/python-runtime", { method: "POST", body: "{}" }));
 }
 
 export async function fetchScriptLog(runId: string, offset: number): Promise<{ text: string; nextOffset: number }> {

@@ -7,9 +7,6 @@
     ],
     "icon": [
       "icons/icon.png"
-    ],
-    "resources": {
-      "resources/cloakbrowser/": null
-    }
+    ]
   }
 }

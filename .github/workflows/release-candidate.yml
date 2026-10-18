@@ -181,8 +181,9 @@ jobs:
           ) {
             throw "candidate installer size report is inconsistent"
           }
+          # The installer carries no CloakBrowser; the app downloads it on first use.
           $browser = Get-Content ".\candidate\browser.json" -Raw | ConvertFrom-Json
-          if ($browser.executable -cne "chrome.exe" -or [string]$browser.sha256 -notmatch '^[a-f0-9]{64}$') {
+          if ($null -ne $browser.executable -or [string]$browser.firefox.sha256 -notmatch '^[a-f0-9]{64}$') {
             throw "candidate browser metadata is invalid"
           }
 

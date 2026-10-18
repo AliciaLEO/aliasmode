@@ -28,6 +28,8 @@ import { assertValidProfile } from "./profile-validation.ts";
 
 export class ProfileStore {
   private db: Database;
+  /** Called after each profile save, so the app can start the downloads that profile needs. */
+  onProfileSaved?: (profile: Profile) => void;
 
   constructor(path = "profiles.sqlite") {
     this.db = new Database(path, { create: true });
@@ -424,6 +426,7 @@ export class ProfileStore {
         $created: Date.now(),
       });
     if (p.group) this.registerGroup(p.group);
+    this.onProfileSaved?.(p);
   }
 
   /** Explicit edits and authoritative restores may clear a saved timezone. */

@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { CloudApiError } from "./cloud-client.ts";
 import { CloudBrowserCoordinator, observeBrowserTargets } from "./cloud-browser.ts";
 import type { OpenProfileResponse, PortableProfileV1 } from "./contracts/cloud-v1.ts";
+import type { Profile } from "./types.ts";
 import { BrowserLaunchError, Launcher as ProductionLauncher } from "./launcher.ts";
 import { PendingSyncQueue } from "./pending-sync.ts";
 import { PlaywrightWorkerError } from "./playwright-runtime.ts";
@@ -586,15 +587,25 @@ test("Firefox Cloud checkpoints use owner polling and preserve V2 through offlin
 
 test("Cloud browser creates a portable profile without a local-only fallback", async () => {
   const state = setup();
+  const prefetched: string[][] = [];
+  (state.coordinator as any).options.launcher.prefetchBrowserRuntimes = (profiles: Profile[]) => {
+    prefetched.push(profiles.map((profile) => profile.id));
+  };
   const profile = decodePortableProfile(payload()).profile;
   expect(await state.coordinator.create(profile)).toEqual({ id: "profile1" });
   expect(state.events).toEqual(["cloud-create"]);
   expect(state.store.getProfile("profile1")).toBeNull();
+  // The browser download starts at creation, not at the first open.
+  expect(prefetched).toEqual([["profile1"]]);
   state.queue.close();
   state.store.close();
 });
 test("Cloud browser imports one encoded batch without populating the Local store", async () => {
   const state = setup();
+  const prefetched: string[][] = [];
+  (state.coordinator as any).options.launcher.prefetchBrowserRuntimes = (profiles: Profile[]) => {
+    prefetched.push(profiles.map((profile) => profile.id));
+  };
   const first = decodePortableProfile(payload()).profile;
   first.group = "Sales";
   const second = structuredClone(first);
@@ -613,6 +624,7 @@ test("Cloud browser imports one encoded batch without populating the Local store
   });
   expect(state.events).toEqual(["cloud-import"]);
   expect(state.imports).toHaveLength(1);
+  expect(prefetched).toEqual([["profile1", "profile2"]]);
   expect(state.imports[0]!.destination).toBe("Sales");
   expect(JSON.parse(decodePortableProfile(state.imports[0]!.profiles[0]!).sessionBundle)).toMatchObject(JSON.parse(sessionBundle));
   expect(state.imports[0]!.profiles.map((item) => decodePortableProfile(item).profile)).toEqual([first, second].map(completeProfileFingerprint));

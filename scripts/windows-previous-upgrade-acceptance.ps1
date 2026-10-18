@@ -340,6 +340,9 @@ try {
     throw "candidate updater did not exit"
   }
   if ($updater.ExitCode -ne 0) { throw "candidate updater exited with code $($updater.ExitCode)" }
+  if (Test-Path -LiteralPath (Join-Path $installRoot "playwright\python")) {
+    throw "update kept the Python runtime that earlier versions bundled"
+  }
   $checks.passiveUpdateCompleted = $true
 
   Set-AcceptanceStage "verifying-preserved-state"

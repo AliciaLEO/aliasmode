@@ -19,10 +19,19 @@
   Pop $R0
   Sleep 2000
 
+  ; Python scripts now download their runtime into the app data folder. Remove the copy
+  ; that earlier versions installed with the app; nothing installs or uninstalls it now.
+  RMDir /r "$INSTDIR\playwright\python"
+
   Pop $R0
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Earlier versions bundled CloakBrowser here. The app now downloads it into
+  ; its data folder, so remove the old copy once the new files are in place. Files that
+  ; a still-running browser holds stay until a later update.
+  RMDir /r "$INSTDIR\cloakbrowser"
+
   Push $R0
   Push $R1
   Push $R2

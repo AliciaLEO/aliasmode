@@ -54,13 +54,12 @@ import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
-  CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
-  CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   chromiumDeviceScale,
+  cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
-  ensureCloakBrowserLinux,
-  ensureCloakBrowserMacos,
+  ensureCloakBrowser,
   hostDisplayScale,
+  pruneBrowserRuntimes,
   supportsChromium155Host,
 } from "./aliasmode-chromium.ts";
 
@@ -406,7 +405,7 @@ export interface LauncherOptions {
   chromiumRuntimeRoot?: string;
   /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
   ensureAliasmodeChromium?: (root: string) => Promise<string>;
-  /** Installs CloakBrowser for the macOS and Linux apps, which bundle no CloakBrowser. */
+  /** Installs the pinned CloakBrowser build, which the desktop apps download on first use. */
   ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
   /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
   chromiumSandboxBlocked?: () => boolean;
@@ -739,6 +738,9 @@ export class Launcher {
   private chromiumRuntimeRoot: string;
   private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
   private ensureDownloadedCloakBrowserFn: (root: string) => Promise<string>;
+  /** Runtimes whose background download started in this run. */
+  private runtimePrefetches = new Set<string>();
+  private runtimesPruned = false;
   private chromiumSandboxBlockedFn: () => boolean;
   private ensureFirefoxFontPackFn: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Packs whose background download failed in this run; a launch still retries them. */
@@ -851,7 +853,7 @@ export class Launcher {
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
     this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
     this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
-      ?? ((root) => this.hostPlatform === "linux" ? ensureCloakBrowserLinux(root) : ensureCloakBrowserMacos(root));
+      ?? ((root) => ensureCloakBrowser(root, this.hostPlatform, this.hostArch));
     this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
     this.ensureFirefoxFontPackFn = opts.ensureFirefoxFontPack ?? ((root, pack) => ensureFirefoxFontPack(root, pack));
     this.headless = opts.headless ?? false;
@@ -954,25 +956,46 @@ export class Launcher {
     }
   }
 
-  /** Begin the one-time Chromium 155 beta download in the background. */
-  prepareChromiumRuntime(): void {
-    if (!supportsChromium155Host(this.hostPlatform, this.hostArch)) return;
-    this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot).catch((error) => {
-      this.log(`Chromium 155 beta download failed: ${error instanceof Error ? error.message : String(error)}`);
+  /**
+   * Download in the background the browser runtimes and Firefox font packs these profiles
+   * need, so their first open does not wait. The first call also removes runtimes and packs
+   * that are no longer pinned. A download that failed here is not started again in this run;
+   * opening a profile still tries it.
+   */
+  prefetchBrowserRuntimes(profiles: readonly Profile[]): void {
+    this.prefetchFirefoxFontPacks(profiles);
+    if (!this.runtimesPruned) {
+      this.runtimesPruned = true;
+      const inUse = this.store.listLaunches().flatMap((launch) => launch.binaryPath ? [launch.binaryPath] : []);
+      pruneBrowserRuntimes(this.chromiumRuntimeRoot, inUse, this.hostPlatform, this.hostArch);
+    }
+    const chromium = profiles.filter((profile) => (profile.engine ?? "chromium") === "chromium");
+    if (chromium.some((profile) => !profile.chromiumRuntime) && this.downloadsCloakBrowser()) {
+      this.prefetchRuntime("CloakBrowser", this.ensureDownloadedCloakBrowserFn);
+    }
+    if (chromium.some((profile) => profile.chromiumRuntime) && supportsChromium155Host(this.hostPlatform, this.hostArch)) {
+      this.prefetchRuntime("Chromium 155 beta", this.ensureAliasmodeChromiumFn);
+    }
+  }
+
+  private prefetchRuntime(label: string, ensure: (root: string) => Promise<string>): void {
+    if (this.runtimePrefetches.has(label)) return;
+    this.runtimePrefetches.add(label);
+    ensure(this.chromiumRuntimeRoot).catch((error) => {
+      this.log(`${label} download failed: ${error instanceof Error ? error.message : String(error)}`);
     });
   }
 
-  /** The macOS and Linux apps ship no CloakBrowser; they download the pinned build on first use. */
+  /** The desktop apps ship no CloakBrowser; they download the pinned build on first use. */
   private downloadsCloakBrowser(): boolean {
-    return ((this.hostPlatform === "darwin" && this.hostArch === "arm64") || (this.hostPlatform === "linux" && this.hostArch === "x64"))
-      && !this.binaryPath;
+    return !!cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch) && !this.binaryPath;
   }
 
   /** Validate the deployment pin without reading the configured binary. */
   private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
     if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
     if (engine === "chromium" && this.downloadsCloakBrowser()) {
-      return this.hostPlatform === "linux" ? CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 : CLOAKBROWSER_MACOS_EXECUTABLE_SHA256;
+      return cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch)!;
     }
     const expected = engine === "firefox" ? this.expectedFirefoxBinarySha256 : this.expectedBinarySha256;
     if (this.unsafeDisableIdentityGates) {

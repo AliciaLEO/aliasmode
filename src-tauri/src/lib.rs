@@ -467,12 +467,6 @@ pub fn run() {
             credentials::set_secret_dir(&data_dir);
 
             let resource_dir = app.path().resource_dir()?;
-            let browser = browser::verify_browser_resource(&resource_dir)
-                .map_err(boxed)?
-                .map(|mut browser| {
-                    browser.executable = cli_compatible_windows_path(&browser.executable);
-                    browser
-                });
             let mut firefox = browser::verify_firefox_resource(&resource_dir).map_err(boxed)?;
             firefox.executable = cli_compatible_windows_path(&firefox.executable);
             let playwright_runtime = cli_compatible_windows_path(
@@ -541,7 +535,6 @@ pub fn run() {
             let (sidecar, port) = tauri::async_runtime::block_on(sidecar::launch_and_verify(
                 &handle,
                 &data_dir,
-                browser.as_ref(),
                 &firefox,
                 &playwright_runtime,
                 &nonce,

@@ -67,7 +67,8 @@ jobs:
           test -x "$app/lib/AliasMode/firefox/aliasmode"
           test -x "$app/lib/AliasMode/playwright/node/node"
           "$app/lib/AliasMode/playwright/node/node" --version
-          "$app/lib/AliasMode/playwright/python/bin/python3.13" -B -c "import greenlet, playwright.sync_api; print('python runtime ok')"
+          # Python scripts download their runtime on first use; the app carries no Python.
+          test ! -e "$app/lib/AliasMode/playwright/python"
           test -f "$app/share/icons/hicolor/512x512/apps/aliasmode.png"
           echo "System libraries of the app:"
           ldd "$app/bin/aliasmode" | awk '{ print $1 }' | sort | tr '\n' ' '
@@ -244,6 +245,31 @@ jobs:
           jq -e '.platform == "Win32"' <<<"$observed"
           # Chromium 155 must accept the DuckDuckGo default search setup, which runs after launch.
           sleep 10
+
+          # Scripts: a JavaScript script runs on the bundled Node and leaves Python alone. The first
+          # Python script downloads the pinned Python runtime into the data folder, then runs.
+          nonce="$(jq -er .nonce "$data/agent-runtime.json")"
+          scripts_api() { curl --fail-with-body --silent --show-error -H "authorization: Bearer $nonce" -H 'content-type: application/json' "$@"; }
+          pyrt="$data/runtimes/python-3.13.7-playwright-1.58.0"
+          test ! -e "$pyrt"
+          run_script() {
+            local language="$1" source="$2" marker="$3" id run status=""
+            id="$(scripts_api -X POST "http://127.0.0.1:$port/ui/api/scripts" -d "$(jq -n --arg l "$language" --arg s "$source" '{name: ("ci-" + $l), description: "", language: $l, source: $s}')" | jq -er .script.id)"
+            run="$(scripts_api -X POST "http://127.0.0.1:$port/ui/api/scripts/run" -d "$(jq -n --arg id "$id" --arg p "$chromium" '{scriptId: $id, profileIds: [$p], inputs: {}, useCredentials: false}')" | jq -er .run.id)"
+            for attempt in $(seq 1 600); do
+              status="$(scripts_api "http://127.0.0.1:$port/ui/api/scripts/run" | jq -c .run)"
+              [[ "$(jq -r .status <<<"$status")" == finished ]] && break
+              sleep 1
+            done
+            scripts_api "http://127.0.0.1:$port/ui/api/scripts/log?runId=$run&offset=0" | jq -r .text | tee "$evidence/script-$language.log"
+            jq -e '.status == "finished" and .profiles[0].status == "succeeded"' <<<"$status" || { echo "$status"; return 1; }
+            grep -q "$marker" "$evidence/script-$language.log"
+          }
+          run_script javascript 'export default async ({ page, log }) => { await page.goto("data:text/html,js"); log("js-script-ran"); };' js-script-ran
+          test ! -e "$pyrt"
+          run_script python $'async def run(*, page, log, **_):\n    await page.goto("data:text/html,py")\n    log("python-script-ran")\n' python-script-ran
+          test -f "$pyrt/aliasmode-runtime.sha256"
+          "$pyrt/bin/python3.13" -c "import greenlet, playwright.sync_api; print('python runtime ok')"
           "$helper" browser close --profile "$chromium" | jq -e '.ok'
           ! grep -q "search provider setup failed" "$data"/logs/*.log
 
@@ -559,7 +585,8 @@ jobs:
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$CURRENT"
           old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
-          kept="$("$helper" profiles create --name keep-me | jq -er 'select(.ok) | .result.id')"
+          # A Chromium profile would start its browser download from github.com, which the fixture rejects.
+          kept="$("$helper" profiles create --name keep-me --engine firefox | jq -er 'select(.ok) | .result.id')"
           # The dashboard checks for updates by itself; wait until it has read the release feed.
           for attempt in $(seq 1 60); do
             [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break

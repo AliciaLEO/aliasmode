@@ -132,7 +132,7 @@ type CloudBrowserLauncher = Pick<
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
   "pageTargetFingerprint" | "browserStorageWatchPaths" | "failedStartGeneration" |
   "matchesCloudSession" | "recordCloudSession"
-> & Partial<Pick<Launcher, "closedFirefoxTabs">>;
+> & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks">>;
 
 export interface CloudBrowserOptions {
   cloud: CloudBrowserClient;
@@ -555,6 +555,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           this.options.store.upsertProfile(profile);
           this.options.store.setTimezone(profile.id, profile.timezone);
           this.proxyCacheVersions.set(summary.id, response.profile.version);
+          // A profile synced from another device may need a Firefox font pack here.
+          this.options.launcher.prefetchFirefoxFontPacks?.([profile]);
         } catch {
           // Transient Cloud errors: the attempt stamp keeps retries spaced out.
         }

@@ -2829,6 +2829,7 @@ async function main() {
         await launcher.certifySurvivors();
       }
       console.log("startup: browser recovery checks complete");
+      launcher.prefetchFirefoxFontPacks(store.listProfiles());
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
       if (configuredMode.mode === "cloud") {

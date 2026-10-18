@@ -406,6 +406,8 @@ async function runProductionCloudPreflight(
     hostPlatform: engine === "chromium155" ? "linux" : "darwin",
     hostArch: "arm64",
     spawn: failAtNativeBoundary,
+    // A Windows persona on this macOS host reads the Windows font pack; no download here.
+    ensureFirefoxFontPack: async (packRoot, pack) => join(packRoot, pack.os),
     firefoxRuntime: {
       reserve: async () => failAtNativeBoundary(),
       start: async () => { throw new Error("Firefox owner start should not run"); },

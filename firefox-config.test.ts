@@ -82,6 +82,13 @@ test("a Firefox launch shows the window label in the native title and starts in 
   expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
 });
 
+test("a Firefox launch names the font pack folder of this computer only, never a saved one", () => {
+  const saved = profile(5, { "aliasmode:fontsDir": "C:\\Users\\old\\fonts" });
+  expect(firefoxLaunchConfig(saved)).not.toHaveProperty("aliasmode:fontsDir");
+  expect(firefoxLaunchConfig(saved, undefined, "/data/runtimes/firefox-fonts/macos-1/fonts")["aliasmode:fontsDir"])
+    .toBe("/data/runtimes/firefox-fonts/macos-1/fonts");
+});
+
 test("a Firefox profile saved for engine 152 moves to 156 like a browser update, everywhere it is completed", () => {
   const ua = (version: string) => `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${version}) Gecko/20100101 Firefox/${version}`;
   const legacy: Profile = {

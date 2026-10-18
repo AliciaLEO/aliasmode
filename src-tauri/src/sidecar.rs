@@ -1,8 +1,4 @@
-use crate::{
-    browser::FirefoxRuntime,
-    credentials,
-    runtime_descriptor::RuntimeDescriptorState,
-};
+use crate::{browser::FirefoxRuntime, credentials, runtime_descriptor::RuntimeDescriptorState};
 use reqwest::{redirect::Policy, Client};
 use serde::Deserialize;
 use std::{

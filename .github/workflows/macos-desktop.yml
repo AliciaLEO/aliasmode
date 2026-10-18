@@ -449,7 +449,8 @@ jobs:
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$CURRENT"
           old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
-          kept="$("$helper" profiles create --name keep-me | jq -er 'select(.ok) | .result.id')"
+          # A Chromium profile would start its browser download from github.com, which the fixture rejects.
+          kept="$("$helper" profiles create --name keep-me --engine firefox | jq -er 'select(.ok) | .result.id')"
           # The dashboard checks for updates by itself; wait until it has read the release feed.
           for attempt in $(seq 1 60); do
             [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break

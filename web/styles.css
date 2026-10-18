@@ -363,6 +363,16 @@ button:disabled { cursor: default; }
 .platform-pill .glyph.pm-tiktok { background: #0b0b0b; }
 .platform-pill .glyph.pm-linkedin { background: #0a66c2; }
 .platform-pill .glyph.pm-reddit { background: #ff4500; }
+.platform-pill .glyph.pm-youtube { background: #ff0000; }
+.platform-pill .glyph.pm-threads { background: #0b0b0b; }
+.platform-pill .glyph.pm-pinterest { background: #bd081c; }
+.platform-pill .glyph.pm-snapchat { background: #fffc00; color: #0b0b0b; }
+.platform-pill .glyph.pm-discord { background: #5865f2; }
+.platform-pill .glyph.pm-twitch { background: #9146ff; }
+.platform-pill .glyph.pm-gmail { background: #ea4335; }
+.platform-pill .glyph.pm-amazon { background: #232f3e; }
+.platform-pill .glyph.pm-ebay { background: #e53238; }
+.platform-pill .glyph.pm-etsy { background: #f16521; }
 .platform-pill .glyph.pm-other { background: var(--faint); }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
@@ -1631,9 +1641,10 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 :root[data-theme="dark"] .btn.primary .icon,
 :root[data-theme="dark"] .btn.solid-danger .icon { color: currentColor; }
 
-/* Two brand marks are near-black and would vanish against a dark row. */
+/* Three brand marks are near-black and would vanish against a dark row. */
 :root[data-theme="dark"] .platform-pill .glyph.pm-x,
-:root[data-theme="dark"] .platform-pill .glyph.pm-tiktok {
+:root[data-theme="dark"] .platform-pill .glyph.pm-tiktok,
+:root[data-theme="dark"] .platform-pill .glyph.pm-threads {
   background: #f4f4f5; color: #0b0b0b;
 }
 

@@ -370,6 +370,16 @@ export function platformHomeUrl(platform: string | undefined, telegramClient: "a
   if (p === "reddit" || p === "reddit.com" || p === "www.reddit.com") return "https://www.reddit.com/";
   if (isTelegramPlatform(p)) return `https://web.telegram.org/${telegramClient}/`;
   if (p === "linkedin.com" || p === "linkedin") return "https://www.linkedin.com/feed/";
+  if (p === "youtube.com" || p === "youtube") return "https://www.youtube.com/";
+  if (p === "threads.com" || p === "threads.net" || p === "threads") return "https://www.threads.com/";
+  if (p === "pinterest.com" || p === "pinterest") return "https://www.pinterest.com/";
+  if (p === "snapchat.com" || p === "snapchat") return "https://www.snapchat.com/web";
+  if (p === "discord.com" || p === "discord") return "https://discord.com/app";
+  if (p === "twitch.tv" || p === "twitch") return "https://www.twitch.tv/";
+  if (p === "gmail.com" || p === "gmail") return "https://mail.google.com/";
+  if (p === "amazon.com" || p === "amazon") return "https://www.amazon.com/";
+  if (p === "ebay.com" || p === "ebay") return "https://www.ebay.com/";
+  if (p === "etsy.com" || p === "etsy") return "https://www.etsy.com/";
   return null;
 }
 

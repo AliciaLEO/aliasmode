@@ -1656,6 +1656,12 @@ test("platformHomeUrl lands supported platforms on their home pages", () => {
   expect(platformHomeUrl("telegram.org")).toBe("https://web.telegram.org/k/"); // standalone compatibility
   expect(platformHomeUrl("telegram.org", "a")).toBe("https://web.telegram.org/a/");
   expect(platformHomeUrl("telegram.org", "k")).toBe("https://web.telegram.org/k/");
+  expect(platformHomeUrl("youtube.com")).toBe("https://www.youtube.com/");
+  expect(platformHomeUrl("threads.net")).toBe("https://www.threads.com/");
+  expect(platformHomeUrl("snapchat.com")).toBe("https://www.snapchat.com/web");
+  expect(platformHomeUrl("discord")).toBe("https://discord.com/app");
+  expect(platformHomeUrl("gmail.com")).toBe("https://mail.google.com/");
+  expect(platformHomeUrl("ebay.com")).toBe("https://www.ebay.com/");
   expect(platformHomeUrl("")).toBeNull(); // unset platform → keep the browser default page
   expect(platformHomeUrl(undefined)).toBeNull();
 });

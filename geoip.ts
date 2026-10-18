@@ -4,6 +4,7 @@ import { connect as netConnect, type Socket } from "node:net";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
 import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
+import { canonicalIp } from "./ip.ts";
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
 
@@ -119,11 +120,11 @@ export async function openSocks5Tunnel(
   }
 }
 
-/** Location of the connection's exit IP, using the profile proxy when present. */
+/** Location and address of the connection's exit IP, using the profile proxy when present. */
 export async function lookupExitLocation(
   proxy: ProxySpec | null,
   fetchFn: FetchLike = (url, init) => fetch(url, init),
-): Promise<{ timezone: string; country?: string } | null> {
+): Promise<{ timezone: string; country?: string; ip?: string } | null> {
   let relay: ProxyRelay | undefined;
   try {
     if (proxy) {
@@ -140,19 +141,59 @@ export async function lookupExitLocation(
       signal: AbortSignal.timeout(10_000),
     } as RequestInit;
     try {
-      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone,countryCode", init);
-      const row = (await res.json()) as { status?: string; timezone?: string; countryCode?: string } | null;
-      if (row?.status === "success" && row.timezone) return { timezone: row.timezone, country: row.countryCode };
+      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init);
+      const row = (await res.json()) as { status?: string; timezone?: string; countryCode?: string; query?: string } | null;
+      if (row?.status === "success" && row.timezone) return withIp({ timezone: row.timezone, country: row.countryCode }, row.query);
     } catch {
       // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
     }
     const res = await fetchFn("https://v6.ipinfo.io/json", { ...init, signal: AbortSignal.timeout(10_000) });
-    const row = (await res.json()) as { timezone?: string; country?: string } | null;
-    return typeof row?.timezone === "string" && row.timezone ? { timezone: row.timezone, country: row.country } : null;
+    const row = (await res.json()) as { timezone?: string; country?: string; ip?: string } | null;
+    return typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country }, row.ip) : null;
   } catch {
     return null;
   } finally {
     relay?.close();
+  }
+}
+
+function withIp<T extends object>(location: T, raw: unknown): T & { ip?: string } {
+  const ip = typeof raw === "string" ? canonicalIp(raw) : null;
+  return ip ? { ...location, ip } : location;
+}
+
+// Profiles that share a proxy often open together, and ip-api.com answers 45 requests a minute
+// per address, so one answer serves each proxy for a minute. A failed lookup is not kept.
+const EXIT_IP_REUSE_MS = 60_000;
+const exitIps = new Map<string, { at: number; ip: Promise<string | null> }>();
+
+/**
+ * The address a proxy's traffic leaves from, looked up through the proxy and never directly.
+ * Waits at most `waitMs`; an answer that comes later still serves the next launch. A changed
+ * proxy (type, host, port or login) gets its own lookup.
+ */
+export async function lookupProxyExitIp(
+  proxy: ProxySpec,
+  opts: { fetchFn?: FetchLike; waitMs?: number; now?: () => number } = {},
+): Promise<string | null> {
+  const now = opts.now ?? Date.now;
+  const key = JSON.stringify([proxy.type, proxy.host, String(proxy.port), proxy.user ?? "", proxy.pass ?? ""]);
+  let entry = exitIps.get(key);
+  if (!entry || now() - entry.at >= EXIT_IP_REUSE_MS) {
+    for (const [old, value] of exitIps) if (now() - value.at >= EXIT_IP_REUSE_MS) exitIps.delete(old);
+    const created = { at: now(), ip: lookupExitLocation(proxy, opts.fetchFn).then((location) => location?.ip ?? null) };
+    exitIps.set(key, created);
+    void created.ip.then((ip) => { if (!ip && exitIps.get(key) === created) exitIps.delete(key); });
+    entry = created;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      entry.ip,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), opts.waitMs ?? 5_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

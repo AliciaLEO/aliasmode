@@ -7,6 +7,7 @@ import headerNetworkDefinitionPath from "./node_modules/header-generator/data_fi
 // @ts-expect-error Bun embeds this package data in compiled sidecars.
 import webglDataPath from "./node_modules/camoufox-js/dist/data-files/webgl_data.db" with { type: "file" };
 import { Database } from "bun:sqlite";
+import { isIP } from "node:net";
 import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { deterministicSeed, launchWindowSize, platformFromUA, seedFraction } from "./fingerprint.ts";
@@ -160,9 +161,12 @@ const DROPPED_LAUNCH_KEYS = [
  * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
  * exact shape. A value the profile stores itself is kept.
  */
-export function firefoxLaunchConfig(profile: Profile, windowLabel?: string): Record<string, JsonValue> {
+export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
   for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
+  // The font pack of the profile's OS, when it is not this computer's OS (firefox-fonts.ts).
+  if (fontsDir) config["aliasmode:fontsDir"] = fontsDir;
+  else delete config["aliasmode:fontsDir"];
   const seed = (key: string) => deterministicSeed(`${profile.fingerprintSeed}:${key}`);
   // Without a seed every profile on one computer gives the same audio output.
   config["audio:seed"] ??= seed("audio:seed");
@@ -175,6 +179,9 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string): Rec
   }
   // The engine shows the label in the native window title only, adding its own separator.
   if (windowLabel) config["aliasmode:windowLabel"] = windowLabel;
+  // Behind a proxy the engine shows the proxy's exit IP as WebRTC's public address, as a browser
+  // at that exit would, in place of no address. The current exit replaces any stored one.
+  if (profile.proxy && webRtcIp) config[isIP(webRtcIp) === 6 ? "webrtc:ipv6" : "webrtc:ipv4"] = webRtcIp;
   fitFirefoxWindow(config);
   return config;
 }
@@ -193,6 +200,9 @@ function firefoxStartupLocale(profile: Profile): string {
  * font list on Linux), Firefox searches the listed fonts instead; asynchronous fallback skips
  * the ones whose character maps are still loading, so text measured in the first seconds after
  * startup differs from the same text measured later. Synchronous fallback gives one result.
+ * The engine turns the new tab page off, so a new tab was blank; Firefox's own page (logo and a
+ * search box that uses the default search engine) is local, makes no requests and adds nothing
+ * a site can see.
  */
 export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
   return {
@@ -200,10 +210,11 @@ export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue>
     "gfx.blacklist.webgpu": 4,
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
+    "browser.newtabpage.enabled": true,
   };
 }
 
-function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue>): PersonaOs {
+export function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue> = profile.firefox?.config ?? {}): PersonaOs {
   const ua = typeof config["navigator.userAgent"] === "string" ? config["navigator.userAgent"] : "";
   const os = profile.platformOs || platformFromUA(profile.ua) || platformFromUA(ua);
   if (os === "windows" || os === "macos" || os === "linux") return os;

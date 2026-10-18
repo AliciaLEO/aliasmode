@@ -26,8 +26,9 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen } from "bun:ffi";
-import type { CookieRecord, LaunchInfo, Profile } from "./types.ts";
+import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
+import { lookupProxyExitIp } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
 import { allocatePort } from "./ports.ts";
@@ -41,17 +42,19 @@ import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "
 import { assertSafeProfileId } from "./profile-id.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
-import { claimedScreenArea, watchWindowFit, type ScreenArea } from "./window-fit.ts";
+import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
-import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
+import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs } from "./firefox-config.ts";
+import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
-  ALIASMODE_CHROMIUM_HOST_SCALE,
+  ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
+  chromiumDeviceScale,
   cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
   ensureCloakBrowser,
@@ -203,6 +206,7 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
+  firefox_fonts_download: "The fonts for this profile's operating system could not be downloaded. Check your internet connection, then open the profile again.",
   cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
   chromium155_host: "Chromium 155 beta requires Windows x64, Apple Silicon macOS, or Linux x64.",
   chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
@@ -405,6 +409,8 @@ export interface LauncherOptions {
   ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
   /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
   chromiumSandboxBlocked?: () => boolean;
+  /** Installs a Firefox font pack under the runtimes root. Returns the folder of its fonts. */
+  ensureFirefoxFontPack?: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -496,6 +502,12 @@ export interface LauncherOptions {
    * defaults to the real CDP probe. Never allowed to fail a launch.
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
+  /**
+   * The exit IP of a profile's proxy, which AliasMode Firefox and Chromium 155 on Windows then show
+   * as WebRTC's public address. null keeps WebRTC as it was. Defaults to a short lookup through the
+   * proxy; tests inject it.
+   */
+  lookupExitIp?: (proxy: ProxySpec) => Promise<string | null>;
   readSession?: typeof readSessionInSubprocess;
   applySession?: typeof applySessionToEndpoint;
   /** Budget for the graceful close above before falling through to the force-kill. */
@@ -730,6 +742,10 @@ export class Launcher {
   private runtimePrefetches = new Set<string>();
   private runtimesPruned = false;
   private chromiumSandboxBlockedFn: () => boolean;
+  private ensureFirefoxFontPackFn: (root: string, pack: FirefoxFontPack) => Promise<string>;
+  /** Packs whose background download failed in this run; a launch still retries them. */
+  private fontPackPrefetchFailed = new Set<string>();
+  private fontPacksPruned = false;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -749,6 +765,7 @@ export class Launcher {
   private ensureCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
+  private lookupExitIpFn?: (proxy: ProxySpec) => Promise<string | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
   private navigateFn: LaunchNavigator;
@@ -838,6 +855,7 @@ export class Launcher {
     this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
       ?? ((root) => ensureCloakBrowser(root, this.hostPlatform, this.hostArch));
     this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
+    this.ensureFirefoxFontPackFn = opts.ensureFirefoxFontPack ?? ((root, pack) => ensureFirefoxFontPack(root, pack));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
@@ -858,6 +876,7 @@ export class Launcher {
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
+    this.lookupExitIpFn = opts.lookupExitIp ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitIp(proxy));
     this.readSessionFn = opts.readSession ?? readSessionInSubprocess;
     this.applySessionFn = opts.applySession ?? applySessionToEndpoint;
     this.navigateFn = opts.navigate ?? defaultNavigate;
@@ -911,12 +930,40 @@ export class Launcher {
     return dir;
   }
 
+  /** The font pack this Firefox profile needs on this computer, if any. */
+  private firefoxFontPack(profile: Profile): FirefoxFontPack | undefined {
+    return profile.engine === "firefox" && profile.firefox
+      ? firefoxFontPackFor(firefoxPersonaOs(profile), this.hostPlatform)
+      : undefined;
+  }
+
   /**
-   * Download in the background the browser runtimes these profiles need, so their first open
-   * does not wait. The first call also removes runtimes that are no longer pinned. A download
-   * that failed here is not started again in this run; opening a profile still tries it.
+   * Download in the background the font packs these profiles need, so their first open
+   * does not wait. The first call also removes packs that are no longer pinned.
+   */
+  prefetchFirefoxFontPacks(profiles: readonly Profile[]): void {
+    if (!this.fontPacksPruned) {
+      this.fontPacksPruned = true;
+      pruneFirefoxFontPacks(this.chromiumRuntimeRoot);
+    }
+    const packs = new Set(profiles.flatMap((profile) => this.firefoxFontPack(profile) ?? []));
+    for (const pack of packs) {
+      if (this.fontPackPrefetchFailed.has(pack.sha256)) continue;
+      this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, pack).catch((error) => {
+        this.fontPackPrefetchFailed.add(pack.sha256);
+        this.log(`Firefox ${pack.os} font pack download failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }
+
+  /**
+   * Download in the background the browser runtimes and Firefox font packs these profiles
+   * need, so their first open does not wait. The first call also removes runtimes and packs
+   * that are no longer pinned. A download that failed here is not started again in this run;
+   * opening a profile still tries it.
    */
   prefetchBrowserRuntimes(profiles: readonly Profile[]): void {
+    this.prefetchFirefoxFontPacks(profiles);
     if (!this.runtimesPruned) {
       this.runtimesPruned = true;
       const inUse = this.store.listLaunches().flatMap((launch) => launch.binaryPath ? [launch.binaryPath] : []);
@@ -1123,6 +1170,17 @@ export class Launcher {
   }
 
   /**
+   * The proxy exit IP that AliasMode Firefox and Chromium 155 on Windows show as WebRTC's public
+   * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
+   */
+  private async webRtcExitIp(profile: Profile): Promise<string | undefined> {
+    if (!profile.proxy || !this.lookupExitIpFn) return undefined;
+    const ip = await this.lookupExitIpFn(profile.proxy).catch(() => null);
+    this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
+    return ip ?? undefined;
+  }
+
+  /**
    * Build the full CloakBrowser argv for a launch. Identity flags come from
    * the stored profile; `port`/`userDataDir` are per-launch session detail;
    * `launchArgs` are the ephemeral chrome flags automation passes through.
@@ -1135,6 +1193,7 @@ export class Launcher {
     relayPort?: number,
     headless = this.headless,
     restoreLastSession = false,
+    webRtcIp?: string,
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
     const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
@@ -1197,6 +1256,9 @@ export class Launcher {
       args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
     }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
+    // The engine sends no WebRTC packet behind the proxy, and shows a page the proxy's exit IP as
+    // its public address, as a browser at that exit would, in place of no candidate at all.
+    if (webRtcIp && this.chromiumWebRtcIp(profile)) args.push(`--fingerprint-webrtc-ip=${webRtcIp}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
     // headless ON. So headful = omit the flag entirely; headless = pass it.
@@ -1278,7 +1340,7 @@ export class Launcher {
 
   /** Chromium 155 on Windows draws pages at the primary display's scale; every other launch at 1. */
   private deviceScale(profile: Profile): number {
-    return this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE ? this.hostScale : 1;
+    return chromiumDeviceScale(this.hostPlatform, profile.chromiumRuntime, this.hostScale);
   }
 
   /**
@@ -1291,14 +1353,24 @@ export class Launcher {
     return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
   }
 
+  /**
+   * Chromium 155 on Windows shows --fingerprint-webrtc-ip behind the HTTP proxy it always gets.
+   * Upstream's Mac and Linux builds open no WebRTC UDP socket there, so the switch shows nothing.
+   */
+  private chromiumWebRtcIp(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
+  }
+
   /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
   private nativeWindowLabel(profile: Profile): boolean {
     return this.hostPlatform === "win32" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
   }
 
-  private startWindowFit(profileId: string, ws: string, area: ScreenArea): void {
+  private startWindowFit(profile: Profile, ws: string, sample: FingerprintSample | null): void {
+    const profileId = profile.id;
     this.windowFits.get(profileId)?.stop();
-    const fit = this.watchWindowFitFn!(ws, area, {
+    const fit = this.watchWindowFitFn!(ws, claimedScreenArea(this.pageScreen(profile), sample), {
+      scale: this.deviceScale(profile),
       log: (msg) => this.log(`${profileId}: ${msg}`),
       onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
     });
@@ -1312,7 +1384,7 @@ export class Launcher {
     const launch = this.store.getLaunch(profileId);
     if (!profile?.chromiumRuntime || !launch || launch.headless || launch.engine === "firefox") return;
     const ws = await this.probeLaunchCdp(launch);
-    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), null));
+    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profile, ws, null);
   }
 
   private markIdentityCertified(profileId: string): void {
@@ -1685,6 +1757,8 @@ export class Launcher {
     if (profile.engine === "firefox") {
       return this.startFreshFirefox(profile, startupUrls, opts, pendingSession);
     }
+    // Runs beside the launch preparation below; the browser arguments wait for it.
+    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile) : undefined;
 
     // A fresh generation is never spawned until the configured executable has
     // been canonicalized and matched byte-for-byte against the deployment pin.
@@ -1789,7 +1863,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, await webRtcIp,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -1914,8 +1988,11 @@ export class Launcher {
       // among many open profiles (the cue AdsPower's panel gave). Registered
       // before navigation so the title script is in place when the platform page
       // loads. Strictly best-effort — never fail or stall a launch on it. Chromium 155 on
-      // Windows got the label as a launch switch, so its pages get no title script.
-      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile)) {
+      // Windows got the label as a launch switch, so its pages get no title script. The Mac
+      // Chromium 155 build has no such switch, and a title script is visible to pages, so its
+      // windows go unlabeled.
+      const pageLabelHidden = this.hostPlatform === "darwin" && !!profile.chromiumRuntime;
+      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile) && !pageLabelHidden) {
         try {
           const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
           await this.labelWindowFn(ws, buildWindowLabel(profile.name, displayNo));
@@ -2053,7 +2130,7 @@ export class Launcher {
       // A page sees the real window against the profile's screen, so a window maximized on a
       // larger display would be bigger than that screen. Keep the window no larger than it.
       if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
-        this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), sample));
+        this.startWindowFit(profile, ws, sample);
       }
       return { ws, port, nativeSessionRestored };
     } catch (err) {
@@ -2153,9 +2230,24 @@ export class Launcher {
     const profileId = profile.id;
     const headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
+    // Runs beside the launch preparation below; the engine config waits for it.
+    const webRtcIp = this.webRtcExitIp(profile);
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
+    // A profile of another OS never opens without that OS's fonts: it would show this
+    // computer's font list. The first open waits for the download when no prefetch did it.
+    const fontPack = this.firefoxFontPack(profile);
+    let fontsDir: string | undefined;
+    if (fontPack) {
+      try {
+        fontsDir = await this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, fontPack);
+        this.fontPackPrefetchFailed.delete(fontPack.sha256);
+      } catch (error) {
+        this.log(`Firefox ${fontPack.os} font pack install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "firefox_fonts_download");
+      }
+    }
     const userDataDir = this.userDataDir(profileId);
     const runtime = resolvePlaywrightRuntime();
     const ownerBinaryPath = this.unsafeDisableIdentityGates
@@ -2197,6 +2289,7 @@ export class Launcher {
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
       }
+      const exitIp = await webRtcIp;
       this.requireUnchangedProfile(profileId, snapshot, "Firefox spawn");
       this.store.recordLaunch(launch);
       reserved = true;
@@ -2211,7 +2304,8 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel), prefs: firefoxStartupPrefs(profile), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, exitIp), proxy, headless,
+        prefs: { ...firefoxStartupPrefs(profile), ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}) },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {

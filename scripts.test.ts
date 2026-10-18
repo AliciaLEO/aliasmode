@@ -1,18 +1,20 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScriptLibrary, ScriptSupervisor, resolveScriptRunner, verifyScriptRuntime, type ScriptExecution } from "./scripts.ts";
 import { handleUiRequest } from "./ui.ts";
 import { CloudClient } from "./cloud-client.ts";
 import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
+import { PYTHON_RUNTIME_FAILED, PythonRuntime } from "./python-runtime.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function root() { const dir = mkdtempSync(join(tmpdir(), "aliasmode-scripts-")); roots.push(dir); return dir; }
 const input = { name: "Visit", description: "Example", language: "javascript" as const, source: "export default async () => {};" };
 
-function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; profileIds?: string[]; admission?: LifecycleAdmissionController; close?: (id: string) => Promise<void>; cloud?: any; firefoxOwner?: any; realExecute?: boolean } = {}) {
+function harness(execute: ScriptExecution = async () => {}, options: { active?: string[]; profileIds?: string[]; admission?: LifecycleAdmissionController; close?: (id: string) => Promise<void>; cloud?: any; firefoxOwner?: any; realExecute?: boolean; python?: PythonRuntime } = {}) {
   const directory = root();
   const events: string[] = [];
   const launch = (id: string) => options.firefoxOwner
@@ -22,7 +24,7 @@ function harness(execute: ScriptExecution = async () => {}, options: { active?: 
   const profiles = (options.profileIds ?? ["a", "b", "c"]).map((id) => ({ id, name: id, group: "", platform: "", username: `user-${id}`, password: `test-password-${id}`, twofa: "" }));
   const library = new ScriptLibrary(directory, !!options.cloud, options.cloud);
   const supervisor = new ScriptSupervisor({
-    root: directory, library, ...(options.realExecute ? {} : { execute }),
+    root: directory, library, python: options.python, ...(options.realExecute ? {} : { execute }),
     store: { getProfile: (id: string) => profiles.find((p) => p.id === id), getLaunch: (id: string) => launches.get(id), listAgentTemporary: () => [] } as any,
     launcher: {
       certifiedActive: async (id: string) => launches.has(id),
@@ -78,6 +80,155 @@ test("a missing runtime fails before a script opens a profile", async () => {
     if (previous === undefined) delete process.env.ALIASMODE_PLAYWRIGHT_RUNTIME;
     else process.env.ALIASMODE_PLAYWRIGHT_RUNTIME = previous;
   }
+});
+
+const pythonInput = { ...input, name: "Visit in Python", language: "python" as const, source: "async def run(**_):\n    pass\n" };
+
+/** A Python runtime whose one pinned download comes from `fetch`. */
+function fakePython(fetch: (url: string, init: RequestInit) => Promise<Response>): PythonRuntime {
+  const bytes = new TextEncoder().encode("python archive");
+  return new PythonRuntime(join(root(), "runtimes"), {
+    platform: "win32", fetch, attempts: 1, sleep: async () => {}, check: async () => {},
+    pins: { archive: { url: "https://python.test/python.zip", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }, wheels: [] },
+    unpack: async (_archive, directory) => {
+      const python = join(directory, "python");
+      mkdirSync(join(python, "Lib", "site-packages", "playwright", "driver"), { recursive: true });
+      writeFileSync(join(python, "python.exe"), "");
+      writeFileSync(join(python, "Lib", "site-packages", "playwright", "driver", "node.exe"), "");
+      return python;
+    },
+  });
+}
+
+test("a Python script waits for the Python runtime download before it opens a profile", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const python = fakePython(async () => { await gate; return new Response("python archive"); });
+  const interpreters: Array<string | undefined> = [];
+  const h = harness(async ({ python: interpreter }) => { interpreters.push(interpreter); }, { python });
+  const script = await h.library.save(pythonInput);
+  const run = h.supervisor.start({ scriptId: script.id, profileIds: ["a"], inputs: {}, useCredentials: false });
+  await Bun.sleep(20);
+  expect(h.events).toEqual([]);
+  expect(h.supervisor.status()).toMatchObject({ scriptName: "Visit in Python", status: "running", profiles: [{ status: "queued" }] });
+  expect(python.status().state).toBe("downloading");
+  release();
+  await h.supervisor.settled();
+  expect(h.supervisor.status()?.profiles[0]?.status).toBe("succeeded");
+  expect(interpreters).toEqual([python.executable]);
+  const log = h.supervisor.log(run.id, 0).text;
+  expect(log).toContain("Downloading the Python runtime for Python scripts");
+  expect(log).toContain("Python runtime download: 100%");
+  expect(log).toContain("Python runtime ready");
+
+  // An installed runtime starts the next run at once, without a download note.
+  const next = h.supervisor.start({ scriptId: script.id, profileIds: ["b"], inputs: {}, useCredentials: false });
+  await h.supervisor.settled();
+  expect(h.supervisor.log(next.id, 0).text).not.toContain("Python runtime");
+  expect(interpreters).toEqual([python.executable, python.executable]);
+});
+
+test("a failed Python runtime download fails the run clearly before any profile opens", async () => {
+  const python = fakePython(async () => { throw new Error("network is down"); });
+  let executed = false;
+  const h = harness(async () => { executed = true; }, { python });
+  const script = await h.library.save(pythonInput);
+  const run = h.supervisor.start({ scriptId: script.id, profileIds: ["a", "b"], inputs: {}, useCredentials: false });
+  await h.supervisor.settled();
+  expect(executed).toBe(false);
+  expect(h.events).toEqual([]);
+  expect(h.supervisor.status()?.profiles).toEqual([
+    { id: "a", name: "a", status: "failed", error: PYTHON_RUNTIME_FAILED },
+    { id: "b", name: "b", status: "failed", error: PYTHON_RUNTIME_FAILED },
+  ]);
+  expect(h.supervisor.log(run.id, 0).text).toContain("Python runtime download failed: network is down");
+  expect(python.status()).toMatchObject({ state: "failed", error: "network is down" });
+});
+
+test("Stop ends the wait for the Python runtime", async () => {
+  const python = fakePython(() => new Promise<Response>(() => {}));
+  const h = harness(async () => { throw new Error("must not run"); }, { python });
+  const script = await h.library.save(pythonInput);
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a"], inputs: {}, useCredentials: false });
+  await Bun.sleep(20);
+  const stopped = await h.supervisor.stop();
+  expect(stopped?.status).toBe("finished");
+  expect(stopped?.profiles[0]?.status).toBe("cancelled");
+  expect(h.events).toEqual([]);
+});
+
+test("packaged Python scripts run only on the downloaded runtime", async () => {
+  const packaged = { kind: "packaged" as const, root: root(), nodeExecutable: "node", workerPath: "worker.mjs" };
+  expect(() => resolveScriptRunner("python", packaged)).toThrow("The Python runtime is not ready. Run the script again to download it.");
+  expect(resolveScriptRunner("python", packaged, "/runtimes/python/python.exe").executable).toBe("/runtimes/python/python.exe");
+  await expect(verifyScriptRuntime("python", { runtime: packaged, python: join(packaged.root, "missing.exe") }))
+    .rejects.toThrow("The Python runtime is not ready");
+});
+
+test("JavaScript scripts run on the bundled Node and never download Python", async () => {
+  const requests: string[] = [];
+  const python = fakePython(async (url) => { requests.push(url); return new Response("python archive"); });
+  const languages: string[] = [];
+  const h = harness(async ({ language, python: interpreter }) => { languages.push(`${language}:${interpreter ?? ""}`); }, { python });
+  const script = await h.library.save(input);
+  h.supervisor.start({ scriptId: script.id, profileIds: ["a"], inputs: {}, useCredentials: false });
+  await h.supervisor.settled();
+  expect(h.supervisor.status()?.profiles[0]?.status).toBe("succeeded");
+  expect(languages).toEqual(["javascript:"]);
+  expect(requests).toEqual([]);
+  expect(existsSync(python.directory)).toBe(false);
+});
+
+test("the scripts API prefetches Python only for Python scripts and reports the runtime", async () => {
+  const requests: string[] = [];
+  const python = fakePython(async (url) => { requests.push(url); return new Response("python archive"); });
+  const h = harness(undefined, { python });
+  const nonce = "c".repeat(64);
+  const request = async (path: string, method = "GET", body?: unknown) => {
+    const response = await handleUiRequest(new Request(`http://127.0.0.1/ui/api/scripts${path}`, {
+      method, headers: { authorization: `Bearer ${nonce}`, ...(method === "GET" ? {} : { "content-type": "application/json" }) },
+      ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }),
+    }), {} as any, {} as any, null, { scripts: { library: h.library, runner: h.supervisor, nonce, python } });
+    expect(response?.status).toBe(200);
+    return response!.json();
+  };
+  expect((await request("/python-runtime")).python).toMatchObject({ state: "missing" });
+  await request("", "POST", input);
+  await request("");
+  await Bun.sleep(10);
+  expect(requests).toEqual([]);
+
+  // Adding a Python script starts the download; opening the list again does not start a second one.
+  await request("", "POST", pythonInput);
+  await request("");
+  await Bun.sleep(10);
+  expect(requests).toEqual(["https://python.test/python.zip"]);
+  expect((await request("/python-runtime")).python).toMatchObject({ state: "ready" });
+
+  const source = { scripts: { library: h.library, runner: h.supervisor, nonce } };
+  const response = await handleUiRequest(new Request("http://127.0.0.1/ui/api/scripts/python-runtime", {
+    headers: { authorization: `Bearer ${nonce}` },
+  }), {} as any, {} as any, null, source);
+  expect(await response!.json()).toEqual({ ok: true, python: null });
+});
+
+test("the user can retry a failed Python runtime download from the scripts page", async () => {
+  let down = true;
+  const python = fakePython(async () => { if (down) throw new Error("network is down"); return new Response("python archive"); });
+  const h = harness(undefined, { python });
+  const nonce = "d".repeat(64);
+  const call = async (method: string) => (await handleUiRequest(new Request("http://127.0.0.1/ui/api/scripts/python-runtime", {
+    method, headers: { authorization: `Bearer ${nonce}`, ...(method === "POST" ? { "content-type": "application/json" } : {}) },
+    ...(method === "POST" ? { body: "{}" } : {}),
+  }), {} as any, {} as any, null, { scripts: { library: h.library, runner: h.supervisor, nonce, python } }))!.json();
+  await h.library.save(pythonInput);
+  python.prefetch();
+  await Bun.sleep(10);
+  expect((await call("GET")).python).toMatchObject({ state: "failed", error: "network is down" });
+  down = false;
+  expect((await call("POST")).python.state).toBe("downloading");
+  await Bun.sleep(10);
+  expect((await call("GET")).python.state).toBe("ready");
 });
 
 test("local script imports never execute, survive reload, and check revisions", async () => {
@@ -397,7 +548,7 @@ test("all script API operations require the desktop nonce and trusted origin", a
   const h = harness();
   const nonce = "a".repeat(64);
   const options = { scripts: { library: h.library, runner: h.supervisor, nonce } };
-  for (const [method, path] of [["GET", ""], ["POST", ""], ["GET", "/run"], ["POST", "/run"], ["POST", "/stop"], ["GET", "/log"], ["GET", "/id"], ["PATCH", "/id"], ["DELETE", "/id"], ["GET", "/library"], ["GET", "/library/id"], ["POST", "/library/id/import"], ["PUT", "/id/publication"], ["DELETE", "/id/publication"]]) {
+  for (const [method, path] of [["GET", ""], ["POST", ""], ["GET", "/run"], ["POST", "/run"], ["POST", "/stop"], ["GET", "/log"], ["GET", "/id"], ["PATCH", "/id"], ["DELETE", "/id"], ["GET", "/library"], ["GET", "/library/id"], ["POST", "/library/id/import"], ["PUT", "/id/publication"], ["DELETE", "/id/publication"], ["GET", "/python-runtime"], ["POST", "/python-runtime"]]) {
     const response = await handleUiRequest(new Request(`http://127.0.0.1/ui/api/scripts${path}`, { method }), {} as any, {} as any, null, options);
     expect(response?.status).toBe(401);
   }

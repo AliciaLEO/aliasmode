@@ -4765,6 +4765,7 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
     }
     const spawnedArgs: string[][] = [];
     const areas: unknown[] = [];
+    const scales: unknown[] = [];
     const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
       hostPlatform,
       hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
@@ -4772,8 +4773,9 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
       chromiumRuntimeRoot: "/fake/runtimes",
       ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
       captureFingerprint: async () => options.capture ?? null,
-      watchWindowFit: (_ws, area) => {
+      watchWindowFit: (_ws, area, opts) => {
         areas.push(area);
+        scales.push(opts?.scale);
         return { stop: () => {} };
       },
     });
@@ -4784,12 +4786,15 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
     return {
       args: args.filter((arg) => /^--(force-device-scale-factor|fingerprint-screen-(width|height)|window-size)=/.test(arg)),
       areas,
+      scales,
     };
   };
 
   expect(await launch("win32", "aliasmode", "1920x1080", 1.25)).toEqual({
     args: ["--window-size=998,778", "--fingerprint-screen-width=1536", "--fingerprint-screen-height=864", "--force-device-scale-factor=1.25"],
     areas: [{ left: 0, top: 0, width: 1536, height: 864 }],
+    // The watcher reads window bounds rounded at that scale.
+    scales: [1.25],
   });
   // A capture from an earlier launch at scale 1 is larger than this screen, so the whole screen
   // stands in; a capture from this launch is already in CSS pixels.
@@ -4839,11 +4844,60 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   // The engine adds the trailing space itself; Windows would strip it from a switch value.
   expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   expect(native.scripted).toEqual([]);
-  // CloakBrowser has no such switch, and the Mac build is upstream's, so both keep the page script.
-  for (const [host, engine] of [["win32", "cloakbrowser"], ["darwin", "aliasmode"]] as const) {
-    const page = await launch(host, engine);
-    expect(page.switches).toEqual([]);
-    expect(page.scripted).toEqual([page.label]);
+  // CloakBrowser has no such switch, so it keeps the page script.
+  const cloak = await launch("win32", "cloakbrowser");
+  expect(cloak.switches).toEqual([]);
+  expect(cloak.scripted).toEqual([cloak.label]);
+  // The Mac Chromium 155 build has no switch either, and pages could read a title script.
+  const mac = await launch("darwin", "aliasmode");
+  expect(mac.switches).toEqual([]);
+  expect(mac.scripted).toEqual([]);
+});
+
+test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines are not asked", async () => {
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+  const launch = async (
+    hostPlatform: NodeJS.Platform,
+    engine: "aliasmode" | "cloakbrowser",
+    lookup: () => Promise<string | null>,
+    profileProxy: typeof proxy | null = proxy,
+  ) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy: profileProxy };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const asked: unknown[] = [];
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+      lookupExitIp: async (spec) => { asked.push(spec); return lookup(); },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    const webrtc = spawnedArgs[0]!.filter((arg) => /^--(force-webrtc-ip-handling-policy|fingerprint-webrtc-(ip|udp))=/.test(arg));
+    return { asked, webrtc };
+  };
+  const policy = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7"))
+    .toEqual({ asked: [proxy], webrtc: [policy, "--fingerprint-webrtc-ip=203.0.113.7"] });
+  expect((await launch("win32", "aliasmode", async () => "2001:db8::7")).webrtc)
+    .toEqual([policy, "--fingerprint-webrtc-ip=2001:db8::7"]);
+  // No answer, or a failed lookup, keeps the arguments as they were.
+  expect(await launch("win32", "aliasmode", async () => null)).toEqual({ asked: [proxy], webrtc: [policy] });
+  expect(await launch("win32", "aliasmode", () => Promise.reject(new Error("offline"))))
+    .toEqual({ asked: [proxy], webrtc: [policy] });
+  // Without a proxy WebRTC keeps the computer's own route and nothing is looked up.
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7", null))
+    .toEqual({ asked: [], webrtc: ["--force-webrtc-ip-handling-policy=default_public_interface_only"] });
+  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change, so they are not asked.
+  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [], webrtc: [policy] });
   }
 });
 
@@ -5039,14 +5093,14 @@ test("the Windows app opens a CloakBrowser profile with the downloaded build and
   store.close();
 });
 
-test("prefetch downloads each runtime that saved profiles need once, and removes unpinned runtimes first", async () => {
+test("prefetch downloads each runtime and font pack that saved profiles need, and removes unpinned runtimes first", async () => {
   const store = new ProfileStore(":memory:");
   const root = join(tmpdir(), `aliasmode-prefetch-${crypto.randomUUID()}`);
   mkdirSync(join(root, "cloakbrowser-145.0.7632.109.2"), { recursive: true });
   mkdirSync(join(root, "chromium-155.0.8059.31-aliasmode.1"));
   const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
-  const firefox = buildNewProfile({ engine: "firefox" }, () => false);
+  const firefox = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
   store.upsertProfile(cloak);
   // A browser that still runs from an older runtime keeps it.
   store.recordLaunch({
@@ -5054,6 +5108,7 @@ test("prefetch downloads each runtime that saved profiles need once, and removes
     binaryPath: join(root, "chromium-155.0.8059.31-aliasmode.1", "chrome.exe"),
   });
   const downloads: string[] = [];
+  const fontPacks: string[] = [];
   let failCloakBrowser = true;
   const logs: string[] = [];
   const launcher = new ProductionLauncher({
@@ -5069,12 +5124,14 @@ test("prefetch downloads each runtime that saved profiles need once, and removes
       return "unused";
     },
     ensureAliasmodeChromium: async () => { downloads.push("chromium155"); return "unused"; },
+    ensureFirefoxFontPack: async (_root, pack) => { fontPacks.push(pack.os); return "unused"; },
     log: (message) => logs.push(message),
     spawn: () => { throw new Error("must not spawn"); },
   });
 
   launcher.prefetchBrowserRuntimes([firefox]);
   expect(downloads).toEqual([]);
+  expect(fontPacks).toEqual(["macos"]);
   expect(readdirSync(root)).toEqual(["chromium-155.0.8059.31-aliasmode.1"]);
   launcher.prefetchBrowserRuntimes([firefox, cloak, beta]);
   launcher.prefetchBrowserRuntimes([cloak, beta]);

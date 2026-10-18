@@ -1337,7 +1337,7 @@ test("a changed proxy gets its exit timezone", async () => {
   );
 
   expect(res!.status).toBe(200);
-  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
+  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
   expect(s.getProfile("k1d0cd11")).toMatchObject({
     proxy: { type: "socks5", host: "new-proxy.example", port: "1080", user: "user", pass: "pass" },
     timezone: "Europe/Paris",
@@ -1437,7 +1437,7 @@ test("an explicit timezone action updates a Local proxy timezone", async () => {
   );
   expect(res!.status).toBe(200);
   expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London" });
-  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
+  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
   expect(s.getProfile("k1d0cd11")!.locale).toBe("en-GB");
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
   s.close();
@@ -2015,7 +2015,7 @@ test("create (local mode) sets the timezone from the proxy", async () => {
     );
     const body = await res!.json();
     expect(body.ok).toBe(true);
-    expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode"]]);
+    expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
     const saved = s.getProfile(body.id)!;
     expect(saved).toMatchObject({ timezone: "Europe/Paris", locale: "fr-FR" });
     if (engine === "firefox") expect(saved.firefox!.config.timezone).toBe("Europe/Paris");
@@ -2086,6 +2086,22 @@ test("create (local mode) adds a new profile", async () => {
   const body = await res!.json();
   expect(body.ok).toBe(true);
   expect(s.getProfile(body.id)!.name).toBe("fresh");
+  s.close();
+});
+
+test("creating a Firefox profile starts the background download of its font pack", async () => {
+  const s = new ProfileStore(":memory:");
+  const prefetched: Profile[][] = [];
+  const launcher = { prefetchFirefoxFontPacks: (profiles: Profile[]) => { prefetched.push(profiles); } } as any;
+  const res = await handleUiRequest(
+    new Request("http://x/ui/api/profiles", { method: "POST", body: JSON.stringify({ name: "mac", engine: "firefox", platformOs: "macos" }) }),
+    launcher,
+    s,
+  );
+  const body = await res!.json();
+  expect(body.ok).toBe(true);
+  expect(prefetched.map((profiles) => profiles.map((profile) => [profile.id, profile.engine, profile.platformOs])))
+    .toEqual([[[body.id, "firefox", "macos"]]]);
   s.close();
 });
 

@@ -72,14 +72,37 @@ test.each([
   if (platform === "Linux x86_64") expect(config["mediaDevices:microphoneLabels"]).toContainEqual(expect.stringMatching(/^Monitor of /));
 });
 
+test("a proxied Firefox launch shows the proxy exit IP as WebRTC's public address in its own family", () => {
+  const proxy = { type: "http" as const, host: "gate.example.net", port: "8080", user: "", pass: "" };
+  const proxied = { ...profile(9, { "webrtc:ipv4": "198.51.100.1" }), proxy };
+  const v4 = firefoxLaunchConfig(proxied, undefined, undefined, "203.0.113.7");
+  expect(v4["webrtc:ipv4"]).toBe("203.0.113.7");
+  expect(v4).not.toHaveProperty("webrtc:ipv6");
+  const v6 = firefoxLaunchConfig({ ...profile(9), proxy }, undefined, undefined, "2001:db8::7");
+  expect(v6["webrtc:ipv6"]).toBe("2001:db8::7");
+  expect(v6).not.toHaveProperty("webrtc:ipv4");
+  // Without an exit IP, or without a proxy, the launch config stays as before.
+  expect(firefoxLaunchConfig({ ...profile(9), proxy })).not.toHaveProperty("webrtc:ipv4");
+  expect(firefoxLaunchConfig(profile(9), undefined, undefined, "203.0.113.7")).not.toHaveProperty("webrtc:ipv4");
+  expect(proxied.firefox!.config["webrtc:ipv4"]).toBe("198.51.100.1");
+});
+
 test("a Firefox launch shows the window label in the native title and starts in the profile's language", () => {
   const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
   expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");
   expect(firefoxStartupPrefs(german)).toEqual({
     "intl.locale.requested": "de-DE", "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
+    "browser.newtabpage.enabled": true,
   });
   expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
+});
+
+test("a Firefox launch names the font pack folder of this computer only, never a saved one", () => {
+  const saved = profile(5, { "aliasmode:fontsDir": "C:\\Users\\old\\fonts" });
+  expect(firefoxLaunchConfig(saved)).not.toHaveProperty("aliasmode:fontsDir");
+  expect(firefoxLaunchConfig(saved, undefined, "/data/runtimes/firefox-fonts/macos-1/fonts")["aliasmode:fontsDir"])
+    .toBe("/data/runtimes/firefox-fonts/macos-1/fonts");
 });
 
 test("a Firefox profile saved for engine 152 moves to 156 like a browser update, everywhere it is completed", () => {

@@ -59,7 +59,8 @@ import { addBrowserCookie } from "./session.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
-import { ScriptError, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import type { PythonRuntime } from "./python-runtime.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -535,7 +536,7 @@ function legalAcceptanceIsCurrent(legal: {
 }
 
 export interface UiRuntimeOptions {
-  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string };
+  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
   appConfig?: AppConfigStore;
   paths?: StatePaths;
   defaultCloudUrl?: string;
@@ -587,6 +588,11 @@ export async function handleUiRequest(
       if (pathname === "/ui/api/scripts/stop" && req.method === "POST") {
         return noStoreJson({ ok: true, run: await scripts.runner.stop() });
       }
+      if (pathname === "/ui/api/scripts/python-runtime") {
+        // null: a source checkout runs Python scripts on python3 and downloads nothing.
+        if (req.method === "POST") scripts.python?.ensure().catch(() => {});
+        if (req.method === "GET" || req.method === "POST") return noStoreJson({ ok: true, python: scripts.python?.status() ?? null });
+      }
       if (pathname === "/ui/api/scripts/log" && req.method === "GET") {
         const params = new URL(req.url).searchParams;
         return noStoreJson({ ok: true, ...scripts.runner.log(params.get("runId") ?? "", Number(params.get("offset") ?? 0)) });
@@ -605,7 +611,11 @@ export async function handleUiRequest(
       if (publicMatch) {
         const id = decodeURIComponent(publicMatch[1]!);
         if (!publicMatch[2] && req.method === "GET") return noStoreJson({ ok: true, script: await scripts.library.viewPublished(id) });
-        if (publicMatch[2] && req.method === "POST") return noStoreJson({ ok: true, script: await scripts.library.importPublished(id) });
+        if (publicMatch[2] && req.method === "POST") {
+          const script = await scripts.library.importPublished(id);
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
+        }
       }
       const publicationMatch = pathname.match(/^\/ui\/api\/scripts\/([^/]+)\/publication$/);
       if (publicationMatch) {
@@ -616,9 +626,18 @@ export async function handleUiRequest(
           return noStoreJson({ ok: true, unpublished: true });
         }
       }
+      // Having or adding a Python script starts the Python runtime download in the background.
       if (pathname === "/ui/api/scripts") {
-        if (req.method === "GET") return noStoreJson({ ok: true, ...await scripts.library.info() });
-        if (req.method === "POST") return noStoreJson({ ok: true, script: await scripts.library.save(await req.json()) });
+        if (req.method === "GET") {
+          const info = await scripts.library.info();
+          prefetchPythonFor(scripts.python, info.scripts);
+          return noStoreJson({ ok: true, ...info });
+        }
+        if (req.method === "POST") {
+          const script = await scripts.library.save(await req.json());
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
+        }
       }
       const match = pathname.match(/^\/ui\/api\/scripts\/([^/]+)$/);
       if (match) {
@@ -626,7 +645,9 @@ export async function handleUiRequest(
         if (req.method === "GET") return noStoreJson({ ok: true, script: await scripts.library.get(id) });
         if (req.method === "PATCH") {
           const body = await req.json();
-          return noStoreJson({ ok: true, script: await scripts.library.save(body, id, body?.expectedRevision) });
+          const script = await scripts.library.save(body, id, body?.expectedRevision);
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
         }
         if (req.method === "DELETE") {
           const body = await req.json();
@@ -1242,6 +1263,7 @@ export async function handleUiRequest(
       }
       const created = options.cloudBrowser ? await options.cloudBrowser.create(profile) : undefined;
       if (!created) store.upsertProfile(profile);
+      launcher.prefetchFirefoxFontPacks?.([profile]);
       return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });
@@ -1344,6 +1366,7 @@ export async function handleUiRequest(
     if (remote) return Response.json({ ok: false, error: "remote mode: import via the hub (upload in the dashboard)" }, { status: 400 });
     try {
       const r = await importInbox(store, options.paths?.inbox);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
       return Response.json({ ok: true, ...r });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
@@ -1365,6 +1388,7 @@ export async function handleUiRequest(
       if (options.cloudBrowser) {
         const prepared = await prepareImportBuffers(uploads, console.log, override, undefined, options.timezoneFetch);
         await options.cloudBrowser.importProfiles(override.group!, prepared.imports.map(({ profile, sessionBundle }) => ({ ...profile, sessionBundle })));
+        launcher.prefetchFirefoxFontPacks?.(prepared.imports.map(({ profile }) => profile));
         return Response.json({ ok: true, ...prepared.result });
       }
       if (remote) {
@@ -1377,7 +1401,9 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: true, ...result });
       }
-      return Response.json({ ok: true, ...await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch) });
+      const imported = await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
+      return Response.json({ ok: true, ...imported });
     } catch (error) {
       const status = error instanceof ProfileImportError
         ? error.status

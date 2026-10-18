@@ -7,12 +7,15 @@ import type {
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
+import type { PythonRuntimeStatus } from "../python-runtime.ts";
 import type { UiProfile } from "./api.ts";
 import {
   createScript,
   deleteScript,
+  downloadPythonRuntime,
   fetchPublishedScript,
   fetchPublishedScripts,
+  fetchPythonRuntime,
   fetchScript,
   fetchScriptLibraryInfo,
   fetchScripts,
@@ -52,6 +55,45 @@ function publicationPending(script: ScriptRecord): boolean {
   return script.publishedRevision !== null && script.publishedRevision !== undefined && script.publishedRevision !== script.revision;
 }
 
+/** The Python runtime status while `active`; polls while it downloads. */
+function usePythonRuntime(active: boolean): [PythonRuntimeStatus | null, () => void] {
+  const [status, setStatus] = useState<PythonRuntimeStatus | null>(null);
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    let live = true;
+    let timer: number | undefined;
+    const poll = () => {
+      void fetchPythonRuntime().then((next) => {
+        if (!live) return;
+        setStatus(next);
+        if (next?.state === "downloading") timer = window.setTimeout(poll, 1000);
+      }).catch(() => {});
+    };
+    poll();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [active, round]);
+  const download = () => {
+    void downloadPythonRuntime().then(() => setRound((value) => value + 1)).catch(() => {});
+  };
+  return [active ? status : null, download];
+}
+
+function PythonRuntimeNote({ status, onDownload }: { status: PythonRuntimeStatus | null; onDownload: () => void }) {
+  if (!status || status.state === "ready") return null;
+  const size = `${Math.round(status.totalBytes / 1e6)} MB`;
+  if (status.state === "downloading") {
+    const percent = Math.floor(status.receivedBytes * 100 / status.totalBytes);
+    return <p className="formnote" role="status">{percent >= 100
+      ? "Installing the Python runtime for Python scripts…"
+      : `Downloading the Python runtime for Python scripts: ${percent}% of ${size}.`}</p>;
+  }
+  if (status.state === "failed") {
+    return <div className="modal-err" role="alert">The Python runtime for Python scripts could not be downloaded: {status.error}. Check your internet connection. <button className="btn" type="button" onClick={onDownload}>Try again</button></div>;
+  }
+  return <p className="formnote">Python scripts need the Python runtime ({size}). It downloads once, before the first Python script runs. <button className="btn" type="button" onClick={onDownload}>Download now</button></p>;
+}
+
 export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   const [scripts, setScripts] = useState<ScriptSummary[]>([]);
   const [script, setScript] = useState<ScriptRecord | null>(null);
@@ -68,6 +110,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
   const replaceRef = useRef<HTMLInputElement>(null);
   const selectionRequest = useRef(0);
   const desktop = scriptsDesktopAvailable();
+  const [python, downloadPython] = usePythonRuntime(desktop && scripts.some((item) => item.language === "python"));
 
   const reload = async () => {
     const [info, nextRun] = await Promise.all([fetchScriptLibraryInfo(), fetchScriptRun()]);
@@ -224,6 +267,7 @@ export function ScriptsPage({ onViewRun }: { onViewRun: () => void }) {
       {error && <div className="modal-err" role="alert">{error}</div>}
       {tab === "library" ? <PublicLibrary onImported={imported} /> : <>
         {currentRun && <button className="scripts-run-note" type="button" onClick={onViewRun}>{currentRun.scriptName}: {currentRun.status}. View run</button>}
+        <PythonRuntimeNote status={python} onDownload={downloadPython} />
         <div className="scripts-layout">
           <div className="scripts-list" aria-label="Saved scripts">
             {scripts.length === 0 ? <p className="formnote">No scripts yet.</p> : scripts.map((item) => (
@@ -382,6 +426,7 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
   const offset = useRef(0);
   const desktop = scriptsDesktopAvailable();
   const runActive = run?.status === "running" || run?.status === "stopping";
+  const [python, downloadPython] = usePythonRuntime(open && desktop && scripts.find((script) => script.id === scriptId)?.language === "python");
 
   useEffect(() => {
     if (!open || !desktop) return;
@@ -455,6 +500,7 @@ export function ScriptRunPanel({ open, selectedProfiles, onClose }: {
           {!desktop ? <div className="modal-err">Scripts require the desktop app.</div> : <>
             <p className="formnote">Scripts run locally with your computer permissions.</p>
             {error && <div className="modal-err" role="alert">{error}</div>}
+            <PythonRuntimeNote status={python} onDownload={downloadPython} />
             <label className="fld"><span>Script</span><select className="select" value={scriptId} onChange={(event) => setScriptId(event.target.value)} disabled={busy || runActive}><option value="">Choose a script…</option>{scripts.map((script) => <option key={script.id} value={script.id}>{script.name}</option>)}</select></label>
             <label className="fld"><span>JSON inputs</span><textarea className="input script-inputs" value={inputs} onChange={(event) => setInputs(event.target.value)} disabled={busy || runActive} /></label>
             <label className="script-credentials"><input type="checkbox" checked={useCredentials} onChange={(event) => setUseCredentials(event.target.checked)} disabled={busy || runActive} />Use saved profile login details</label>

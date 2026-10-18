@@ -10,43 +10,51 @@ import {
   CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, sha256File,
 } from "./browser-install.ts";
 
-export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
-// AliasMode's own build of the patch series. Its package includes Chromium's
+// AliasMode's own Windows build of the patch series. Its package includes Chromium's
 // version manifest, which upstream's Windows archive omits. Each build gets its
 // own directory, so a browser still running from an earlier build keeps its files.
-// A new build changes only the release tag and the two SHA-256 values of its release.
-const WINDOWS_RELEASE = "aliasmode.2";
+// A new build changes the version, the release tag and the two SHA-256 values of its release.
+const WINDOWS_VERSION = "155.0.8059.85";
+const WINDOWS_RELEASE = "aliasmode.1";
 const WINDOWS_BUILD = {
-  root: `aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64`,
-  url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${ALIASMODE_CHROMIUM_VERSION}-windows-x64.zip`,
-  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}-${WINDOWS_RELEASE}`,
-  archiveSha256: "7892833b6126b13314461eb77b231318acc001b0065b652138dd6ed69dcce9cd",
+  root: `aliasmode-chromium-${WINDOWS_VERSION}-windows-x64`,
+  url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${WINDOWS_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${WINDOWS_VERSION}-windows-x64.zip`,
+  dir: `chromium-${WINDOWS_VERSION}-${WINDOWS_RELEASE}`,
+  archiveSha256: "ecb92e028a1d59e6c5d23acac095fe4ed6ec802fe16110f0a7dc06d3710af119",
   executable: "chrome.exe",
-  executableSha256: "3f2404d037ba019c9ae6ce70e532991e9e3d109c9fb00c82d3455a680e95872f",
-  // From aliasmode.2, pages read and draw at --force-device-scale-factor, and
+  executableSha256: "8619f0596a9987a33a7cde59f768a382ac99a1cf359b9ec8182dec0745787689",
+  // Pages read and draw at --force-device-scale-factor, and
   // --aliasmode-window-label names the window without touching page titles.
   hostScale: true,
   windowLabel: true,
+  // Behind an HTTP proxy, where WebRTC has no UDP, --fingerprint-webrtc-ip still gives a page
+  // an mDNS host candidate and a server-reflexive candidate at that address, and sends nothing.
+  webRtcIp: true,
 };
+// Upstream's Apostate v0.5.1 keeps its own Chromium version.
+const APOSTATE_VERSION = "155.0.8059.31";
+const APOSTATE_RELEASE = "https://github.com/heretic-tech/apostate/releases/download/v0.5.1";
 const MACOS_BUILD = {
-  root: `apostate-${ALIASMODE_CHROMIUM_VERSION}-macos-arm64`,
-  url: "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-macos-arm64.zip",
-  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}`,
+  root: `apostate-${APOSTATE_VERSION}-macos-arm64`,
+  url: `${APOSTATE_RELEASE}/apostate-${APOSTATE_VERSION}-macos-arm64.zip`,
+  dir: `chromium-${APOSTATE_VERSION}`,
   archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: "2dfa8b148e6d06598981c4a1e1bc0d7c2c7860d74401ad0d934d21a10c7916d7",
   hostScale: false,
   windowLabel: false,
+  webRtcIp: false,
 };
 const LINUX_BUILD = {
-  root: `apostate-${ALIASMODE_CHROMIUM_VERSION}-linux-x64`,
-  url: "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-linux-x64.tar.zst",
-  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}`,
+  root: `apostate-${APOSTATE_VERSION}-linux-x64`,
+  url: `${APOSTATE_RELEASE}/apostate-${APOSTATE_VERSION}-linux-x64.tar.zst`,
+  dir: `chromium-${APOSTATE_VERSION}`,
   archiveSha256: "351955271b7ba1aed314bf14c2d64f6bd59bfdcb5c4a1541c9c921c570ff97bb",
   executable: "chrome",
   executableSha256: "c0b906dc621cec05330aed9d3b09bbb7b655a9c8546e4c61d222705fabfde6d3",
   hostScale: false,
   windowLabel: false,
+  webRtcIp: false,
 };
 // Apple Silicon macOS and Linux get upstream's builds; every other host keeps the Windows pins.
 function chromiumBuild(platform: NodeJS.Platform): typeof WINDOWS_BUILD {
@@ -60,6 +68,8 @@ export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
 export const ALIASMODE_CHROMIUM_HOST_SCALE = WINDOWS_BUILD.hostScale;
 /** The pinned Windows build takes --aliasmode-window-label. */
 export const ALIASMODE_CHROMIUM_WINDOW_LABEL = WINDOWS_BUILD.windowLabel;
+/** The pinned Windows build shows --fingerprint-webrtc-ip behind an HTTP proxy, where WebRTC has no UDP. */
+export const ALIASMODE_CHROMIUM_WEBRTC_IP = WINDOWS_BUILD.webRtcIp;
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {
@@ -173,6 +183,17 @@ export function hostDisplayScale(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(scale) && scale >= 1 ? scale : 1;
 }
 
+/** The primary display's size in physical pixels, which the desktop app passes in ALIASMODE_HOST_SCREEN. */
+export function hostDisplaySize(env: NodeJS.ProcessEnv = process.env): { width: number; height: number } | null {
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(env.ALIASMODE_HOST_SCREEN ?? "");
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+}
+
+/** Chromium 155 on Windows draws pages at the display's scale; every other launch at 1. */
+export function chromiumDeviceScale(hostPlatform: NodeJS.Platform, chromiumRuntime: string | undefined, hostScale: number): number {
+  return hostPlatform === "win32" && chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE ? hostScale : 1;
+}
+
 export interface AliasmodeChromiumDeps {
   /** One download attempt. It continues the partial file that an earlier attempt or app run left. */
   download?: (url: string, output: string) => Promise<void>;
@@ -187,7 +208,7 @@ async function run(command: string[]): Promise<void> {
 }
 
 // Antivirus can briefly hold freshly extracted files open, so Windows refuses the rename.
-async function renameWhenUnlocked(from: string, to: string): Promise<void> {
+export async function renameWhenUnlocked(from: string, to: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       renameSync(from, to);

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildNewProfile, generateId } from "./create.ts";
+import { buildNewProfile, defaultScreen, generateId, hostScreenFloor } from "./create.ts";
 import { graphicsIdentity } from "./firefox-config.ts";
 import { deterministicSeed, deriveFingerprintFlags, hostPlatformOs, platformFromUA } from "./fingerprint.ts";
 import { ProfileStore } from "./store.ts";
@@ -112,6 +112,38 @@ test("buildNewProfile honors an explicit screen, else picks a realistic one", ()
   const auto = buildNewProfile({}, () => false);
   expect(auto.screenWidth).toBeGreaterThanOrEqual(1000);
   expect(auto.screenHeight).toBeGreaterThanOrEqual(700);
+});
+
+test("a new profile's screen is never smaller than this computer's display", () => {
+  const env = { ALIASMODE_HOST_SCREEN: "1920x1080", ALIASMODE_HOST_SCALE: "1.25" };
+  // Pages measure the display in CSS pixels; Chromium 155 on Windows also divides the stored screen by the scale.
+  expect(hostScreenFloor("chromium", "aliasmode", env, "win32")).toEqual({ width: 1920, height: 1080 });
+  expect(hostScreenFloor("chromium", "aliasmode", env, "darwin")).toEqual({ width: 1536, height: 864 });
+  expect(hostScreenFloor("chromium", undefined, env, "win32")).toEqual({ width: 1536, height: 864 });
+  expect(hostScreenFloor("firefox", undefined, env, "win32")).toEqual({ width: 1536, height: 864 });
+  expect(hostScreenFloor("firefox", undefined, {}, "win32")).toBeNull();
+
+  expect([0, 0.99].map((r) => defaultScreen({ width: 1920, height: 1080 }, () => r)))
+    .toEqual([{ width: 1920, height: 1080 }, { width: 2560, height: 1440 }]);
+  // No listed resolution is as large as a 4K display at 100%, so the display itself is the screen.
+  expect(defaultScreen({ width: 3840, height: 2160 })).toEqual({ width: 3840, height: 2160 });
+  // Without a known display any listed resolution can be picked.
+  expect(defaultScreen(null, () => 0.5)).toEqual({ width: 1440, height: 900 });
+
+  const saved = { screen: process.env.ALIASMODE_HOST_SCREEN, scale: process.env.ALIASMODE_HOST_SCALE };
+  Object.assign(process.env, env);
+  try {
+    for (let i = 0; i < 20; i++) {
+      const profile = buildNewProfile({}, () => false);
+      expect(profile.screenWidth >= 1536 && profile.screenHeight >= 864).toBe(true);
+    }
+    expect(buildNewProfile({ screen: "1366x768" }, () => false).screenWidth).toBe(1366);
+  } finally {
+    for (const [key, value] of [["ALIASMODE_HOST_SCREEN", saved.screen], ["ALIASMODE_HOST_SCALE", saved.scale]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("buildNewProfile rejects a malformed or impossible explicit screen", () => {

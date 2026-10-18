@@ -4,6 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
+import { FIREFOX_FONT_PACKS, firefoxFontPackPrefs, type FirefoxFontPack } from "./firefox-fonts.ts";
 import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
@@ -39,6 +40,8 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   let ownerExecutable = "node";
   const navigated: string[][] = [];
   const killed: number[] = [];
+  const fontPacks: FirefoxFontPack[] = [];
+  let fontPackFailure: Error | undefined;
   const snapshots = (): HostProcessSnapshot => ({
     incomplete: snapshotIncomplete,
     records: [
@@ -47,11 +50,16 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     ],
   });
   const options: LauncherOptions = {
-    store, dataRoot: root, firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
+    store, dataRoot: root, chromiumRuntimeRoot: join(root, "runtimes"), firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
     enforceHostCompatibility: true, hostPlatform, hostArch, captureFingerprint: async () => null,
     navigate: async (_endpoint, urls) => { navigated.push([...urls]); }, ensureCookies: async () => ({ injected: false }),
     labelWindow: async () => { labeled++; },
     applySession: async () => {}, log: () => {},
+    ensureFirefoxFontPack: async (packRoot, pack) => {
+      fontPacks.push(pack);
+      if (fontPackFailure) throw fontPackFailure;
+      return join(packRoot, "firefox-fonts", pack.os, "fonts");
+    },
     readProcessSnapshot: async () => snapshots(),
     isPidAlive: (pid) => pid === 201 ? ownerAlive : pid === 202 ? browserAlive : false,
     killPid: async (pid) => { killed.push(pid); if (pid === 201) ownerAlive = false; if (pid === 202) browserAlive = false; },
@@ -86,7 +94,8 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   return {
     store, profile: store.getProfile(profile.id)!, options, killed, launcher: new Launcher(options),
     launches: () => launches, config: () => receivedConfig, prefs: () => receivedPrefs, labeled: () => labeled,
-    startupPreferences: () => startupPreferences, navigated,
+    startupPreferences: () => startupPreferences, navigated, fontPacks,
+    failFontPacks: (error?: Error) => { fontPackFailure = error; },
     setProcessPaths: (browser: string, owner: string) => {
       browserExecutable = browser;
       ownerExecutable = owner;
@@ -116,6 +125,23 @@ test("Firefox launches one saved persona and retains ownership across manager re
   expect(f.launches()).toBe(1);
   expect(await restarted.stop(f.profile.id)).toBe(true);
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
+});
+
+test("a proxied Firefox launch gives the engine the proxy exit IP for WebRTC, and no answer keeps today's config", async () => {
+  for (const exitIp of ["203.0.113.7", null]) {
+    const f = fixture();
+    const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+    f.store.upsertProfile({ ...f.profile, proxy });
+    const profile = f.store.getProfile(f.profile.id)!;
+    const asked: unknown[] = [];
+    const launcher = new Launcher({ ...f.options, lookupExitIp: async (spec) => { asked.push(spec); return exitIp; } });
+    await launcher.start(profile.id);
+    expect(asked).toEqual([proxy]);
+    expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, exitIp ?? undefined));
+    expect((f.config() as Record<string, unknown>)["webrtc:ipv4"]).toBe(exitIp ?? undefined);
+    expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("webrtc:ipv4");
+    expect(await launcher.stop(profile.id)).toBe(true);
+  }
 });
 
 test.each([false, true])("legacy Firefox keeps its old digest until confirmed close (stale=%s)", async (stale) => {
@@ -264,7 +290,8 @@ test("Firefox supports Darwin arm64 and Linux x64 personas without changing save
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     const opened = await f.launcher.start(f.profile.id);
-    expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
+    // A Windows persona on these computers reads the Windows font pack.
+    expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL, join(f.options.chromiumRuntimeRoot!, "firefox-fonts", "windows", "fonts")));
     expect(f.store.getLaunch(f.profile.id)?.firefoxOwner).toMatchObject({ pid: 201, browserPid: 202 });
     const restarted = new Launcher(f.options);
     expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
@@ -532,4 +559,76 @@ test("Firefox rejects Chromium launch switches and stale stop generations", asyn
   expect(await f.launcher.stop(f.profile.id, { debugPort: launch.debugPort, startedAt: launch.startedAt - 1 })).toBe(false);
   expect(await f.launcher.active(f.profile.id)).toBe(true);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+function macosPersona(f: ReturnType<typeof fixture>): Profile {
+  const profile = {
+    ...f.profile, platformOs: "macos",
+    firefox: { ...f.profile.firefox!, config: { ...f.profile.firefox!.config, "navigator.platform": "MacIntel" } },
+  };
+  f.store.upsertProfile(profile);
+  return f.store.getProfile(profile.id)!;
+}
+
+test("a Firefox profile of this computer's own OS opens without a font pack", async () => {
+  const f = fixture("win32", "x64");
+  await f.launcher.start(f.profile.id);
+  expect(f.fontPacks).toEqual([]);
+  expect(f.config()).not.toHaveProperty("aliasmode:fontsDir");
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+});
+
+test("a Firefox profile of another OS opens with that OS's font pack", async () => {
+  const f = fixture("win32", "x64");
+  const profile = macosPersona(f);
+  await f.launcher.start(profile.id);
+  expect(f.fontPacks).toEqual([FIREFOX_FONT_PACKS.macos]);
+  const fontsDir = join(f.options.chromiumRuntimeRoot!, "firefox-fonts", "macos", "fonts");
+  expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, fontsDir));
+  expect(f.config()).toMatchObject({ "aliasmode:fontsDir": fontsDir });
+  expect(f.prefs()).toEqual({ ...firefoxStartupPrefs(profile), ...firefoxFontPackPrefs(fontsDir, "win32") });
+  // The saved identity never stores the folder of this computer.
+  expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("aliasmode:fontsDir");
+});
+
+test("a Firefox profile of another OS does not open when its font pack cannot be installed", async () => {
+  const f = fixture("darwin", "arm64");
+  f.failFontPacks(new Error("network is unreachable"));
+  const error = await f.launcher.start(f.profile.id).catch((caught) => caught);
+  expect(error).toEqual(new BrowserLaunchError("preflight", "firefox_fonts_download"));
+  expect((error as BrowserLaunchError).guidance).toContain("could not be downloaded");
+  expect(f.fontPacks).toEqual([FIREFOX_FONT_PACKS.windows]);
+  expect(f.launches()).toBe(0);
+  expect(f.store.getLaunch(f.profile.id)).toBeNull();
+
+  f.failFontPacks(undefined);
+  await f.launcher.start(f.profile.id);
+  expect(f.launches()).toBe(1);
+});
+
+test("Firefox font packs are fetched in the background once per needed OS", async () => {
+  const f = fixture("win32", "x64");
+  const mac = macosPersona(f);
+  const linux = { ...mac, id: "firefox-linux", platformOs: "linux" };
+  const chromium = { ...mac, id: "chromium-mac", engine: "chromium" as const, firefox: undefined };
+  f.failFontPacks(new Error("offline"));
+  f.launcher.prefetchFirefoxFontPacks([f.profile, mac, { ...mac, id: "firefox-mac-2" }, linux, chromium]);
+  await Bun.sleep(0);
+  expect(f.fontPacks.map((pack) => pack.os)).toEqual(["macos", "linux"]);
+  // A failed background download is not repeated in the background; opening the profile retries it.
+  f.launcher.prefetchFirefoxFontPacks([mac]);
+  expect(f.fontPacks).toHaveLength(2);
+  f.failFontPacks(undefined);
+  await f.launcher.start(mac.id);
+  expect(f.fontPacks.map((pack) => pack.os)).toEqual(["macos", "linux", "macos"]);
+  f.launcher.prefetchFirefoxFontPacks([mac]);
+  expect(f.fontPacks).toHaveLength(4);
+});
+
+test("the first background fetch removes font packs that are no longer pinned", () => {
+  const f = fixture("win32", "x64");
+  const packs = join(f.options.chromiumRuntimeRoot!, "firefox-fonts");
+  mkdirSync(join(packs, "macos-0000000000000000", "fonts"), { recursive: true });
+  f.launcher.prefetchFirefoxFontPacks([]);
+  expect(existsSync(join(packs, "macos-0000000000000000"))).toBe(false);
 });

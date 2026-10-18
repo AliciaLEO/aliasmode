@@ -22,15 +22,15 @@ permissions:
   contents: read
 
 # The aliasmode/aliasmode-firefox build.yml run that built the Windows engine, and the release
-# whose archive the installer bundles. The release repackages that run's archive with the
-# 152 engine's font set; the run's own archive (1.3 GB) is too large for the NSIS installer.
+# whose archive the installer bundles. The release carries that run's archives, which hold no
+# fonts of other operating systems; the app downloads those as font packs when a profile needs them.
 env:
-  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r3
-  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: 595b8e595985870db7aff80de8129e3f91b4010f2d526c09c9c0569f3c54f6b5
-  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39034521083"
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r4
+  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: 448746b8293176c6d7149764099eb8a1cf5c725d82ec269f9b1961492193d9b8
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39114113148"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
-  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r1
-  ALIASMODE_FIREFOX_BUILD_SHA: 234063266ccac2c3885390a5c410b31a80805218
+  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r3-fontpacks
+  ALIASMODE_FIREFOX_BUILD_SHA: a1de38c423eacd3d9bccfdf8130479eb26aa5c5f
 
 concurrency:
   group: >-
@@ -938,7 +938,7 @@ jobs:
             # A Cloud V3 payload must download and open the Chromium 155 beta, not CloakBrowser.
             & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\cloud-beta-state"
             if ($LASTEXITCODE -ne 0) { throw "Cloud Chromium 155 beta smoke exited with code $LASTEXITCODE" }
-            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.31-aliasmode.2\155.0.8059.31.manifest" -PathType Leaf)) {
+            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.1\155.0.8059.85.manifest" -PathType Leaf)) {
               throw "Cloud Chromium 155 beta smoke did not install the beta runtime"
             }
           } finally {

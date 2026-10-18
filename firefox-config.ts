@@ -188,13 +188,16 @@ function firefoxStartupLocale(profile: Profile): string {
  * Preferences the engine applies at startup (CAMOU_PREFS_n). Without intl.locale.requested the
  * 156 engine keeps an English interface and Intl locale whatever the profile's language. The
  * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. The
- * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off.
+ * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off. The engine turns
+ * the new tab page off, so a new tab was blank; Firefox's own page (logo and a search box that uses
+ * the default search engine) is local, makes no requests and adds nothing a site can see.
  */
 export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
     "gfx.blacklist.webgpu": 4,
     "browser.startup.couldRestoreSession.count": -1,
+    "browser.newtabpage.enabled": true,
   };
 }
 

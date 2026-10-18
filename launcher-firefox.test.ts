@@ -118,6 +118,23 @@ test("Firefox launches one saved persona and retains ownership across manager re
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
 });
 
+test("a proxied Firefox launch gives the engine the proxy exit IP for WebRTC, and no answer keeps today's config", async () => {
+  for (const exitIp of ["203.0.113.7", null]) {
+    const f = fixture();
+    const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+    f.store.upsertProfile({ ...f.profile, proxy });
+    const profile = f.store.getProfile(f.profile.id)!;
+    const asked: unknown[] = [];
+    const launcher = new Launcher({ ...f.options, lookupExitIp: async (spec) => { asked.push(spec); return exitIp; } });
+    await launcher.start(profile.id);
+    expect(asked).toEqual([proxy]);
+    expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, exitIp ?? undefined));
+    expect((f.config() as Record<string, unknown>)["webrtc:ipv4"]).toBe(exitIp ?? undefined);
+    expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("webrtc:ipv4");
+    expect(await launcher.stop(profile.id)).toBe(true);
+  }
+});
+
 test.each([false, true])("legacy Firefox keeps its old digest until confirmed close (stale=%s)", async (stale) => {
   const f = fixture();
   const legacyConfig = { version: 1 as const, runtimeVersion: "156.0.1-beta.36", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" } };

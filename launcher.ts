@@ -26,8 +26,9 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen } from "bun:ffi";
-import type { CookieRecord, LaunchInfo, Profile } from "./types.ts";
+import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
+import { lookupProxyExitIp } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
 import { allocatePort } from "./ports.ts";
@@ -482,6 +483,11 @@ export interface LauncherOptions {
    * defaults to the real CDP probe. Never allowed to fail a launch.
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
+  /**
+   * The exit IP of a Firefox profile's proxy, which WebRTC then shows as its public address. null
+   * keeps WebRTC as it was. Defaults to a short lookup through the proxy; tests inject it.
+   */
+  lookupExitIp?: (proxy: ProxySpec) => Promise<string | null>;
   readSession?: typeof readSessionInSubprocess;
   applySession?: typeof applySessionToEndpoint;
   /** Budget for the graceful close above before falling through to the force-kill. */
@@ -731,6 +737,7 @@ export class Launcher {
   private ensureCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
+  private lookupExitIpFn?: (proxy: ProxySpec) => Promise<string | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
   private navigateFn: LaunchNavigator;
@@ -838,6 +845,7 @@ export class Launcher {
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
+    this.lookupExitIpFn = opts.lookupExitIp ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitIp(proxy));
     this.readSessionFn = opts.readSession ?? readSessionInSubprocess;
     this.applySessionFn = opts.applySession ?? applySessionToEndpoint;
     this.navigateFn = opts.navigate ?? defaultNavigate;
@@ -1076,6 +1084,19 @@ export class Launcher {
     if (profile.ua.trim() && !platformFromUA(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_unsupported");
     }
+  }
+
+  /**
+   * The proxy exit IP that AliasMode Firefox shows as WebRTC's public address. Without an answer
+   * WebRTC stays as before: on the proxy, with no public address. Chromium 155 is not asked: behind
+   * the HTTP proxy it always gets, it opens no WebRTC UDP socket, so --fingerprint-webrtc-ip has no
+   * candidate to write the address into.
+   */
+  private async webRtcExitIp(profile: Profile): Promise<string | undefined> {
+    if (!profile.proxy || !this.lookupExitIpFn) return undefined;
+    const ip = await this.lookupExitIpFn(profile.proxy).catch(() => null);
+    this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
+    return ip ?? undefined;
   }
 
   /**
@@ -2104,6 +2125,8 @@ export class Launcher {
     const profileId = profile.id;
     const headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
+    // Runs beside the launch preparation below; the engine config waits for it.
+    const webRtcIp = this.webRtcExitIp(profile);
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
@@ -2148,6 +2171,7 @@ export class Launcher {
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
       }
+      const exitIp = await webRtcIp;
       this.requireUnchangedProfile(profileId, snapshot, "Firefox spawn");
       this.store.recordLaunch(launch);
       reserved = true;
@@ -2162,7 +2186,7 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel), prefs: firefoxStartupPrefs(profile), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, exitIp), prefs: firefoxStartupPrefs(profile), proxy, headless,
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {

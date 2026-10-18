@@ -93,6 +93,7 @@ test("a Firefox launch shows the window label in the native title and starts in 
   expect(firefoxStartupPrefs(german)).toEqual({
     "intl.locale.requested": "de-DE", "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
+    "browser.newtabpage.enabled": true,
   });
   expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
 });

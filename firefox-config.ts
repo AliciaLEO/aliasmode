@@ -200,6 +200,9 @@ function firefoxStartupLocale(profile: Profile): string {
  * font list on Linux), Firefox searches the listed fonts instead; asynchronous fallback skips
  * the ones whose character maps are still loading, so text measured in the first seconds after
  * startup differs from the same text measured later. Synchronous fallback gives one result.
+ * The engine turns the new tab page off, so a new tab was blank; Firefox's own page (logo and a
+ * search box that uses the default search engine) is local, makes no requests and adds nothing
+ * a site can see.
  */
 export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
   return {
@@ -207,6 +210,7 @@ export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue>
     "gfx.blacklist.webgpu": 4,
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
+    "browser.newtabpage.enabled": true,
   };
 }
 

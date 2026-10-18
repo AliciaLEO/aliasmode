@@ -7,6 +7,7 @@ import headerNetworkDefinitionPath from "./node_modules/header-generator/data_fi
 // @ts-expect-error Bun embeds this package data in compiled sidecars.
 import webglDataPath from "./node_modules/camoufox-js/dist/data-files/webgl_data.db" with { type: "file" };
 import { Database } from "bun:sqlite";
+import { isIP } from "node:net";
 import type { ChromiumRuntime, FirefoxProfileConfig, JsonValue, Profile, ProfileEngine } from "./types.ts";
 import fonts from "camoufox-js/dist/mappings/fonts.config.js";
 import { deterministicSeed, launchWindowSize, platformFromUA, seedFraction } from "./fingerprint.ts";
@@ -160,7 +161,7 @@ const DROPPED_LAUNCH_KEYS = [
  * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
  * exact shape. A value the profile stores itself is kept.
  */
-export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string): Record<string, JsonValue> {
+export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
   for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
   // The font pack of the profile's OS, when it is not this computer's OS (firefox-fonts.ts).
@@ -178,6 +179,9 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   }
   // The engine shows the label in the native window title only, adding its own separator.
   if (windowLabel) config["aliasmode:windowLabel"] = windowLabel;
+  // Behind a proxy the engine shows the proxy's exit IP as WebRTC's public address, as a browser
+  // at that exit would, in place of no address. The current exit replaces any stored one.
+  if (profile.proxy && webRtcIp) config[isIP(webRtcIp) === 6 ? "webrtc:ipv6" : "webrtc:ipv4"] = webRtcIp;
   fitFirefoxWindow(config);
   return config;
 }

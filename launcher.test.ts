@@ -4847,6 +4847,53 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   }
 });
 
+test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines are not asked", async () => {
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+  const launch = async (
+    hostPlatform: NodeJS.Platform,
+    engine: "aliasmode" | "cloakbrowser",
+    lookup: () => Promise<string | null>,
+    profileProxy: typeof proxy | null = proxy,
+  ) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy: profileProxy };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const asked: unknown[] = [];
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+      lookupExitIp: async (spec) => { asked.push(spec); return lookup(); },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    const webrtc = spawnedArgs[0]!.filter((arg) => /^--(force-webrtc-ip-handling-policy|fingerprint-webrtc-(ip|udp))=/.test(arg));
+    return { asked, webrtc };
+  };
+  const policy = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7"))
+    .toEqual({ asked: [proxy], webrtc: [policy, "--fingerprint-webrtc-ip=203.0.113.7"] });
+  expect((await launch("win32", "aliasmode", async () => "2001:db8::7")).webrtc)
+    .toEqual([policy, "--fingerprint-webrtc-ip=2001:db8::7"]);
+  // No answer, or a failed lookup, keeps the arguments as they were.
+  expect(await launch("win32", "aliasmode", async () => null)).toEqual({ asked: [proxy], webrtc: [policy] });
+  expect(await launch("win32", "aliasmode", () => Promise.reject(new Error("offline"))))
+    .toEqual({ asked: [proxy], webrtc: [policy] });
+  // Without a proxy WebRTC keeps the computer's own route and nothing is looked up.
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7", null))
+    .toEqual({ asked: [], webrtc: ["--force-webrtc-ip-handling-policy=default_public_interface_only"] });
+  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change, so they are not asked.
+  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [], webrtc: [policy] });
+  }
+});
+
 test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {
   const watched = async (engine: "aliasmode" | "cloakbrowser", headless: boolean) => {
     const store = new ProfileStore(":memory:");

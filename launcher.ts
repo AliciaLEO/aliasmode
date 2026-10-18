@@ -26,8 +26,9 @@ import {
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen } from "bun:ffi";
-import type { CookieRecord, LaunchInfo, Profile } from "./types.ts";
+import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
+import { lookupProxyExitIp } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
 import { allocatePort } from "./ports.ts";
@@ -52,6 +53,7 @@ import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneF
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_HOST_SCALE,
+  ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
@@ -501,6 +503,12 @@ export interface LauncherOptions {
    * defaults to the real CDP probe. Never allowed to fail a launch.
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
+  /**
+   * The exit IP of a profile's proxy, which AliasMode Firefox and Chromium 155 on Windows then show
+   * as WebRTC's public address. null keeps WebRTC as it was. Defaults to a short lookup through the
+   * proxy; tests inject it.
+   */
+  lookupExitIp?: (proxy: ProxySpec) => Promise<string | null>;
   readSession?: typeof readSessionInSubprocess;
   applySession?: typeof applySessionToEndpoint;
   /** Budget for the graceful close above before falling through to the force-kill. */
@@ -755,6 +763,7 @@ export class Launcher {
   private ensureCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
+  private lookupExitIpFn?: (proxy: ProxySpec) => Promise<string | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
   private navigateFn: LaunchNavigator;
@@ -865,6 +874,7 @@ export class Launcher {
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
+    this.lookupExitIpFn = opts.lookupExitIp ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitIp(proxy));
     this.readSessionFn = opts.readSession ?? readSessionInSubprocess;
     this.applySessionFn = opts.applySession ?? applySessionToEndpoint;
     this.navigateFn = opts.navigate ?? defaultNavigate;
@@ -1137,6 +1147,17 @@ export class Launcher {
   }
 
   /**
+   * The proxy exit IP that AliasMode Firefox and Chromium 155 on Windows show as WebRTC's public
+   * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
+   */
+  private async webRtcExitIp(profile: Profile): Promise<string | undefined> {
+    if (!profile.proxy || !this.lookupExitIpFn) return undefined;
+    const ip = await this.lookupExitIpFn(profile.proxy).catch(() => null);
+    this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
+    return ip ?? undefined;
+  }
+
+  /**
    * Build the full CloakBrowser argv for a launch. Identity flags come from
    * the stored profile; `port`/`userDataDir` are per-launch session detail;
    * `launchArgs` are the ephemeral chrome flags automation passes through.
@@ -1149,6 +1170,7 @@ export class Launcher {
     relayPort?: number,
     headless = this.headless,
     restoreLastSession = false,
+    webRtcIp?: string,
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
     const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
@@ -1211,6 +1233,9 @@ export class Launcher {
       args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
     }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
+    // The engine sends no WebRTC packet behind the proxy, and shows a page the proxy's exit IP as
+    // its public address, as a browser at that exit would, in place of no candidate at all.
+    if (webRtcIp && this.chromiumWebRtcIp(profile)) args.push(`--fingerprint-webrtc-ip=${webRtcIp}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
     // headless ON. So headful = omit the flag entirely; headless = pass it.
@@ -1303,6 +1328,14 @@ export class Launcher {
     const scale = this.deviceScale(profile);
     if (scale === 1) return profile;
     return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
+  }
+
+  /**
+   * Chromium 155 on Windows shows --fingerprint-webrtc-ip behind the HTTP proxy it always gets.
+   * Upstream's Mac and Linux builds open no WebRTC UDP socket there, so the switch shows nothing.
+   */
+  private chromiumWebRtcIp(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
   }
 
   /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
@@ -1699,6 +1732,8 @@ export class Launcher {
     if (profile.engine === "firefox") {
       return this.startFreshFirefox(profile, startupUrls, opts, pendingSession);
     }
+    // Runs beside the launch preparation below; the browser arguments wait for it.
+    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile) : undefined;
 
     // A fresh generation is never spawned until the configured executable has
     // been canonicalized and matched byte-for-byte against the deployment pin.
@@ -1803,7 +1838,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, await webRtcIp,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -2167,6 +2202,8 @@ export class Launcher {
     const profileId = profile.id;
     const headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
+    // Runs beside the launch preparation below; the engine config waits for it.
+    const webRtcIp = this.webRtcExitIp(profile);
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
@@ -2224,6 +2261,7 @@ export class Launcher {
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
       }
+      const exitIp = await webRtcIp;
       this.requireUnchangedProfile(profileId, snapshot, "Firefox spawn");
       this.store.recordLaunch(launch);
       reserved = true;
@@ -2238,7 +2276,7 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, exitIp), proxy, headless,
         prefs: { ...firefoxStartupPrefs(profile), ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}) },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,

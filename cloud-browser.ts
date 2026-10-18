@@ -883,7 +883,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         profileId,
         registrationId,
         expectedVersion: opened.baseVersion,
-        payload: encodePortableProfile(profile, sessionBundle),
+        // The stored profile carries the timezone the launch took from the proxy exit.
+        payload: encodePortableProfile(this.options.store.getProfile(profileId) ?? profile, sessionBundle),
         readyToSubmit: false,
       });
       const captureSeed = sessionCaptureSeed(sessionBundle);

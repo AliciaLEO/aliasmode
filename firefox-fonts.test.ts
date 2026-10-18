@@ -99,7 +99,7 @@ test("the sandboxed content processes may read the pack folder", () => {
     "security.sandbox.content.read_path_whitelist": "C:\\Data\\fonts,C:\\Data\\fonts\\",
   });
   expect(firefoxFontPackPrefs("/Users/a/fonts", "darwin")).toEqual({ "security.sandbox.content.mac.testing_read_path1": "/Users/a/fonts" });
-  expect(firefoxFontPackPrefs("/home/a/fonts", "linux")).toEqual({ "security.sandbox.content.read_path_whitelist": "/home/a/fonts" });
+  expect(firefoxFontPackPrefs("/home/a/fonts", "linux")).toEqual({ "security.sandbox.content.read_path_whitelist": "/home/a/fonts/" });
 });
 
 test("installs a verified pack atomically and reuses it without downloading again", async () => {

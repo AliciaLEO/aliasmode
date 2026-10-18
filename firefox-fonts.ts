@@ -82,7 +82,8 @@ export function firefoxFontPackPrefs(fontsDir: string, platform: NodeJS.Platform
   if (platform === "darwin") return { "security.sandbox.content.mac.testing_read_path1": fontsDir };
   // Windows: the folder itself (to list it) and, with the trailing separator, its files.
   if (platform === "win32") return { "security.sandbox.content.read_path_whitelist": `${fontsDir},${fontsDir}\\` };
-  return { "security.sandbox.content.read_path_whitelist": fontsDir };
+  // Linux: a trailing slash allows the folder's whole tree; without it, only the folder itself.
+  return { "security.sandbox.content.read_path_whitelist": `${fontsDir}/` };
 }
 
 export interface FirefoxFontPackDeps {

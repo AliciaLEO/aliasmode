@@ -266,4 +266,10 @@ test("the Windows installer stops a leftover sidecar before overwriting it", () 
   // A graceful attempt first, then force: a locked sidecar aborts the install.
   expect(hooks).toContain(`nsExec::Exec 'taskkill /IM "aliasmode-sidecar.exe"'`);
   expect(hooks).toContain(`nsExec::Exec 'taskkill /F /T /IM "aliasmode-sidecar.exe"'`);
+  // An AI client can hold the MCP helper launcher open as well. It goes first, and without its
+  // process tree: the helper may have started the desktop app.
+  const helperKill = hooks.indexOf(`nsExec::Exec 'taskkill /F /IM "aliasmode-mcp.exe"'`);
+  expect(helperKill).toBeGreaterThan(0);
+  expect(helperKill).toBeLessThan(hooks.indexOf(`taskkill /IM "aliasmode-sidecar.exe"`));
+  expect(hooks).not.toContain(`/T /IM "aliasmode-mcp.exe"`);
 });

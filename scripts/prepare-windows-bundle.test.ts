@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareWindowsBundle, WINDOWS_SIDECAR_TARGET } from "./prepare-windows-bundle.ts";
+import { MCP_MODE } from "../sidecar-entry.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -52,6 +53,24 @@ function firefoxArchive(executable = "owned-firefox"): { bytes: Uint8Array; arch
 
 test("Windows sidecar supports x64 CPUs without AVX2", () => {
   expect(WINDOWS_SIDECAR_TARGET).toBe("bun-windows-x64-baseline");
+});
+
+test("one sidecar program also runs the MCP helper behind the aliasmode-mcp launcher", () => {
+  const repo = join(import.meta.dir, "..");
+  const tauri = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
+  expect(tauri.bundle.externalBin).toEqual(["binaries/aliasmode-sidecar"]);
+  const cargo = readFileSync(join(repo, "src-tauri", "Cargo.toml"), "utf8");
+  expect(cargo).toContain(`default-run = "aliasmode"`);
+  expect(cargo).toContain(`name = "aliasmode-mcp"\npath = "src/bin/aliasmode-mcp.rs"`);
+  const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");
+  expect(launcher).toContain(`const MCP_MODE: &str = "${MCP_MODE}";`);
+
+  const helper = Bun.spawnSync([process.execPath, "sidecar-entry.ts", MCP_MODE, "version"], { cwd: repo });
+  expect(helper.exitCode).toBe(0);
+  expect(JSON.parse(helper.stdout.toString())).toEqual({ ok: true, result: { version: ALIASMODE_VERSION } });
+  const failed = Bun.spawnSync([process.execPath, "sidecar-entry.ts", MCP_MODE, "unknown"], { cwd: repo });
+  expect(failed.exitCode).toBe(1);
+  expect(JSON.parse(failed.stdout.toString())).toMatchObject({ ok: false });
 });
 
 function workspace(): string {
@@ -113,7 +132,6 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
       arch: "x64",
       firefoxArchive: firefox,
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
       installNode: async (root) => {
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
@@ -162,7 +180,7 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node_modules", "playwright", "package.json"), "utf8")).version).toBe("1.58.0-alpha-2026-01-16");
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node_modules", "zod", "package.json"), "utf8")).version).toBe("1.0.0");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "mcp-host.mjs"), "utf8")).toBe("mcp-host.mjs");
-    expect(readFileSync(join(cwd, "src-tauri", "binaries", "aliasmode-mcp-x86_64-pc-windows-msvc.exe"), "utf8")).toBe("agent");
+    expect(readFileSync(join(cwd, "src-tauri", "binaries", "aliasmode-sidecar-x86_64-pc-windows-msvc.exe"), "utf8")).toBe("sidecar");
     expect(JSON.parse(readFileSync(join(cwd, "src-tauri", "generated", "browser.json"), "utf8"))).toEqual(metadata);
     expect(readFileSync(join(cwd, "src-tauri", "generated", "VERSION.txt"), "utf8")).toBe(`${ALIASMODE_VERSION}\n`);
     expect(readFileSync(join(browserCache, "cached-download"), "utf8")).toBe("keep");
@@ -180,7 +198,6 @@ test("Windows bundle preparation rejects a non-Windows browser payload", async (
       arch: "x64",
       firefoxArchive: firefoxArchive(),
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
       installNode: async (root) => {
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
@@ -212,7 +229,6 @@ test("Windows bundle preparation rejects installer paths outside its cache", asy
       arch: "x64",
       firefoxArchive: firefoxArchive(),
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
       installNode: async (root) => {
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
@@ -234,7 +250,6 @@ test("Windows bundle preparation rejects a changed packaged executable", async (
       arch: "x64",
       firefoxArchive: firefoxArchive(),
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
       installNode: async (root) => {
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
@@ -264,7 +279,6 @@ test("Windows bundle preparation rejects a Firefox archive hash mismatch", async
       arch: "x64",
       firefoxArchive: { ...archive, archiveSha256: sha256("replaced") },
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
     })).rejects.toThrow("Firefox archive SHA-256 does not match the approved CI artifact");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -281,7 +295,6 @@ test("Windows bundle preparation rejects a Firefox executable hash mismatch", as
       arch: "x64",
       firefoxArchive: { ...archive, executableSha256: sha256("replaced") },
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
     })).rejects.toThrow("Firefox executable does not match the approved SHA-256");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
@@ -295,7 +308,6 @@ test("Windows bundle preparation rejects a changed Python archive before extract
       cwd, platform: "win32", arch: "x64",
       firefoxArchive: firefoxArchive(),
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
       installNode: async (root) => {
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");

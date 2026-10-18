@@ -3023,10 +3023,13 @@ async function main() {
   }
 }
 
-// Only run the CLI when executed directly (`bun cli.ts …`), not when imported (e.g. by tests).
-if (import.meta.main) {
+export function runCli(): void {
   main().catch(() => {
     console.error("[aliasmode] FATAL command failure");
     process.exit(1);
   });
 }
+
+// Only run the CLI when executed directly (`bun cli.ts …`), not when imported (e.g. by tests).
+// The compiled sidecar starts it from sidecar-entry.ts.
+if (import.meta.main) runCli();

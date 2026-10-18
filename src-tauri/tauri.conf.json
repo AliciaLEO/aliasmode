@@ -17,7 +17,7 @@
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
-    "externalBin": ["binaries/aliasmode-sidecar", "binaries/aliasmode-mcp"],
+    "externalBin": ["binaries/aliasmode-sidecar"],
     "resources": {
       "resources/cloakbrowser/": "cloakbrowser/",
       "resources/firefox/": "firefox/",

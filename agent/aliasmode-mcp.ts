@@ -42,6 +42,11 @@ function runtimeRoot(): string {
   return join(dirname(process.execPath), "playwright");
 }
 
+/** The aliasmode-mcp launcher next to the sidecar program; client configurations keep this path. */
+function helperExecutable(): string {
+  return join(dirname(process.execPath), process.platform === "win32" ? "aliasmode-mcp.exe" : "aliasmode-mcp");
+}
+
 function desktopExecutable(): string {
   return process.env.ALIASMODE_DESKTOP_EXE
     || join(dirname(process.execPath), process.platform === "win32" ? "AliasMode.exe" : "aliasmode");
@@ -276,7 +281,7 @@ async function setup(args: string[]): Promise<unknown> {
   else if (supported.includes(requested as SetupClient)) clients = [requested as SetupClient];
   else throw new Error("--client must be auto, claude, codex, openclaw, hermes, or generic");
   const result = await configureClients({
-    helper: resolve(process.execPath),
+    helper: helperExecutable(),
     clients,
   });
   if (result.clients.some((client) => client.status === "failed")) {
@@ -285,8 +290,8 @@ async function setup(args: string[]): Promise<unknown> {
   return result;
 }
 
-async function main(): Promise<void> {
-  const [command = "serve", ...args] = process.argv.slice(2);
+async function main(argv: string[]): Promise<void> {
+  const [command = "serve", ...args] = argv;
   if (command === "serve") return await serve();
   if (command === "version") {
     process.stdout.write(`${JSON.stringify({ ok: true, result: { version: VERSION } })}\n`);
@@ -302,13 +307,20 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
 }
 
-main().catch((error) => {
-  const raw = error instanceof Error ? error.message : "AliasMode command failed";
-  const message = raw.replace(/wss?:\/\/\S+/gi, "CDP endpoint").slice(0, 500);
-  process.stdout.write(`${JSON.stringify({
-    ok: false,
-    error: message,
-    ...(error instanceof SetupFailure ? { result: error.result } : {}),
-  })}\n`);
-  process.exitCode = 1;
-});
+/** Runs one helper command; the sidecar program calls it in MCP mode. */
+export async function runAgentHelper(argv: string[]): Promise<void> {
+  try {
+    await main(argv);
+  } catch (error) {
+    const raw = error instanceof Error ? error.message : "AliasMode command failed";
+    const message = raw.replace(/wss?:\/\/\S+/gi, "CDP endpoint").slice(0, 500);
+    process.stdout.write(`${JSON.stringify({
+      ok: false,
+      error: message,
+      ...(error instanceof SetupFailure ? { result: error.result } : {}),
+    })}\n`);
+    process.exitCode = 1;
+  }
+}
+
+if (import.meta.main) void runAgentHelper(process.argv.slice(2));

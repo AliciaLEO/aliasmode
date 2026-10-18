@@ -250,6 +250,80 @@ jobs:
           }
           $null = & $hermes mcp test aliasmode 2>&1
           if ($LASTEXITCODE -ne 0) { throw "Hermes could not start the AliasMode MCP server" }
+      - name: Verify Remote MCP host and helper launcher
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference = "Stop"
+          $helper = Join-Path $env:ALIASMODE_INSTALL_ROOT "aliasmode-mcp.exe"
+
+          # Ending the launcher must end the MCP helper that it started in the sidecar program.
+          $start = [Diagnostics.ProcessStartInfo]::new($helper)
+          $start.ArgumentList.Add("serve")
+          $start.UseShellExecute = $false
+          $start.CreateNoWindow = $true
+          $start.RedirectStandardInput = $true
+          $start.RedirectStandardOutput = $true
+          $launcher = [Diagnostics.Process]::Start($start)
+          $launcher.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
+          $line = $launcher.StandardOutput.ReadLineAsync()
+          if (-not $line.Wait(120000) -or ($line.Result | ConvertFrom-Json).id -ne 1) { throw "the MCP helper did not answer initialize" }
+          $child = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)" |
+            Where-Object { $_.Name -eq "aliasmode-sidecar.exe" -and $_.CommandLine -match '\s__mcp\s+serve\s*$' })
+          if ($child.Count -ne 1) { throw "the launcher did not start the MCP helper in the sidecar program" }
+          Stop-Process -Id $launcher.Id -Force
+          $survivor = $null
+          for ($attempt = 0; $attempt -lt 40; $attempt++) {
+            $survivor = Get-Process -Id $child[0].ProcessId -ErrorAction SilentlyContinue
+            if (-not $survivor) { break }
+            Start-Sleep -Milliseconds 250
+          }
+          if ($survivor) { throw "the MCP helper survived its launcher" }
+
+          # Remote MCP: the tunnel must start the installed MCP host and pass messages both ways.
+          # A local server takes the place of AliasMode Cloud.
+          bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "bun install failed" }
+          $check = Join-Path $env:GITHUB_WORKSPACE "remote-mcp-check.ts"
+          @'
+          import { WebSocketServer } from "ws";
+          import { MCP_TUNNEL_PROTOCOL } from "./contracts/cloud-v1.ts";
+          import { McpTunnelRuntime } from "./mcp-tunnel.ts";
+          const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+          await new Promise((resolve) => server.once("listening", resolve));
+          const tools = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("the tunnel returned no tool list")), 120_000);
+            server.on("connection", (socket, request) => {
+              if (request.url !== "/v1/mcp/tunnel" || request.headers["x-aliasmode-device"] !== "ci-device") return socket.close();
+              const send = (frame) => socket.send(JSON.stringify({ protocol: MCP_TUNNEL_PROTOCOL, sessionId: "ci", ...frame }));
+              socket.on("message", (data) => {
+                const frame = JSON.parse(data.toString());
+                if (frame.type !== "message") return reject(new Error("the tunnel sent " + JSON.stringify(frame)));
+                if (frame.payload.id === 1) {
+                  send({ type: "message", payload: { jsonrpc: "2.0", method: "notifications/initialized" } });
+                  send({ type: "message", payload: { jsonrpc: "2.0", id: 2, method: "tools/list" } });
+                }
+                if (frame.payload.id === 2) { clearTimeout(timer); resolve(frame.payload.result.tools.map((tool) => tool.name)); }
+              });
+              send({ type: "open" });
+              send({ type: "message", payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "ci", version: "1" } } } });
+            });
+          });
+          const tunnel = new McpTunnelRuntime({
+            baseUrl: "http://127.0.0.1:" + server.address().port,
+            accessToken: () => "ci-token", deviceId: () => "ci-device-id", deviceCredential: () => "ci-device",
+            helperPath: process.env.HELPER,
+          });
+          tunnel.start();
+          const names = await tools;
+          await tunnel.stop();
+          server.close();
+          if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
+          console.log("Remote MCP tunnel listed " + names.length + " tools");
+          '@ | Set-Content -LiteralPath $check -Encoding utf8
+          $env:HELPER = $helper
+          bun $check
+          if ($LASTEXITCODE -ne 0) { throw "the Remote MCP tunnel could not use the installed MCP host" }
       - name: Stop isolated AliasMode
         if: always()
         shell: pwsh

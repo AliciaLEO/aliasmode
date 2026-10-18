@@ -74,7 +74,6 @@ export interface PrepareWindowsBundleOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   compileSidecar?: (output: string) => Promise<void>;
-  compileAgent?: (output: string) => Promise<void>;
   installBrowser?: (cwd: string, cacheDir: string) => Promise<{ path: string; sha256: string }>;
   hashFile?: (path: string) => Promise<string>;
   downloadNode?: () => Promise<Uint8Array>;
@@ -217,26 +216,13 @@ export async function compileSidecar(cwd: string, output: string, target = WINDO
     "--external=playwright-core",
     "--external=chromium-bidi",
     "--external=electron",
-    "cli.ts",
+    // One program for the sidecar and the MCP helper; Cargo builds the aliasmode-mcp launcher.
+    "sidecar-entry.ts",
     "--outfile",
     output,
   ], { cwd, stdout: "inherit", stderr: "inherit" });
   const code = await child.exited;
   if (code !== 0) throw new Error(`sidecar compilation exited with code ${code}`);
-}
-
-export async function compileAgent(cwd: string, output: string, target = WINDOWS_SIDECAR_TARGET): Promise<void> {
-  const child = Bun.spawn([
-    process.execPath,
-    "build",
-    "--compile",
-    `--target=${target}`,
-    "agent/aliasmode-mcp.ts",
-    "--outfile",
-    output,
-  ], { cwd, stdout: "inherit", stderr: "inherit" });
-  const code = await child.exited;
-  if (code !== 0) throw new Error(`agent helper compilation exited with code ${code}`);
 }
 
 const AGENT_PACKAGE_VERSIONS: Record<string, string> = {
@@ -330,7 +316,6 @@ export async function prepareWindowsBundle(
   const firefoxRoot = join(resources, "firefox");
   const playwrightRoot = join(resources, "playwright");
   const sidecar = join(binaries, "aliasmode-sidecar-x86_64-pc-windows-msvc.exe");
-  const agentHelper = join(binaries, "aliasmode-mcp-x86_64-pc-windows-msvc.exe");
 
   rmSync(staging, { recursive: true, force: true });
   rmSync(resourceRoot, { recursive: true, force: true });
@@ -344,8 +329,6 @@ export async function prepareWindowsBundle(
 
   await (options.compileSidecar ?? ((output) => compileSidecar(cwd, output)))(sidecar);
   if (!statSync(sidecar).isFile()) throw new Error("sidecar compiler did not create the expected Windows executable");
-  await (options.compileAgent ?? ((output) => compileAgent(cwd, output)))(agentHelper);
-  if (!statSync(agentHelper).isFile()) throw new Error("agent helper compiler did not create the expected Windows executable");
 
   const firefox = await installFirefoxRuntime(
     options.firefoxArchive ?? configuredFirefoxArchive(),

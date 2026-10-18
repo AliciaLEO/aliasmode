@@ -1,11 +1,11 @@
-/** Stages the Linux x64 bundle inputs: sidecar, agent helper, AliasMode Firefox and the agent runtime. */
+/** Stages the Linux x64 bundle inputs: sidecar, AliasMode Firefox and the agent runtime. */
 import { cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { FIREFOX_RUNTIME_VERSION, firefoxBuildForHost, installFirefox } from "../firefox-install.ts";
 import { installSourceNode } from "../source-runtime.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 import { installPython } from "./prepare-macos-bundle.ts";
-import { compileAgent, compileSidecar, stageAgentRuntime } from "./prepare-windows-bundle.ts";
+import { compileSidecar, stageAgentRuntime } from "./prepare-windows-bundle.ts";
 
 const BUN_TARGET = "bun-linux-x64-baseline";
 const RUST_TARGET = "x86_64-unknown-linux-gnu";
@@ -50,7 +50,6 @@ export async function prepareLinuxBundle(cwd = process.cwd()): Promise<void> {
   }
 
   await compileSidecar(cwd, join(tauri, "binaries", `aliasmode-sidecar-${RUST_TARGET}`), BUN_TARGET);
-  await compileAgent(cwd, join(tauri, "binaries", `aliasmode-mcp-${RUST_TARGET}`), BUN_TARGET);
 
   const build = firefoxBuildForHost();
   const firefox = await installFirefox({ cwd: staging, writeEnv: false });

@@ -134,13 +134,39 @@ test("a proxied Firefox launch gives the engine the proxy exit IP for WebRTC, an
     f.store.upsertProfile({ ...f.profile, proxy });
     const profile = f.store.getProfile(f.profile.id)!;
     const asked: unknown[] = [];
-    const launcher = new Launcher({ ...f.options, lookupExitIp: async (spec) => { asked.push(spec); return exitIp; } });
+    const launcher = new Launcher({
+      ...f.options,
+      lookupExitLocation: async (spec) => { asked.push(spec); return exitIp ? { timezone: profile.timezone, ip: exitIp } : null; },
+    });
     await launcher.start(profile.id);
     expect(asked).toEqual([proxy]);
     expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, exitIp ?? undefined));
     expect((f.config() as Record<string, unknown>)["webrtc:ipv4"]).toBe(exitIp ?? undefined);
     expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("webrtc:ipv4");
     expect(await launcher.stop(profile.id)).toBe(true);
+  }
+});
+
+test("a proxied Firefox launch saves the proxy exit's timezone in its config, and no answer keeps the saved one", async () => {
+  for (const exit of [{ timezone: "Asia/Tokyo", country: "JP", ip: "203.0.113.7" }, null]) {
+    const f = fixture();
+    const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+    const firefox = { ...f.profile.firefox!, config: { ...f.profile.firefox!.config, timezone: "Europe/London" } };
+    f.store.upsertProfile({ ...f.profile, proxy, timezone: "Europe/London", firefox });
+    const options = { ...f.options, lookupExitLocation: async () => exit };
+    const launcher = new Launcher(options);
+    const opened = await launcher.start(f.profile.id);
+    const timezone = exit?.timezone ?? "Europe/London";
+    const saved = f.store.getProfile(f.profile.id)!;
+    expect(saved.timezone).toBe(timezone);
+    expect(saved.firefox!.config.timezone).toBe(timezone);
+    expect((f.config() as Record<string, unknown>).timezone).toBe(timezone);
+    // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    const restarted = new Launcher(options);
+    expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
+    expect(await restarted.certifiedActive(f.profile.id)).toBe(true);
+    expect(f.launches()).toBe(1);
+    expect(await restarted.stop(f.profile.id)).toBe(true);
   }
 });
 

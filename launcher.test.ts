@@ -7,6 +7,7 @@ import { ProfileStore } from "./store.ts";
 import { AutofillBridge } from "./autofill-bridge.ts";
 import { CloudBrowserCoordinator } from "./cloud-browser.ts";
 import { PendingSyncQueue } from "./pending-sync.ts";
+import type { ExitLocation } from "./geoip.ts";
 import { autofillExtensionDir } from "./autofill-extension.ts";
 import {
   BrowserLaunchError,
@@ -4844,17 +4845,19 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   // The engine adds the trailing space itself; Windows would strip it from a switch value.
   expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   expect(native.scripted).toEqual([]);
-  // CloakBrowser has no such switch, so it keeps the page script.
+  // CloakBrowser on Windows has no such switch, so it keeps the page script.
   const cloak = await launch("win32", "cloakbrowser");
   expect(cloak.switches).toEqual([]);
   expect(cloak.scripted).toEqual([cloak.label]);
-  // The Mac Chromium 155 build has no switch either, and pages could read a title script.
-  const mac = await launch("darwin", "aliasmode");
-  expect(mac.switches).toEqual([]);
-  expect(mac.scripted).toEqual([]);
+  // On Mac no Chromium build has the switch, and pages could read a title script.
+  for (const engine of ["aliasmode", "cloakbrowser"] as const) {
+    const mac = await launch("darwin", engine);
+    expect(mac.switches).toEqual([]);
+    expect(mac.scripted).toEqual([]);
+  }
 });
 
-test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines are not asked", async () => {
+test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines do not", async () => {
   const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
   const launch = async (
     hostPlatform: NodeJS.Platform,
@@ -4875,7 +4878,11 @@ test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and
       ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
       chromiumSandboxBlocked: () => false,
       captureFingerprint: async () => null,
-      lookupExitIp: async (spec) => { asked.push(spec); return lookup(); },
+      lookupExitLocation: async (spec) => {
+        asked.push(spec);
+        const ip = await lookup();
+        return ip ? { timezone: chromium155.timezone, ip } : null;
+      },
     });
     await launcher.start(chromium155.id);
     await launcher.stop(chromium155.id);
@@ -4895,10 +4902,48 @@ test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and
   // Without a proxy WebRTC keeps the computer's own route and nothing is looked up.
   expect(await launch("win32", "aliasmode", async () => "203.0.113.7", null))
     .toEqual({ asked: [], webrtc: ["--force-webrtc-ip-handling-policy=default_public_interface_only"] });
-  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change, so they are not asked.
+  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change. Their exit is asked
+  // for its timezone only.
   for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
-    expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [], webrtc: [policy] });
+    expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [proxy], webrtc: [policy] });
   }
+});
+
+test("every proxied Chromium launch takes the proxy exit's timezone, and no answer keeps the saved one", async () => {
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", exit: ExitLocation | null) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy, timezone: "Europe/London" };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const f = fleet();
+    const spawnedArgs: string[][] = [];
+    const options = {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+      lookupExitLocation: async () => exit,
+    };
+    const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, options);
+    const opened = await launcher.start(chromium155.id);
+    const stored = store.getProfile(chromium155.id)!.timezone;
+    // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    const restarted = newLauncher(store, f, spawnedArgs, undefined, undefined, options);
+    expect(await restarted.start(chromium155.id)).toEqual({ ...opened, nativeSessionRestored: false });
+    expect(spawnedArgs).toHaveLength(1);
+    await restarted.stop(chromium155.id);
+    store.close();
+    return { stored, flags: spawnedArgs[0]!.filter((arg) => arg.startsWith("--fingerprint-timezone=")) };
+  };
+  const tokyo = { timezone: "Asia/Tokyo", country: "JP", ip: "203.0.113.7" };
+  for (const [host, engine] of [["win32", "aliasmode"], ["darwin", "aliasmode"], ["win32", "cloakbrowser"], ["darwin", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, tokyo)).toEqual({ stored: "Asia/Tokyo", flags: ["--fingerprint-timezone=Asia/Tokyo"] });
+  }
+  expect(await launch("win32", "aliasmode", null))
+    .toEqual({ stored: "Europe/London", flags: ["--fingerprint-timezone=Europe/London"] });
 });
 
 test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {

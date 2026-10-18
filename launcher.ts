@@ -28,7 +28,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dlopen } from "bun:ffi";
 import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
-import { lookupProxyExitIp } from "./geoip.ts";
+import { lookupProxyExitLocation, type ExitLocation } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
 import { allocatePort } from "./ports.ts";
@@ -48,7 +48,7 @@ import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runt
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
-import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs } from "./firefox-config.ts";
+import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs, syncFirefoxTimezone } from "./firefox-config.ts";
 import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
@@ -503,11 +503,11 @@ export interface LauncherOptions {
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
   /**
-   * The exit IP of a profile's proxy, which AliasMode Firefox and Chromium 155 on Windows then show
-   * as WebRTC's public address. null keeps WebRTC as it was. Defaults to a short lookup through the
-   * proxy; tests inject it.
+   * Where a profile's proxy exits. Its timezone becomes the profile's at each launch, and AliasMode
+   * Firefox and Chromium 155 on Windows show its IP as WebRTC's public address. null keeps the saved
+   * timezone and WebRTC as they were. Defaults to a short lookup through the proxy; tests inject it.
    */
-  lookupExitIp?: (proxy: ProxySpec) => Promise<string | null>;
+  lookupExitLocation?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
   readSession?: typeof readSessionInSubprocess;
   applySession?: typeof applySessionToEndpoint;
   /** Budget for the graceful close above before falling through to the force-kill. */
@@ -765,7 +765,7 @@ export class Launcher {
   private ensureCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
-  private lookupExitIpFn?: (proxy: ProxySpec) => Promise<string | null>;
+  private lookupExitLocationFn?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
   private navigateFn: LaunchNavigator;
@@ -876,7 +876,7 @@ export class Launcher {
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
-    this.lookupExitIpFn = opts.lookupExitIp ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitIp(proxy));
+    this.lookupExitLocationFn = opts.lookupExitLocation ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitLocation(proxy));
     this.readSessionFn = opts.readSession ?? readSessionInSubprocess;
     this.applySessionFn = opts.applySession ?? applySessionToEndpoint;
     this.navigateFn = opts.navigate ?? defaultNavigate;
@@ -1173,11 +1173,11 @@ export class Launcher {
    * The proxy exit IP that AliasMode Firefox and Chromium 155 on Windows show as WebRTC's public
    * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
    */
-  private async webRtcExitIp(profile: Profile): Promise<string | undefined> {
-    if (!profile.proxy || !this.lookupExitIpFn) return undefined;
-    const ip = await this.lookupExitIpFn(profile.proxy).catch(() => null);
+  private webRtcExitIp(profile: Profile, exit: ExitLocation | null): string | undefined {
+    if (!profile.proxy || !this.lookupExitLocationFn) return undefined;
+    const ip = exit?.ip;
     this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
-    return ip ?? undefined;
+    return ip;
   }
 
   /**
@@ -1754,11 +1754,25 @@ export class Launcher {
       profile = current!;
       profileSnapshot = JSON.stringify(profile);
     }
-    if (profile.engine === "firefox") {
-      return this.startFreshFirefox(profile, startupUrls, opts, pendingSession);
+    // The proxy exit is looked up once per launch. A missing or stale saved timezone (an import
+    // whose lookup failed, a rotating proxy that moved) becomes the exit's before any engine reads
+    // the profile, so pages see the timezone of the IP they come from. Without an answer the saved
+    // timezone stays. The exit IP is WebRTC's public address below.
+    const exit = profile.proxy && this.lookupExitLocationFn
+      ? await this.lookupExitLocationFn(profile.proxy).catch(() => null)
+      : null;
+    if (exit?.timezone && exit.timezone !== profile.timezone) {
+      const updated = { ...this.requireUnchangedProfile(profileId, profileSnapshot, "proxy exit lookup"), timezone: exit.timezone };
+      syncFirefoxTimezone(updated);
+      this.store.upsertProfile(updated);
+      profile = this.store.getProfile(profileId)!;
+      profileSnapshot = JSON.stringify(profile);
+      this.log(`profile ${profileId} timezone set to ${exit.timezone} from its proxy exit`);
     }
-    // Runs beside the launch preparation below; the browser arguments wait for it.
-    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile) : undefined;
+    if (profile.engine === "firefox") {
+      return this.startFreshFirefox(profile, startupUrls, opts, pendingSession, exit);
+    }
+    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile, exit) : undefined;
 
     // A fresh generation is never spawned until the configured executable has
     // been canonicalized and matched byte-for-byte against the deployment pin.
@@ -1863,7 +1877,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, await webRtcIp,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -1988,10 +2002,10 @@ export class Launcher {
       // among many open profiles (the cue AdsPower's panel gave). Registered
       // before navigation so the title script is in place when the platform page
       // loads. Strictly best-effort — never fail or stall a launch on it. Chromium 155 on
-      // Windows got the label as a launch switch, so its pages get no title script. The Mac
-      // Chromium 155 build has no such switch, and a title script is visible to pages, so its
-      // windows go unlabeled.
-      const pageLabelHidden = this.hostPlatform === "darwin" && !!profile.chromiumRuntime;
+      // Windows got the label as a launch switch, so its pages get no title script. On Mac no
+      // Chromium build has such a switch, and a title script is visible to pages, so Chromium 155
+      // and CloakBrowser windows there go unlabeled.
+      const pageLabelHidden = this.hostPlatform === "darwin";
       if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile) && !pageLabelHidden) {
         try {
           const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
@@ -2226,12 +2240,12 @@ export class Launcher {
     startupUrls: string[],
     opts: LaunchStartOptions,
     pendingSession: string | null,
+    exit: ExitLocation | null,
   ): Promise<LaunchStartResult> {
     const profileId = profile.id;
     const headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
-    // Runs beside the launch preparation below; the engine config waits for it.
-    const webRtcIp = this.webRtcExitIp(profile);
+    const webRtcIp = this.webRtcExitIp(profile, exit);
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
@@ -2289,7 +2303,6 @@ export class Launcher {
         this.relays.set(profileId, relay);
         launch.relayPort = relay.port;
       }
-      const exitIp = await webRtcIp;
       this.requireUnchangedProfile(profileId, snapshot, "Firefox spawn");
       this.store.recordLaunch(launch);
       reserved = true;
@@ -2304,7 +2317,7 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, exitIp), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp), proxy, headless,
         prefs: { ...firefoxStartupPrefs(profile), ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}) },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,

@@ -1,4 +1,4 @@
-/** Best-effort import-time timezone enrichment and shared SOCKS5 tunneling. */
+/** Best-effort import- and launch-time timezone enrichment and shared SOCKS5 tunneling. */
 
 import { connect as netConnect, type Socket } from "node:net";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
@@ -120,11 +120,13 @@ export async function openSocks5Tunnel(
   }
 }
 
+export type ExitLocation = { timezone: string; country?: string; ip?: string };
+
 /** Location and address of the connection's exit IP, using the profile proxy when present. */
 export async function lookupExitLocation(
   proxy: ProxySpec | null,
   fetchFn: FetchLike = (url, init) => fetch(url, init),
-): Promise<{ timezone: string; country?: string; ip?: string } | null> {
+): Promise<ExitLocation | null> {
   let relay: ProxyRelay | undefined;
   try {
     if (proxy) {
@@ -164,32 +166,32 @@ function withIp<T extends object>(location: T, raw: unknown): T & { ip?: string 
 
 // Profiles that share a proxy often open together, and ip-api.com answers 45 requests a minute
 // per address, so one answer serves each proxy for a minute. A failed lookup is not kept.
-const EXIT_IP_REUSE_MS = 60_000;
-const exitIps = new Map<string, { at: number; ip: Promise<string | null> }>();
+const EXIT_REUSE_MS = 60_000;
+const exits = new Map<string, { at: number; location: Promise<ExitLocation | null> }>();
 
 /**
- * The address a proxy's traffic leaves from, looked up through the proxy and never directly.
- * Waits at most `waitMs`; an answer that comes later still serves the next launch. A changed
- * proxy (type, host, port or login) gets its own lookup.
+ * Where a proxy's traffic leaves from (timezone, country and address), looked up through the
+ * proxy and never directly. Waits at most `waitMs`; an answer that comes later still serves the
+ * next launch. A changed proxy (type, host, port or login) gets its own lookup.
  */
-export async function lookupProxyExitIp(
+export async function lookupProxyExitLocation(
   proxy: ProxySpec,
   opts: { fetchFn?: FetchLike; waitMs?: number; now?: () => number } = {},
-): Promise<string | null> {
+): Promise<ExitLocation | null> {
   const now = opts.now ?? Date.now;
   const key = JSON.stringify([proxy.type, proxy.host, String(proxy.port), proxy.user ?? "", proxy.pass ?? ""]);
-  let entry = exitIps.get(key);
-  if (!entry || now() - entry.at >= EXIT_IP_REUSE_MS) {
-    for (const [old, value] of exitIps) if (now() - value.at >= EXIT_IP_REUSE_MS) exitIps.delete(old);
-    const created = { at: now(), ip: lookupExitLocation(proxy, opts.fetchFn).then((location) => location?.ip ?? null) };
-    exitIps.set(key, created);
-    void created.ip.then((ip) => { if (!ip && exitIps.get(key) === created) exitIps.delete(key); });
+  let entry = exits.get(key);
+  if (!entry || now() - entry.at >= EXIT_REUSE_MS) {
+    for (const [old, value] of exits) if (now() - value.at >= EXIT_REUSE_MS) exits.delete(old);
+    const created = { at: now(), location: lookupExitLocation(proxy, opts.fetchFn) };
+    exits.set(key, created);
+    void created.location.then((location) => { if (!location && exits.get(key) === created) exits.delete(key); });
     entry = created;
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      entry.ip,
+      entry.location,
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), opts.waitMs ?? 5_000); }),
     ]);
   } finally {

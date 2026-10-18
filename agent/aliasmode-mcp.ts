@@ -65,6 +65,13 @@ function childEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     "TEMP",
     "TMP",
     "USERPROFILE",
+    // Linux: the app that the host may start needs the desktop session, and the data folder.
+    "DBUS_SESSION_BUS_ADDRESS",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR",
   ];
   const env: NodeJS.ProcessEnv = {};
   for (const key of keys) {

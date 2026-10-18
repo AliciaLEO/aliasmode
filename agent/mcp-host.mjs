@@ -460,6 +460,8 @@ export function sanitizeEnvironment(env = process.env) {
     "ALIASMODE_APP_VERSION", "ALIASMODE_DESKTOP_EXE", "ALIASMODE_MCP_DIAGNOSTICS",
     "ALIASMODE_RUNTIME_DESCRIPTOR",
     "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE",
+    // Linux: the app that the host may start needs the desktop session, and the data folder.
+    "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
   ]);
   for (const key of Object.keys(env)) {
     if (!allowed.has(key.toUpperCase())) delete env[key];

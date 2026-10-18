@@ -119,14 +119,18 @@ installed_version() {
   [[ -x "$helper" ]] && "$helper" version 2>/dev/null | sed -n 's/.*"version":"\([^"]*\)".*/\1/p'
 }
 
+# The app, its sidecar, and the Firefox engine and Node processes all run from the app folder.
 running() {
   local pid
-  for pid in $(pgrep -x aliasmode 2>/dev/null || true); do
-    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" == "$root/bin/aliasmode" ]] && return 0
+  for pid in $(pgrep -f -- "$root/" 2>/dev/null || true); do
+    [[ "$(readlink "/proc/$pid/exe" 2>/dev/null || true)" == "$root/"* ]] && return 0
   done
   return 1
 }
 
+# Everything runs from main, so `curl | bash` has read the whole script before a package
+# manager could read from the same input.
+main() {
 if [[ -z "$version" ]]; then
   # The newest release that has a Linux build; the API lists releases newest first.
   version="$(curl -fsSL "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=20" \
@@ -144,7 +148,8 @@ if [[ "$(installed_version || true)" != "$version" ]]; then
   mkdir -p "$data_home"
   # Unpacked beside the app folder, so the swap stays on one file system.
   work="$(mktemp -d "$data_home/.aliasmode-install.XXXXXX")"
-  trap 'rm -rf "$work"' EXIT
+  # An interrupted swap puts the previous app back.
+  trap '[[ -e "$root" || ! -e "$work/previous" ]] || mv "$work/previous" "$root"; rm -rf "$work"' EXIT
   archive="AliasMode_${version}_x86_64-linux.tar.gz"
   curl -fsSL -o "$work/SHA256SUMS-linux.txt" "$base/v$version/SHA256SUMS-linux.txt" \
     || fail "version $version has no Linux build"
@@ -190,3 +195,6 @@ if [[ "$agent_setup" == 1 ]]; then
   exec "$helper" setup --client auto --yes --json
 fi
 echo "AliasMode $version is installed in $root. Open it from your app menu."
+}
+
+main

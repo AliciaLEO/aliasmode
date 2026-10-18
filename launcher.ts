@@ -1963,8 +1963,11 @@ export class Launcher {
       // among many open profiles (the cue AdsPower's panel gave). Registered
       // before navigation so the title script is in place when the platform page
       // loads. Strictly best-effort — never fail or stall a launch on it. Chromium 155 on
-      // Windows got the label as a launch switch, so its pages get no title script.
-      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile)) {
+      // Windows got the label as a launch switch, so its pages get no title script. The Mac
+      // Chromium 155 build has no such switch, and a title script is visible to pages, so its
+      // windows go unlabeled.
+      const pageLabelHidden = this.hostPlatform === "darwin" && !!profile.chromiumRuntime;
+      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile) && !pageLabelHidden) {
         try {
           const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
           await this.labelWindowFn(ws, buildWindowLabel(profile.name, displayNo));

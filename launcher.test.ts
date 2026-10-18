@@ -4839,12 +4839,14 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   // The engine adds the trailing space itself; Windows would strip it from a switch value.
   expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   expect(native.scripted).toEqual([]);
-  // CloakBrowser has no such switch, and the Mac build is upstream's, so both keep the page script.
-  for (const [host, engine] of [["win32", "cloakbrowser"], ["darwin", "aliasmode"]] as const) {
-    const page = await launch(host, engine);
-    expect(page.switches).toEqual([]);
-    expect(page.scripted).toEqual([page.label]);
-  }
+  // CloakBrowser has no such switch, so it keeps the page script.
+  const cloak = await launch("win32", "cloakbrowser");
+  expect(cloak.switches).toEqual([]);
+  expect(cloak.scripted).toEqual([cloak.label]);
+  // The Mac Chromium 155 build has no switch either, and pages could read a title script.
+  const mac = await launch("darwin", "aliasmode");
+  expect(mac.switches).toEqual([]);
+  expect(mac.scripted).toEqual([]);
 });
 
 test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines are not asked", async () => {

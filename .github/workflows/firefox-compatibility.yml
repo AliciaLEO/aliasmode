@@ -12,6 +12,7 @@ on:
       - scripts/firefox-owner-smoke-manager.mjs
       - launcher.ts
       - firefox-config.ts
+      - firefox-fonts.ts
       - firefox-media.ts
       - firefox-data/**
       - firefox-runtime.ts
@@ -42,6 +43,7 @@ on:
       - scripts/firefox-owner-smoke-manager.mjs
       - launcher.ts
       - firefox-config.ts
+      - firefox-fonts.ts
       - firefox-media.ts
       - firefox-data/**
       - firefox-runtime.ts
@@ -67,15 +69,15 @@ permissions:
   actions: read
   contents: read
 
-# The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r1).
-# The macOS and Linux jobs install the archive of the release that the app pins; it repackages
-# that run's archive with the 152 engine's font set.
+# The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r4).
+# The macOS and Linux jobs install the archive of the release that the app pins; its archives are
+# that run's archives, without fonts of other operating systems (the app downloads font packs).
 env:
-  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r3
-  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39034521083"
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r4
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39114113148"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
-  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r1
-  ALIASMODE_FIREFOX_BUILD_SHA: 234063266ccac2c3885390a5c410b31a80805218
+  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r3-fontpacks
+  ALIASMODE_FIREFOX_BUILD_SHA: a1de38c423eacd3d9bccfdf8130479eb26aa5c5f
 
 jobs:
   windows:

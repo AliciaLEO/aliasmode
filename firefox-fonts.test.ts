@@ -89,7 +89,7 @@ test("a profile of the computer's own OS needs no pack; another OS needs that OS
   expect(firefoxFontPackFor("linux", "win32")).toBe(FIREFOX_FONT_PACKS.linux);
   expect(firefoxFontPackFor("windows", "darwin")).toBe(FIREFOX_FONT_PACKS.windows);
   expect(firefoxFontPackUrl(FIREFOX_FONT_PACKS.macos)).toBe(
-    "https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-156.0.1-beta.36-r3/aliasmode-fonts-macos-1.zip",
+    "https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-156.0.1-beta.36-r4/aliasmode-fonts-macos-1.zip",
   );
   for (const pack of Object.values(FIREFOX_FONT_PACKS)) expect(pack.sha256).toMatch(/^[a-f0-9]{64}$/);
 });

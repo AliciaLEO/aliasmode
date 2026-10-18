@@ -25,7 +25,7 @@ export interface FirefoxFontPack {
 
 // The packs are published with the engine release that stopped carrying them. A
 // later engine can keep these pins: a pack changes only when its fonts change.
-const FONT_PACK_RELEASE = "aliasmode-runtime-156.0.1-beta.36-r3";
+const FONT_PACK_RELEASE = "aliasmode-runtime-156.0.1-beta.36-r4";
 const FONT_PACK_BASE = `https://github.com/aliasmode/aliasmode-firefox/releases/download/${FONT_PACK_RELEASE}`;
 
 export const FIREFOX_FONT_PACKS: Readonly<Record<FontPackOs, FirefoxFontPack>> = {

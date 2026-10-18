@@ -438,6 +438,8 @@ async def run(*, context, inputs, log, **_kwargs):
   const mutationRun = await ownerScript(localLauncher, profileId, mutator, { origin, firstTab, secondTab, telegramTab });
   assert.ok(mutationRun.logs.includes("Fixture state saved"), "external JavaScript runner returns fixture logs");
   const mutated = mutationRun.result as { identity: any; tabs: string[] };
+  // Compared across the Windows, macOS and Linux jobs: the same identity on each host.
+  console.log(`firefox-launcher-acceptance:fonts ${JSON.stringify(mutated.identity.fonts)}`);
   assert.equal(mutated.identity.language, "en-US", "page uses the saved US locale");
   assert.equal(mutated.identity.locale, "en-US", "page Intl uses the saved locale");
   assert.equal(mutated.identity.acceptLanguage.split(",")[0], "en-US", "HTTP uses the saved locale");

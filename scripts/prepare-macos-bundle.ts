@@ -48,16 +48,22 @@ async function downloadPinned(url: string, sha256: string, output: string): Prom
   writeFileSync(output, bytes);
 }
 
+interface PinnedFile { url: string; sha256: string }
+
 /** Stages CPython and the Playwright wheels for Python scripts; system tools keep file modes. */
-async function installPython(staging: string, playwrightRoot: string): Promise<void> {
+export async function installPython(
+  staging: string,
+  playwrightRoot: string,
+  pins: { archive: PinnedFile; wheels: PinnedFile[] } = { archive: PYTHON_ARCHIVE, wheels: PYTHON_WHEELS },
+): Promise<void> {
   const archive = join(staging, "python.tar.gz");
-  await downloadPinned(PYTHON_ARCHIVE.url, PYTHON_ARCHIVE.sha256, archive);
+  await downloadPinned(pins.archive.url, pins.archive.sha256, archive);
   await run(["tar", "-xzf", archive, "-C", playwrightRoot]);
   const python = join(playwrightRoot, "python");
   // The archive's convenience symlinks are not needed, and the bundler copies plain files only.
   await run(["find", python, "-type", "l", "-delete"]);
   const sitePackages = join(python, "lib", "python3.13", "site-packages");
-  for (const [index, wheel] of PYTHON_WHEELS.entries()) {
+  for (const [index, wheel] of pins.wheels.entries()) {
     const file = join(staging, `wheel-${index}.whl`);
     await downloadPinned(wheel.url, wheel.sha256, file);
     await run(["unzip", "-q", "-o", file, "-d", sitePackages]);

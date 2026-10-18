@@ -2089,6 +2089,22 @@ test("create (local mode) adds a new profile", async () => {
   s.close();
 });
 
+test("creating a Firefox profile starts the background download of its font pack", async () => {
+  const s = new ProfileStore(":memory:");
+  const prefetched: Profile[][] = [];
+  const launcher = { prefetchFirefoxFontPacks: (profiles: Profile[]) => { prefetched.push(profiles); } } as any;
+  const res = await handleUiRequest(
+    new Request("http://x/ui/api/profiles", { method: "POST", body: JSON.stringify({ name: "mac", engine: "firefox", platformOs: "macos" }) }),
+    launcher,
+    s,
+  );
+  const body = await res!.json();
+  expect(body.ok).toBe(true);
+  expect(prefetched.map((profiles) => profiles.map((profile) => [profile.id, profile.engine, profile.platformOs])))
+    .toEqual([[[body.id, "firefox", "macos"]]]);
+  s.close();
+});
+
 test("create in remote mode delegates to the hub (not the local store)", async () => {
   const s = new ProfileStore(":memory:");
   const remote = { createProfile: async (input: any) => ({ id: "remote-" + (input.name || "x") }) } as any;

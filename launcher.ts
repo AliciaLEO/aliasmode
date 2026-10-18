@@ -47,7 +47,8 @@ import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runt
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
-import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
+import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs } from "./firefox-config.ts";
+import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_HOST_SCALE,
@@ -204,6 +205,7 @@ const PREFLIGHT_GUIDANCE = {
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
+  firefox_fonts_download: "The fonts for this profile's operating system could not be downloaded. Check your internet connection, then open the profile again.",
   cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
   chromium155_host: "Chromium 155 beta requires Windows x64, Apple Silicon macOS, or Linux x64.",
   chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
@@ -406,6 +408,8 @@ export interface LauncherOptions {
   ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
   /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
   chromiumSandboxBlocked?: () => boolean;
+  /** Installs a Firefox font pack under the runtimes root. Returns the folder of its fonts. */
+  ensureFirefoxFontPack?: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -728,6 +732,10 @@ export class Launcher {
   private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
   private ensureDownloadedCloakBrowserFn: (root: string) => Promise<string>;
   private chromiumSandboxBlockedFn: () => boolean;
+  private ensureFirefoxFontPackFn: (root: string, pack: FirefoxFontPack) => Promise<string>;
+  /** Packs whose background download failed in this run; a launch still retries them. */
+  private fontPackPrefetchFailed = new Set<string>();
+  private fontPacksPruned = false;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -836,6 +844,7 @@ export class Launcher {
     this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
       ?? ((root) => this.hostPlatform === "linux" ? ensureCloakBrowserLinux(root) : ensureCloakBrowserMacos(root));
     this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
+    this.ensureFirefoxFontPackFn = opts.ensureFirefoxFontPack ?? ((root, pack) => ensureFirefoxFontPack(root, pack));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
@@ -907,6 +916,32 @@ export class Launcher {
       throw new Error(`profile user-data directory escapes configured root for id ${JSON.stringify(profileId)}`);
     }
     return dir;
+  }
+
+  /** The font pack this Firefox profile needs on this computer, if any. */
+  private firefoxFontPack(profile: Profile): FirefoxFontPack | undefined {
+    return profile.engine === "firefox" && profile.firefox
+      ? firefoxFontPackFor(firefoxPersonaOs(profile), this.hostPlatform)
+      : undefined;
+  }
+
+  /**
+   * Download in the background the font packs these profiles need, so their first open
+   * does not wait. The first call also removes packs that are no longer pinned.
+   */
+  prefetchFirefoxFontPacks(profiles: readonly Profile[]): void {
+    if (!this.fontPacksPruned) {
+      this.fontPacksPruned = true;
+      pruneFirefoxFontPacks(this.chromiumRuntimeRoot);
+    }
+    const packs = new Set(profiles.flatMap((profile) => this.firefoxFontPack(profile) ?? []));
+    for (const pack of packs) {
+      if (this.fontPackPrefetchFailed.has(pack.sha256)) continue;
+      this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, pack).catch((error) => {
+        this.fontPackPrefetchFailed.add(pack.sha256);
+        this.log(`Firefox ${pack.os} font pack download failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
   }
 
   /** Begin the one-time Chromium 155 beta download in the background. */
@@ -2135,6 +2170,19 @@ export class Launcher {
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
+    // A profile of another OS never opens without that OS's fonts: it would show this
+    // computer's font list. The first open waits for the download when no prefetch did it.
+    const fontPack = this.firefoxFontPack(profile);
+    let fontsDir: string | undefined;
+    if (fontPack) {
+      try {
+        fontsDir = await this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, fontPack);
+        this.fontPackPrefetchFailed.delete(fontPack.sha256);
+      } catch (error) {
+        this.log(`Firefox ${fontPack.os} font pack install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "firefox_fonts_download");
+      }
+    }
     const userDataDir = this.userDataDir(profileId);
     const runtime = resolvePlaywrightRuntime();
     const ownerBinaryPath = this.unsafeDisableIdentityGates
@@ -2190,7 +2238,8 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel), prefs: firefoxStartupPrefs(profile), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir), proxy, headless,
+        prefs: { ...firefoxStartupPrefs(profile), ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}) },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {

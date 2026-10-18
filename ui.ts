@@ -1244,6 +1244,7 @@ export async function handleUiRequest(
       if (!created) store.upsertProfile(profile);
       // Start the one-time beta download now so the first open is not waiting on it.
       if (profile.chromiumRuntime) launcher.prepareChromiumRuntime();
+      launcher.prefetchFirefoxFontPacks?.([profile]);
       return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });
@@ -1346,6 +1347,7 @@ export async function handleUiRequest(
     if (remote) return Response.json({ ok: false, error: "remote mode: import via the hub (upload in the dashboard)" }, { status: 400 });
     try {
       const r = await importInbox(store, options.paths?.inbox);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
       return Response.json({ ok: true, ...r });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
@@ -1367,6 +1369,7 @@ export async function handleUiRequest(
       if (options.cloudBrowser) {
         const prepared = await prepareImportBuffers(uploads, console.log, override, undefined, options.timezoneFetch);
         await options.cloudBrowser.importProfiles(override.group!, prepared.imports.map(({ profile, sessionBundle }) => ({ ...profile, sessionBundle })));
+        launcher.prefetchFirefoxFontPacks?.(prepared.imports.map(({ profile }) => profile));
         return Response.json({ ok: true, ...prepared.result });
       }
       if (remote) {
@@ -1379,7 +1382,9 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: true, ...result });
       }
-      return Response.json({ ok: true, ...await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch) });
+      const imported = await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
+      return Response.json({ ok: true, ...imported });
     } catch (error) {
       const status = error instanceof ProfileImportError
         ? error.status

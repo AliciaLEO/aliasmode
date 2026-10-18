@@ -160,9 +160,12 @@ const DROPPED_LAUNCH_KEYS = [
  * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
  * exact shape. A value the profile stores itself is kept.
  */
-export function firefoxLaunchConfig(profile: Profile, windowLabel?: string): Record<string, JsonValue> {
+export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
   for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
+  // The font pack of the profile's OS, when it is not this computer's OS (firefox-fonts.ts).
+  if (fontsDir) config["aliasmode:fontsDir"] = fontsDir;
+  else delete config["aliasmode:fontsDir"];
   const seed = (key: string) => deterministicSeed(`${profile.fingerprintSeed}:${key}`);
   // Without a seed every profile on one computer gives the same audio output.
   config["audio:seed"] ??= seed("audio:seed");
@@ -203,7 +206,7 @@ export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue>
   };
 }
 
-function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue>): PersonaOs {
+export function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue> = profile.firefox?.config ?? {}): PersonaOs {
   const ua = typeof config["navigator.userAgent"] === "string" ? config["navigator.userAgent"] : "";
   const os = profile.platformOs || platformFromUA(profile.ua) || platformFromUA(ua);
   if (os === "windows" || os === "macos" || os === "linux") return os;

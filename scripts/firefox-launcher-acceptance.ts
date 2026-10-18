@@ -12,6 +12,7 @@ import { completeProfileFingerprint, createFirefoxProfileConfig, syncFirefoxTime
 import { callFirefoxOwner, FirefoxOwnerError } from "../firefox-runtime.ts";
 import { decodePortableProfile, encodePortableProfile } from "../portable-profile.ts";
 import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
+import { PythonRuntime } from "../python-runtime.ts";
 import { applySourceRuntime, type SourceRuntime } from "../source-runtime.ts";
 import { applySessionToEndpoint, readSessionInSubprocess } from "../session.ts";
 import { ProfileStore } from "../store.ts";
@@ -123,8 +124,9 @@ async function ownerScript(
   assert.equal(typeof bridge.endpoint, "string", "Firefox owner supplies a private Playwright endpoint");
   const runtime = resolvePlaywrightRuntime();
   const sourceRoot = resolve(import.meta.dir, "..");
+  // The packaged runtime has no Python: download the pinned runtime the desktop app uses.
   const executable = language === "python"
-    ? runtime.kind === "packaged" ? join(runtime.root, "python", "python.exe") : process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3")
+    ? runtime.kind === "packaged" ? await new PythonRuntime(join(root, "runtimes")).ensure() : process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3")
     : runtime.nodeExecutable;
   const runner = runtime.kind === "packaged"
     ? join(runtime.root, "agent", language === "python" ? "script-runner.py" : "script-runner.mjs")

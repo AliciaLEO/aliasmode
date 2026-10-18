@@ -158,7 +158,7 @@ async function run(command: string[]): Promise<void> {
 }
 
 // Antivirus can briefly hold freshly extracted files open, so Windows refuses the rename.
-async function renameWhenUnlocked(from: string, to: string): Promise<void> {
+export async function renameWhenUnlocked(from: string, to: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       renameSync(from, to);

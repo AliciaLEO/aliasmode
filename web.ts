@@ -6,6 +6,7 @@
  * server.ts / ui.ts) never trigger React bundling.
  */
 
+import { join } from "node:path";
 import index from "./web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -27,7 +28,9 @@ import {
   type BrowserLifecycleContext,
 } from "./server.ts";
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
-import { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
+import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
+import { PythonRuntime } from "./python-runtime.ts";
+import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 
 import { handleUserApi, type ProfileRoster } from "./adspower-users.ts";
 import {
@@ -260,13 +263,22 @@ export function serveDashboard(opts: DashboardServerOptions) {
       })
     : undefined;
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, runtimeMode === "cloud", opts.cloudConnection, opts.defaultCloudUrl) : undefined;
+  // The desktop app downloads Python for Python scripts; a source checkout uses python3.
+  const python = library && resolvePlaywrightRuntime().kind === "packaged"
+    ? new PythonRuntime(join(opts.paths!.root, "runtimes"), { log })
+    : undefined;
   const scripts = library && agentNonce ? {
-    library, nonce: agentNonce,
+    library, nonce: agentNonce, python,
     runner: new ScriptSupervisor({
-      root: opts.paths!.root, library, launcher, store, admission,
+      root: opts.paths!.root, library, launcher, store, admission, python,
       remote: opts.remote, cloudBrowser: opts.cloudBrowser, cloudConnection: opts.cloudConnection, log,
     }),
   } : undefined;
+  if (library && python) {
+    python.prune();
+    // A user who already has a Python script gets the runtime before the first run.
+    void library.list().then((items) => prefetchPythonFor(python, items), () => {});
+  }
   const server = Bun.serve<AgentSocketData>({
     port,
     hostname,

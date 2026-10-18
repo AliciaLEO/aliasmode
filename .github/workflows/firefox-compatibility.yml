@@ -68,7 +68,10 @@ permissions:
   contents: read
 
 # The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r1).
+# The macOS and Linux jobs install the archive of the release that the app pins; it repackages
+# that run's archive with the 152 engine's font set.
 env:
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r3
   ALIASMODE_FIREFOX_BUILD_RUN_ID: "39034521083"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
   ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r1
@@ -252,12 +255,12 @@ jobs:
             runner: ubuntu-24.04
             platform: linux
             architecture: x86_64
-            artifact: AliasModeBuilds-linux-x86_64
+            archive: aliasmode-156.0.1-beta.36-lin.x86_64.zip
           - name: macOS arm64
             runner: macos-15
             platform: darwin
             architecture: arm64
-            artifact: AliasModeBuilds-macos-arm64
+            archive: aliasmode-156.0.1-beta.36-mac.arm64.zip
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -296,13 +299,10 @@ jobs:
               throw new Error("invalid AliasMode Firefox source repository");
             }
           ' "$run"
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: artifacts/firefox
-          github-token: ${{ github.token }}
-          repository: aliasmode/aliasmode-firefox
-          run-id: ${{ env.ALIASMODE_FIREFOX_BUILD_RUN_ID }}
+      - name: Download the pinned release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$ALIASMODE_FIREFOX_RELEASE" --repo aliasmode/aliasmode-firefox --pattern "${{ matrix.archive }}" --dir artifacts/firefox
       - name: Install verified owned browser
         shell: bash
         run: |

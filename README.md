@@ -84,6 +84,24 @@ Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
 bun run desktop:build:macos
 ```
 
+### Linux desktop beta
+
+The Linux app supports x64 computers with a graphical desktop and glibc 2.35 or newer, for example Ubuntu 22.04, Debian 12 or Fedora 36 and newer. Install it from a terminal:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/install-linux.sh | bash
+```
+
+The script downloads the newest Linux build from GitHub Releases, verifies its published SHA-256, installs the app into `~/.local/share/aliasmode`, and adds AliasMode to the app menu. It asks for your password once (sudo) when the computer misses WebKitGTK 4.1 or a library that the browsers need, and on Ubuntu 23.10 or newer to let the Chrome sandbox start through an AppArmor profile.
+
+Chromium profiles use Chromium 155 or CloakBrowser (Chrome 146), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows and macOS apps.
+
+Packaging requires Linux x64, Bun, the Rust toolchain and the WebKitGTK 4.1 development package:
+
+```sh
+bun run desktop:build:linux
+```
+
 ### Windows desktop beta
 
 Published installers support Windows 10 version 1809 or newer, Windows 11, and Windows Server 2019 or newer on x64 processors with SSE4.2. They install for the current user and remain unsigned while release signing is configured.
@@ -115,7 +133,7 @@ The Windows installer includes `aliasmode-mcp.exe`. It connects AI agents to the
 & "$env:LOCALAPPDATA\AliasMode\aliasmode-mcp.exe" setup --client auto --yes --json
 ```
 
-On macOS the helper is `/Applications/AliasMode.app/Contents/MacOS/aliasmode-mcp`, and it takes the same commands. To install the app and connect the agent clients in one step, add `-s -- --agent-setup` after `bash` in the macOS install command.
+On macOS the helper is `/Applications/AliasMode.app/Contents/MacOS/aliasmode-mcp`, and on Linux it is `~/.local/share/aliasmode/bin/aliasmode-mcp`. Both take the same commands. To install the app and connect the agent clients in one step, add `-s -- --agent-setup` after `bash` in the macOS or Linux install command.
 
 Setup configures Claude Code, Codex, OpenClaw, and Hermes when installed. Its JSON result also includes generic stdio MCP configuration. Restart an active agent harness after setup so it loads the new server.
 
@@ -151,7 +169,7 @@ The versioned bootstrap script tries winget first. It falls back to an exact Git
 
 - **Windows:** native installer, local dashboard, local stdio MCP, and Remote MCP host.
 - **macOS:** native app for Apple Silicon (Terminal installer or `.dmg`), local dashboard, in-app updates, and local stdio MCP. The source run stays available.
-- **Linux:** no native app and no local dashboard. A Linux machine can drive a running Windows AliasMode through Remote MCP, with the Claude Code bearer path or OAuth web clients.
+- **Linux:** native app for x64 (Terminal installer), local dashboard, in-app updates, local stdio MCP, and Remote MCP host.
 
 ### Public documentation contracts
 

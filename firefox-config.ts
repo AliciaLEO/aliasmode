@@ -188,13 +188,18 @@ function firefoxStartupLocale(profile: Profile): string {
  * Preferences the engine applies at startup (CAMOU_PREFS_n). Without intl.locale.requested the
  * 156 engine keeps an English interface and Intl locale whatever the profile's language. The
  * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. The
- * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off.
+ * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off. When the
+ * profile's font list hides the font the system picks for a character (CJK text with a Windows
+ * font list on Linux), Firefox searches the listed fonts instead; asynchronous fallback skips
+ * the ones whose character maps are still loading, so text measured in the first seconds after
+ * startup differs from the same text measured later. Synchronous fallback gives one result.
  */
 export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
     "gfx.blacklist.webgpu": 4,
     "browser.startup.couldRestoreSession.count": -1,
+    "gfx.font_rendering.fallback.async": false,
   };
 }
 

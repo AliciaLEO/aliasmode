@@ -14,6 +14,10 @@
   Pop $R0
   Sleep 2000
 
+  ; Python scripts now download their runtime into the app data folder. Remove the copy
+  ; that earlier versions installed with the app; nothing installs or uninstalls it now.
+  RMDir /r "$INSTDIR\playwright\python"
+
   Pop $R0
 !macroend
 

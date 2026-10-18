@@ -156,6 +156,17 @@ export function hostDisplayScale(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(scale) && scale >= 1 ? scale : 1;
 }
 
+/** The primary display's size in physical pixels, which the desktop app passes in ALIASMODE_HOST_SCREEN. */
+export function hostDisplaySize(env: NodeJS.ProcessEnv = process.env): { width: number; height: number } | null {
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(env.ALIASMODE_HOST_SCREEN ?? "");
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+}
+
+/** Chromium 155 on Windows draws pages at the display's scale; every other launch at 1. */
+export function chromiumDeviceScale(hostPlatform: NodeJS.Platform, chromiumRuntime: string | undefined, hostScale: number): number {
+  return hostPlatform === "win32" && chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE ? hostScale : 1;
+}
+
 export interface AliasmodeChromiumDeps {
   download?: (url: string, output: string) => Promise<void>;
   extract?: (archive: string, directory: string) => Promise<void>;

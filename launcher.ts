@@ -42,7 +42,7 @@ import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "
 import { assertSafeProfileId } from "./profile-id.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
-import { claimedScreenArea, watchWindowFit, type ScreenArea } from "./window-fit.ts";
+import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
@@ -52,11 +52,11 @@ import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfi
 import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
-  ALIASMODE_CHROMIUM_HOST_SCALE,
   ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
+  chromiumDeviceScale,
   ensureAliasmodeChromium,
   ensureCloakBrowserLinux,
   ensureCloakBrowserMacos,
@@ -1317,7 +1317,7 @@ export class Launcher {
 
   /** Chromium 155 on Windows draws pages at the primary display's scale; every other launch at 1. */
   private deviceScale(profile: Profile): number {
-    return this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE ? this.hostScale : 1;
+    return chromiumDeviceScale(this.hostPlatform, profile.chromiumRuntime, this.hostScale);
   }
 
   /**
@@ -1343,9 +1343,11 @@ export class Launcher {
     return this.hostPlatform === "win32" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
   }
 
-  private startWindowFit(profileId: string, ws: string, area: ScreenArea): void {
+  private startWindowFit(profile: Profile, ws: string, sample: FingerprintSample | null): void {
+    const profileId = profile.id;
     this.windowFits.get(profileId)?.stop();
-    const fit = this.watchWindowFitFn!(ws, area, {
+    const fit = this.watchWindowFitFn!(ws, claimedScreenArea(this.pageScreen(profile), sample), {
+      scale: this.deviceScale(profile),
       log: (msg) => this.log(`${profileId}: ${msg}`),
       onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
     });
@@ -1359,7 +1361,7 @@ export class Launcher {
     const launch = this.store.getLaunch(profileId);
     if (!profile?.chromiumRuntime || !launch || launch.headless || launch.engine === "firefox") return;
     const ws = await this.probeLaunchCdp(launch);
-    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), null));
+    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profile, ws, null);
   }
 
   private markIdentityCertified(profileId: string): void {
@@ -2105,7 +2107,7 @@ export class Launcher {
       // A page sees the real window against the profile's screen, so a window maximized on a
       // larger display would be bigger than that screen. Keep the window no larger than it.
       if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
-        this.startWindowFit(profileId, ws, claimedScreenArea(this.pageScreen(profile), sample));
+        this.startWindowFit(profile, ws, sample);
       }
       return { ws, port, nativeSessionRestored };
     } catch (err) {

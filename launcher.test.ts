@@ -4765,6 +4765,7 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
     }
     const spawnedArgs: string[][] = [];
     const areas: unknown[] = [];
+    const scales: unknown[] = [];
     const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
       hostPlatform,
       hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
@@ -4772,8 +4773,9 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
       chromiumRuntimeRoot: "/fake/runtimes",
       ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
       captureFingerprint: async () => options.capture ?? null,
-      watchWindowFit: (_ws, area) => {
+      watchWindowFit: (_ws, area, opts) => {
         areas.push(area);
+        scales.push(opts?.scale);
         return { stop: () => {} };
       },
     });
@@ -4784,12 +4786,15 @@ test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels,
     return {
       args: args.filter((arg) => /^--(force-device-scale-factor|fingerprint-screen-(width|height)|window-size)=/.test(arg)),
       areas,
+      scales,
     };
   };
 
   expect(await launch("win32", "aliasmode", "1920x1080", 1.25)).toEqual({
     args: ["--window-size=998,778", "--fingerprint-screen-width=1536", "--fingerprint-screen-height=864", "--force-device-scale-factor=1.25"],
     areas: [{ left: 0, top: 0, width: 1536, height: 864 }],
+    // The watcher reads window bounds rounded at that scale.
+    scales: [1.25],
   });
   // A capture from an earlier launch at scale 1 is larger than this screen, so the whole screen
   // stands in; a capture from this launch is already in CSS pixels.

@@ -12,7 +12,7 @@
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime } from "./firefox-config.ts";
-import { hostChromiumRuntime } from "./aliasmode-chromium.ts";
+import { chromiumDeviceScale, hostChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
 import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
@@ -32,7 +32,7 @@ export interface NewProfileInput {
   emailPassword?: string;
   twofa?: string;
   proxy?: { type?: string; host?: string; port?: string; user?: string; pass?: string } | null;
-  /** "1920x1080" / "1920*1080"; empty → a random realistic resolution. */
+  /** "1920x1080" / "1920*1080"; empty → a random realistic resolution no smaller than this computer's display. */
   screen?: string;
   /** Fingerprint OS override: "windows" | "macos" | "linux". Empty/omitted → host OS. */
   platformOs?: string;
@@ -55,6 +55,35 @@ function randomId(): string {
   return Array.from(bytes, (b) => (b % 36).toString(36)).join(""); // 8 base36 chars, AdsPower-ish
 }
 
+/**
+ * This computer's display as a new profile's pages would measure it, or null when unknown.
+ * Chromium 155 on Windows reports the stored screen divided by the display scale, as Chrome
+ * does there; every other engine reports the stored screen.
+ */
+export function hostScreenFloor(
+  engine: ProfileEngine,
+  chromiumRuntime: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { width: number; height: number } | null {
+  const display = hostDisplaySize(env);
+  if (!display) return null;
+  const hostScale = hostDisplayScale(env);
+  const scale = hostScale / (engine === "chromium" ? chromiumDeviceScale(platform, chromiumRuntime, hostScale) : 1);
+  return { width: Math.round(display.width / scale), height: Math.round(display.height / scale) };
+}
+
+/**
+ * A random realistic resolution not smaller than `floor`, or `floor` itself when none is.
+ * On a smaller screen a maximized window would have to shrink to fit it.
+ */
+export function defaultScreen(floor: { width: number; height: number } | null, random = Math.random): { width: number; height: number } {
+  const fits = SCREENS.filter(([width, height]) => !floor || (width >= floor.width && height >= floor.height));
+  if (!fits.length) return floor!;
+  const [width, height] = fits[Math.floor(random() * fits.length)]!;
+  return { width, height };
+}
+
 /** A unique profile id, collision-checked against `exists`. */
 export function generateId(exists: (id: string) => boolean): string {
   for (let i = 0; i < 100; i++) {
@@ -69,17 +98,12 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
 
-  const screen = (input.screen || "").trim();
-  const selected = screen
-    ? parseStrictResolution(screen)
-    : (() => {
-      const [width, height] = SCREENS[Math.floor(Math.random() * SCREENS.length)]!;
-      return { width, height };
-    })();
   const engine = input.engine === undefined ? "chromium" : input.engine;
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
   const chromiumRuntime = normalizeChromiumRuntime(input.chromiumRuntime, engine)
     ?? (engine === "chromium" ? hostChromiumRuntime() : undefined);
+  const screen = (input.screen || "").trim();
+  const selected = screen ? parseStrictResolution(screen) : defaultScreen(hostScreenFloor(engine, chromiumRuntime));
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
     ? createFirefoxProfileConfig(selected.width, selected.height, platformOs, deterministicSeed(id))

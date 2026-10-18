@@ -3029,6 +3029,8 @@ export class Launcher {
           if (closed) {
             if (await this.confirmLaunchStopped(profileId, launch, linuxProof ?? undefined, true)) {
               if (this.forgetLaunch(profileId, launch)) return true;
+              // A dashboard poll may have forgotten this same closed launch first.
+              if (!this.store.getLaunch(profileId)) return true;
               this.log(`stop ${profileId}: launch generation changed after graceful close; leaving the replacement owned`);
               return false;
             }

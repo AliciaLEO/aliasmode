@@ -3300,6 +3300,40 @@ test("graceful CDP close still exact-kills an owned process that survived after 
   store.close();
 });
 
+test("a stop succeeds when a dashboard poll clears the same closed launch first", async () => {
+  const store = seeded();
+  let alive = true;
+  let launcher!: Launcher;
+  launcher = new Launcher({
+    store,
+    binaryPath: "/fake/cloak",
+    dataRoot: "/tmp/cloak-graceful-reconciled-test",
+    portProbe: () => true,
+    spawn: () => ({ pid: 8124, kill() {} }),
+    fetch: async () => ({
+      ok: alive,
+      json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/reconciled" }),
+    }),
+    isPidAlive: (pid) => pid === 8124 && alive,
+    findOwnedBrowserPids: async () => alive ? [8124] : [],
+    browserClose: async () => {
+      alive = false;
+      // The dashboard's poll runs while the browser closes and forgets the dead launch.
+      await launcher.reconcileOrphans();
+      return true;
+    },
+    killPid: async () => { throw new Error("must not force-kill a closed browser"); },
+    ensureCookies: async () => ({ injected: false }),
+    navigate: async () => {},
+    labelWindow: async () => {},
+  });
+  await launcher.start("k1d0cd11");
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
 test("post-restart reattach verifies ownership and refreshes a changed live CDP websocket", async () => {
   const store = seeded();
   const profile = store.getProfile("k1d0cd11")!;

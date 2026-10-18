@@ -362,6 +362,7 @@ jobs:
           test ! -f "$data/agent-runtime.json"
           ! pgrep -f "profiles/$profile" >/dev/null
       - name: Click outside links in the app window
+        timeout-minutes: 10
         shell: bash
         run: |
           set -euo pipefail
@@ -380,12 +381,12 @@ jobs:
           # WebKitWebDriver starts the app with its window under automation, as tauri-driver does.
           PATH="$fake:$PATH" TAURI_WEBVIEW_AUTOMATION=true WebKitWebDriver --port=4445 > "$evidence/webdriver.log" 2>&1 &
           wd="http://127.0.0.1:4445"
-          for attempt in $(seq 1 30); do curl -sf "$wd/status" >/dev/null && break; sleep 1; done
+          for attempt in $(seq 1 30); do curl -sf -m 60 "$wd/status" >/dev/null && break; sleep 1; done
           session="$(jq -nc --arg app "$root/bin/aliasmode" '{capabilities: {alwaysMatch: {"webkitgtk:browserOptions": {binary: $app, args: []}}}}' \
-            | curl -sf -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
+            | curl -sf -m 60 -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
           element() {
             jq -nc --arg using "$1" --arg value "$2" '{using: $using, value: $value}' \
-              | curl -sf -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
+              | curl -sf -m 60 -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
               | jq -er '.value | to_entries[0].value'
           }
           wait_element() {
@@ -398,7 +399,7 @@ jobs:
             echo "the app shows no $2" >&2
             return 1
           }
-          click() { curl -sf -X POST "$wd/session/$session/element/$1/click" -H 'content-type: application/json' -d '{}' >/dev/null; }
+          click() { curl -sf -m 60 -X POST "$wd/session/$session/element/$1/click" -H 'content-type: application/json' -d '{}' >/dev/null; }
           opened() {
             for attempt in $(seq 1 30); do
               grep -qF "$1" "$OPENED" && return 0
@@ -420,7 +421,7 @@ jobs:
           wmctrl -c AliasMode
           for attempt in $(seq 1 60); do kill -0 "$desktop" 2>/dev/null || break; sleep 1; done
           ! kill -0 "$desktop" 2>/dev/null
-          curl -sf -X DELETE "$wd/session/$session" >/dev/null || true
+          curl -sf -m 60 -X DELETE "$wd/session/$session" >/dev/null || true
       - name: Collect logs
         if: always()
         shell: bash
@@ -555,9 +556,9 @@ jobs:
           # WebKitWebDriver starts the app with its window under automation, so the test can click.
           TAURI_WEBVIEW_AUTOMATION=true WebKitWebDriver --port=4445 > "$evidence/webdriver.log" 2>&1 &
           wd="http://127.0.0.1:4445"
-          for attempt in $(seq 1 30); do curl -sf "$wd/status" >/dev/null && break; sleep 1; done
+          for attempt in $(seq 1 30); do curl -sf -m 60 "$wd/status" >/dev/null && break; sleep 1; done
           session="$(jq -nc --arg app "$root/bin/aliasmode" '{capabilities: {alwaysMatch: {"webkitgtk:browserOptions": {binary: $app, args: []}}}}' \
-            | curl -sf -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
+            | curl -sf -m 60 -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
           for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
           test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$CURRENT"
           old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
@@ -570,14 +571,14 @@ jobs:
           button=""
           for attempt in $(seq 1 60); do
             button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"Update now\"]"}' \
-              | curl -sf -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
+              | curl -sf -m 60 -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
               | jq -er '.value | to_entries[0].value' 2>/dev/null || true)"
             [[ -n "$button" ]] && break
             sleep 1
           done
           import -window root "$evidence/before-update.png" || true
           test -n "$button"
-          curl -sf -X POST "$wd/session/$session/element/$button/click" -H 'content-type: application/json' -d '{}' >/dev/null
+          curl -sf -m 60 -X POST "$wd/session/$session/element/$button/click" -H 'content-type: application/json' -d '{}' >/dev/null
           sleep 5
           import -window root "$evidence/after-click.png" || true
           for attempt in $(seq 1 240); do

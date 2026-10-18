@@ -69,12 +69,13 @@ test("runtime descriptor path uses the Tauri application data directory", () => 
   expect(defaultRuntimeDescriptorPath({ APPDATA: "C:\\Users\\me\\AppData\\Roaming" } as any, "win32"))
     .toBe(join("C:\\Users\\me\\AppData\\Roaming", "com.aliasmode.desktop", "agent-runtime.json"));
   // Linux follows Tauri's data folder: XDG_DATA_HOME when it is absolute, else ~/.local/share.
+  // The host's path separator joins the parts, so the test also passes on Windows.
   expect(defaultRuntimeDescriptorPath({ HOME: "/home/me" } as any, "linux"))
-    .toBe("/home/me/.local/share/com.aliasmode.desktop/agent-runtime.json");
+    .toBe(join("/home/me", ".local", "share", "com.aliasmode.desktop", "agent-runtime.json"));
   expect(defaultRuntimeDescriptorPath({ HOME: "/home/me", XDG_DATA_HOME: "/data/me" } as any, "linux"))
-    .toBe("/data/me/com.aliasmode.desktop/agent-runtime.json");
+    .toBe(join("/data/me", "com.aliasmode.desktop", "agent-runtime.json"));
   expect(defaultRuntimeDescriptorPath({ HOME: "/home/me", XDG_DATA_HOME: "relative" } as any, "linux"))
-    .toBe("/home/me/.local/share/com.aliasmode.desktop/agent-runtime.json");
+    .toBe(join("/home/me", ".local", "share", "com.aliasmode.desktop", "agent-runtime.json"));
   expect(defaultRuntimeDescriptorPath({
     ALIASMODE_RUNTIME_DESCRIPTOR: "C:\\fixture\\runtime.json",
   } as any)).toBe("C:\\fixture\\runtime.json");

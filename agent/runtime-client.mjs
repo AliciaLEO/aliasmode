@@ -1,7 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { join, win32 } from "node:path";
+import { join, posix, win32 } from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 import NodeWebSocket from "ws";
@@ -45,16 +45,16 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
 function linuxDataHome(env) {
   if (env.XDG_DATA_HOME?.startsWith("/")) return env.XDG_DATA_HOME;
   if (!env.HOME) throw new Error("HOME is required to discover AliasMode");
-  return join(env.HOME, ".local", "share");
+  return posix.join(env.HOME, ".local", "share");
 }
 
 export function defaultRuntimeDescriptorPath(env = process.env, platform = process.platform) {
   if (env.ALIASMODE_RUNTIME_DESCRIPTOR) return env.ALIASMODE_RUNTIME_DESCRIPTOR;
   if (platform === "darwin") {
     if (!env.HOME) throw new Error("HOME is required to discover AliasMode");
-    return join(env.HOME, "Library", "Application Support", "com.aliasmode.desktop", "agent-runtime.json");
+    return posix.join(env.HOME, "Library", "Application Support", "com.aliasmode.desktop", "agent-runtime.json");
   }
-  if (platform === "linux") return join(linuxDataHome(env), "com.aliasmode.desktop", "agent-runtime.json");
+  if (platform === "linux") return posix.join(linuxDataHome(env), "com.aliasmode.desktop", "agent-runtime.json");
   if (!env.APPDATA) throw new Error("APPDATA is required to discover AliasMode");
   return join(env.APPDATA, "com.aliasmode.desktop", "agent-runtime.json");
 }

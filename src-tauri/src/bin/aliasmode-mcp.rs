@@ -62,9 +62,12 @@ fn run(mut command: Command) -> std::io::Error {
 fn run(mut command: Command) -> std::io::Error {
     use std::os::windows::{io::AsRawHandle, process::CommandExt};
     use windows::Win32::{
-        Foundation::HANDLE,
+        Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT},
         System::{
-            Console::GetConsoleWindow,
+            Console::{
+                GetConsoleWindow, GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+                STD_OUTPUT_HANDLE,
+            },
             JobObjects::{
                 AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
                 SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
@@ -74,6 +77,18 @@ fn run(mut command: Command) -> std::io::Error {
         },
     };
 
+    // The helper gets its own copies of stdin, stdout and stderr. The client's handles in this
+    // process must not reach it as extra inherited handles: the helper clears inheritance on its
+    // stdio only, so a program that it starts, such as AliasMode, would keep the client's pipes
+    // open and the client would never see the end of the output.
+    for id in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if let Ok(handle) = unsafe { GetStdHandle(id) } {
+            if !handle.is_invalid() {
+                let _ =
+                    unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+            }
+        }
+    }
     // A client that starts this helper without a console must not get a console window for it.
     if unsafe { GetConsoleWindow() }.is_invalid() {
         command.creation_flags(CREATE_NO_WINDOW.0);

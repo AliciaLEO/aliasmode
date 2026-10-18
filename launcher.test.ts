@@ -4909,7 +4909,7 @@ test("the macOS app opens a CloakBrowser profile with the downloaded macOS build
     hostArch: "arm64",
     chromiumRuntimeRoot: "/fake/runtimes",
     ensureAliasmodeChromium: async () => { betaDownloads++; return "/unused"; },
-    ensureCloakBrowserMacos: async (root) => `${root}/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium`,
+    ensureDownloadedCloakBrowser: async (root) => `${root}/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium`,
     spawn: (bin, args) => {
       binaries.push(bin);
       spawnedArgs.push(args);
@@ -4936,10 +4936,65 @@ test("a failed CloakBrowser download on macOS is a public preflight error", asyn
     dataRoot: testDataRoot(store),
     hostPlatform: "darwin",
     hostArch: "arm64",
-    ensureCloakBrowserMacos: async () => { throw new Error("offline"); },
+    ensureDownloadedCloakBrowser: async () => { throw new Error("offline"); },
     spawn: () => { throw new Error("must not spawn"); },
   });
   await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "cloakbrowser_download"));
+  store.close();
+});
+
+test("the Linux app opens a CloakBrowser profile with the downloaded Linux build and no desktop keyring", async () => {
+  const store = new ProfileStore(":memory:");
+  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "linux",
+    hostArch: "x64",
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureDownloadedCloakBrowser: async (root) => `${root}/cloakbrowser-146/chrome`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["/fake/runtimes/cloakbrowser-146/chrome"]);
+  expect(spawnedArgs[0]).toContain("--password-store=basic");
+  expect(spawnedArgs[0]).not.toContain("--use-mock-keychain");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("a Linux computer that blocks the Chrome sandbox gets a public preflight error before any download", async () => {
+  const store = new ProfileStore(":memory:");
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  store.upsertProfile(beta);
+  store.upsertProfile(cloak);
+  let downloads = 0;
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    hostPlatform: "linux",
+    hostArch: "x64",
+    chromiumSandboxBlocked: () => true,
+    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    ensureDownloadedCloakBrowser: async () => { downloads++; return "/unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  for (const id of [beta.id, cloak.id]) {
+    const error = await launcher.start(id).catch((caught) => caught);
+    expect(error).toEqual(new BrowserLaunchError("preflight", "chromium_sandbox"));
+    expect(error.guidance).toContain("install command");
+  }
+  expect(downloads).toBe(0);
   store.close();
 });
 
@@ -4952,7 +5007,7 @@ test("Chromium 155 beta is refused on unsupported hosts before any download", as
     store,
     dataRoot: testDataRoot(store),
     hostPlatform: "linux",
-    hostArch: "x64",
+    hostArch: "arm64",
     ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
     spawn: () => { throw new Error("must not spawn"); },
   });

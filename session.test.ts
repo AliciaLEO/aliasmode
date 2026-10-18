@@ -27,6 +27,8 @@ import {
   workerCaptureSeed,
 } from "./session.ts";
 
+const PACKAGED_NODE = process.platform === "win32" ? "node.exe" : "node";
+
 test("playwrightTransportAttribution reads the shared transport counters", () => {
   const key = Symbol.for("aliasmode.playwrightTransportStats");
   const prior = (globalThis as any)[key];
@@ -50,7 +52,7 @@ test("session worker command follows source and packaged runtime layouts", () =>
 
   const packaged = join("AliasMode", "playwright");
   expect(readSessionWorkerCommand("ws://browser", packaged)).toEqual([
-    join(packaged, "node", "node.exe"),
+    join(packaged, "node", PACKAGED_NODE),
     join(packaged, "worker.mjs"),
   ]);
 });

@@ -7,6 +7,8 @@ import { configureClients, type SetupClient } from "./setup.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 
 const VERSION = ALIASMODE_VERSION;
+// Tauri keeps Linux resources in lib/<productName> beside bin.
+const LINUX_RESOURCE_DIR = "AliasMode";
 
 class SetupFailure extends Error {
   constructor(readonly result: unknown) {
@@ -33,10 +35,11 @@ function has(args: string[], name: string): boolean {
 
 function runtimeRoot(): string {
   if (process.env.ALIASMODE_PLAYWRIGHT_RUNTIME) return resolve(process.env.ALIASMODE_PLAYWRIGHT_RUNTIME);
-  // The macOS bundle keeps resources in Contents/Resources, next to Contents/MacOS.
-  return process.platform === "darwin"
-    ? join(dirname(process.execPath), "..", "Resources", "playwright")
-    : join(dirname(process.execPath), "playwright");
+  // The macOS bundle keeps resources in Contents/Resources, next to Contents/MacOS;
+  // the Linux folder keeps them in lib/<app>, next to bin.
+  if (process.platform === "darwin") return join(dirname(process.execPath), "..", "Resources", "playwright");
+  if (process.platform === "linux") return join(dirname(process.execPath), "..", "lib", LINUX_RESOURCE_DIR, "playwright");
+  return join(dirname(process.execPath), "playwright");
 }
 
 function desktopExecutable(): string {

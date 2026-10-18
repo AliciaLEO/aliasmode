@@ -472,7 +472,9 @@ async function main() {
     dirname(fileURLToPath(import.meta.url)),
     "..",
     "..",
-    ...(process.platform === "darwin" ? ["..", "MacOS", "aliasmode"] : ["AliasMode.exe"]),
+    // macOS: Contents/Resources -> Contents/MacOS; Linux: lib/<app> -> bin.
+    ...(process.platform === "darwin" ? ["..", "MacOS", "aliasmode"]
+      : process.platform === "linux" ? ["..", "..", "bin", "aliasmode"] : ["AliasMode.exe"]),
   );
   const host = await createAliasModeMcp({ runtime: { desktopExecutable } });
   let shuttingDown = false;

@@ -12,13 +12,13 @@ export interface FirefoxRuntimeBuild {
 }
 
 export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
-const FIREFOX_RUNTIME_RELEASE = `aliasmode-runtime-${FIREFOX_RUNTIME_VERSION}-r2`;
+const FIREFOX_RUNTIME_RELEASE = `aliasmode-runtime-${FIREFOX_RUNTIME_VERSION}-r3`;
 const FIREFOX_RELEASE_BASE = `https://github.com/aliasmode/aliasmode-firefox/releases/download/${FIREFOX_RUNTIME_RELEASE}`;
 
 export const FIREFOX_RUNTIME_BUILDS: readonly FirefoxRuntimeBuild[] = [
   {
     platform: "linux", arch: "x64", executablePath: "aliasmode",
-    archiveSha256: "01dde50a5e987abdefc00de32f9e6ce36e6abb1bce5ed255def9124aaa348d63",
+    archiveSha256: "5cca4027bcef3113abb93f505ee7a9b967b0cf04aa5aa1053e868669a7a7b097",
     executableSha256: "0b9a64056d7eb5eabcc9ffd869a6f23c0f529f587a7a090a73884f753f6964d4",
   },
   {

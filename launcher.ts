@@ -52,8 +52,10 @@ import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_HOST_SCALE,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
+  CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   ensureAliasmodeChromium,
+  ensureCloakBrowserLinux,
   ensureCloakBrowserMacos,
   hostDisplayScale,
   supportsChromium155Host,
@@ -203,7 +205,8 @@ const PREFLIGHT_GUIDANCE = {
   firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
   cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
-  chromium155_host: "Chromium 155 beta requires Windows x64 or Apple Silicon macOS.",
+  chromium155_host: "Chromium 155 beta requires Windows x64, Apple Silicon macOS, or Linux x64.",
+  chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
 } as const;
@@ -399,8 +402,10 @@ export interface LauncherOptions {
   chromiumRuntimeRoot?: string;
   /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
   ensureAliasmodeChromium?: (root: string) => Promise<string>;
-  /** Installs CloakBrowser for the macOS app, which bundles no CloakBrowser. */
-  ensureCloakBrowserMacos?: (root: string) => Promise<string>;
+  /** Installs CloakBrowser for the macOS and Linux apps, which bundle no CloakBrowser. */
+  ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
+  /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
+  chromiumSandboxBlocked?: () => boolean;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -721,7 +726,8 @@ export class Launcher {
   private expectedFirefoxBinarySha256: string;
   private chromiumRuntimeRoot: string;
   private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
-  private ensureCloakBrowserMacosFn: (root: string) => Promise<string>;
+  private ensureDownloadedCloakBrowserFn: (root: string) => Promise<string>;
+  private chromiumSandboxBlockedFn: () => boolean;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -827,7 +833,9 @@ export class Launcher {
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
     this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
     this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
-    this.ensureCloakBrowserMacosFn = opts.ensureCloakBrowserMacos ?? ((root) => ensureCloakBrowserMacos(root));
+    this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
+      ?? ((root) => this.hostPlatform === "linux" ? ensureCloakBrowserLinux(root) : ensureCloakBrowserMacos(root));
+    this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
@@ -909,15 +917,18 @@ export class Launcher {
     });
   }
 
-  /** The macOS app ships no CloakBrowser; it downloads the pinned macOS build on first use. */
+  /** The macOS and Linux apps ship no CloakBrowser; they download the pinned build on first use. */
   private downloadsCloakBrowser(): boolean {
-    return this.hostPlatform === "darwin" && this.hostArch === "arm64" && !this.binaryPath;
+    return ((this.hostPlatform === "darwin" && this.hostArch === "arm64") || (this.hostPlatform === "linux" && this.hostArch === "x64"))
+      && !this.binaryPath;
   }
 
   /** Validate the deployment pin without reading the configured binary. */
   private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
     if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
-    if (engine === "chromium" && this.downloadsCloakBrowser()) return CLOAKBROWSER_MACOS_EXECUTABLE_SHA256;
+    if (engine === "chromium" && this.downloadsCloakBrowser()) {
+      return this.hostPlatform === "linux" ? CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 : CLOAKBROWSER_MACOS_EXECUTABLE_SHA256;
+    }
     const expected = engine === "firefox" ? this.expectedFirefoxBinarySha256 : this.expectedBinarySha256;
     if (this.unsafeDisableIdentityGates) {
       return /^[a-f0-9]{64}$/.test(expected) ? expected : "0".repeat(64);
@@ -941,7 +952,7 @@ export class Launcher {
       }
     } else if (engine === "chromium" && this.downloadsCloakBrowser()) {
       try {
-        binaryPath = await this.ensureCloakBrowserMacosFn(this.chromiumRuntimeRoot);
+        binaryPath = await this.ensureDownloadedCloakBrowserFn(this.chromiumRuntimeRoot);
       } catch (error) {
         this.log(`CloakBrowser install failed: ${error instanceof Error ? error.message : String(error)}`);
         throw new BrowserLaunchError("preflight", "cloakbrowser_download");
@@ -1071,6 +1082,8 @@ export class Launcher {
       }
       return;
     }
+    // Checked before the runtime download: Chrome would stop at once with "No usable sandbox".
+    if (this.chromiumSandboxBlockedFn()) throw new BrowserLaunchError("preflight", "chromium_sandbox");
     if (!this.enforceHostCompatibility) return;
     if (profile.chromiumRuntime && !supportsChromium155Host(this.hostPlatform, this.hostArch)) {
       throw new BrowserLaunchError("preflight", "chromium155_host");
@@ -1142,6 +1155,11 @@ export class Launcher {
     // downloads on macOS keep their cookie key out of the Keychain instead.
     if (this.hostPlatform === "darwin" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
       args.push("--use-mock-keychain");
+    }
+    // On Linux they would share the desktop keyring item the same way, and a locked or missing
+    // keyring stops the browser with a password dialog.
+    if (this.hostPlatform === "linux" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
+      args.push("--password-store=basic");
     }
     // Chrome blocks WebGL on a Windows computer with no graphics card, and in most remote desktop
     // sessions. Chromium 155 then shows no card at all. With the blocklist ignored, it shows the

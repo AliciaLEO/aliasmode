@@ -184,8 +184,8 @@ function scriptRunnerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJ
   return env;
 }
 
-// Only the macOS bundle ships the relocatable Unix layout of CPython.
-const PACKAGED_PYTHON = process.platform === "darwin" ? ["bin", "python3.13"] : ["python.exe"];
+// The macOS and Linux bundles ship the relocatable Unix layout of CPython.
+const PACKAGED_PYTHON = process.platform === "win32" ? ["python.exe"] : ["bin", "python3.13"];
 
 function supportsSourceScripts(): boolean {
   return (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
@@ -241,8 +241,9 @@ export const executeScript: ScriptExecution = async ({ scriptPath, language, inp
   signal.throwIfAborted();
   const { executable, runner } = await verifyScriptRuntime(language);
   signal.throwIfAborted();
-  // -B on macOS: bytecode files written into the app bundle would break its code signature seal.
-  const pythonArgs = ["-u", "-X", "utf8", ...(process.platform === "darwin" ? ["-B"] : [])];
+  // -B on macOS and Linux: bytecode files written into the app folder would break the macOS
+  // code signature seal, and the Linux update replaces that folder whole.
+  const pythonArgs = ["-u", "-X", "utf8", ...(process.platform === "win32" ? [] : ["-B"])];
   const child = spawn(executable, [...(language === "python" ? pythonArgs : []), runner, scriptPath], {
     windowsHide: true, detached: process.platform !== "win32", env: scriptRunnerEnvironment(), stdio: ["pipe", logFd, logFd],
   });

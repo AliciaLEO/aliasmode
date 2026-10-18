@@ -1,11 +1,11 @@
 /**
  * Browser runtimes that are downloaded on first use instead of being bundled:
- * the opt-in Chromium 155 beta, and CloakBrowser for the macOS app. Each is
+ * the opt-in Chromium 155 beta, and CloakBrowser for the macOS and Linux apps. Each is
  * pinned by archive and executable SHA-256 like the bundled CloakBrowser kernel.
  */
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { CLOAKBROWSER_MACOS_VERSION, sha256File } from "./browser-install.ts";
+import { CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, sha256File } from "./browser-install.ts";
 
 export const ALIASMODE_CHROMIUM_VERSION = "155.0.8059.31";
 // AliasMode's own build of the patch series. Its package includes Chromium's
@@ -35,16 +35,28 @@ const MACOS_BUILD = {
   hostScale: false,
   windowLabel: false,
 };
-// Apple Silicon macOS gets upstream's signed build; every other host keeps the Windows pins.
-const BUILD = process.platform === "darwin" ? MACOS_BUILD : WINDOWS_BUILD;
-const ARCHIVE_ROOT = BUILD.root;
+const LINUX_BUILD = {
+  root: `apostate-${ALIASMODE_CHROMIUM_VERSION}-linux-x64`,
+  url: "https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-linux-x64.tar.zst",
+  dir: `chromium-${ALIASMODE_CHROMIUM_VERSION}`,
+  archiveSha256: "351955271b7ba1aed314bf14c2d64f6bd59bfdcb5c4a1541c9c921c570ff97bb",
+  executable: "chrome",
+  executableSha256: "c0b906dc621cec05330aed9d3b09bbb7b655a9c8546e4c61d222705fabfde6d3",
+  hostScale: false,
+  windowLabel: false,
+};
+// Apple Silicon macOS and Linux get upstream's builds; every other host keeps the Windows pins.
+function chromiumBuild(platform: NodeJS.Platform): typeof WINDOWS_BUILD {
+  return platform === "darwin" ? MACOS_BUILD : platform === "linux" ? LINUX_BUILD : WINDOWS_BUILD;
+}
+const BUILD = chromiumBuild(process.platform);
 export const ALIASMODE_CHROMIUM_ARCHIVE_URL = BUILD.url;
 export const ALIASMODE_CHROMIUM_ARCHIVE_SHA256 = BUILD.archiveSha256;
 export const ALIASMODE_CHROMIUM_EXECUTABLE_SHA256 = BUILD.executableSha256;
-/** The pinned build can draw pages at the display's own scale; an earlier build must get scale 1. */
-export const ALIASMODE_CHROMIUM_HOST_SCALE = BUILD.hostScale;
-/** The pinned build takes --aliasmode-window-label. */
-export const ALIASMODE_CHROMIUM_WINDOW_LABEL = BUILD.windowLabel;
+/** The pinned Windows build can draw pages at the display's own scale; an earlier build must get scale 1. */
+export const ALIASMODE_CHROMIUM_HOST_SCALE = WINDOWS_BUILD.hostScale;
+/** The pinned Windows build takes --aliasmode-window-label. */
+export const ALIASMODE_CHROMIUM_WINDOW_LABEL = WINDOWS_BUILD.windowLabel;
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {
@@ -58,15 +70,18 @@ interface PinnedRuntime {
   executableSha256: string;
 }
 
-const CHROMIUM_155: PinnedRuntime = {
-  label: "Chromium 155",
-  dir: BUILD.dir,
-  url: BUILD.url,
-  archiveSha256: BUILD.archiveSha256,
-  archiveRoot: ARCHIVE_ROOT,
-  executable: BUILD.executable,
-  executableSha256: BUILD.executableSha256,
-};
+function chromium155(platform: NodeJS.Platform): PinnedRuntime {
+  const build = chromiumBuild(platform);
+  return {
+    label: "Chromium 155",
+    dir: build.dir,
+    url: build.url,
+    archiveSha256: build.archiveSha256,
+    archiveRoot: build.root,
+    executable: build.executable,
+    executableSha256: build.executableSha256,
+  };
+}
 
 // CloakBrowser publishes no macOS build after 145, so that build opens CloakBrowser profiles on a Mac.
 export const CLOAKBROWSER_MACOS_EXECUTABLE_SHA256 = "79ddf7e7a7be8087319390ed79266387f6499b8a2e45ccfbaa724d7e7fff6b79";
@@ -80,9 +95,41 @@ const CLOAKBROWSER_MACOS: PinnedRuntime = {
   executableSha256: CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
 };
 
+// The Linux app ships no CloakBrowser either; it downloads CloakBrowser's own Linux build on first use.
+export const CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 = "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8";
+const CLOAKBROWSER_LINUX: PinnedRuntime = {
+  label: "CloakBrowser",
+  dir: `cloakbrowser-${CLOAKBROWSER_VERSION}`,
+  url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_VERSION}/cloakbrowser-linux-x64.tar.gz`,
+  archiveSha256: "4a12bcde95fa1bb1beef2b41ab5e5c27c36be78e3be3d0dac8c64d705216670e",
+  archiveRoot: "",
+  executable: "chrome",
+  executableSha256: CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
+};
+
 /** The computers that can run Chromium 155. */
 export function supportsChromium155Host(platform: NodeJS.Platform, arch: string): boolean {
-  return (platform === "win32" && arch === "x64") || (platform === "darwin" && arch === "arm64");
+  return (platform === "win32" && arch === "x64") || (platform === "darwin" && arch === "arm64")
+    || (platform === "linux" && arch === "x64");
+}
+
+/** The AppArmor profile that the Linux install command adds for the downloaded Chrome runtimes. */
+export const LINUX_CHROMIUM_APPARMOR_PROFILE = "/etc/apparmor.d/aliasmode-chromium";
+
+/**
+ * Ubuntu 23.10 and later let a program create the user namespace of Chrome's sandbox only when
+ * an AppArmor profile allows it. These Chrome builds have no setuid sandbox helper to fall back on.
+ */
+export function linuxChromiumSandboxBlocked(
+  read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  try {
+    if (read("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").trim() !== "1") return false;
+  } catch {
+    return false;
+  }
+  return !exists(LINUX_CHROMIUM_APPARMOR_PROFILE);
 }
 
 /** New Chromium profiles made on macOS use this runtime, unless a CloakBrowser binary is configured. */
@@ -124,11 +171,25 @@ async function renameWhenUnlocked(from: string, to: string): Promise<void> {
   }
 }
 
-export function aliasmodeChromiumExecutable(root: string): string {
-  return join(root, BUILD.dir, BUILD.executable);
+export function aliasmodeChromiumExecutable(root: string, platform = process.platform): string {
+  const build = chromiumBuild(platform);
+  return join(root, build.dir, build.executable);
 }
 
-async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps): Promise<string> {
+/** The pinned 155 archive of one system. */
+export function aliasmodeChromiumArchive(platform: NodeJS.Platform): { url: string; archiveSha256: string; executableSha256: string } {
+  const { url, archiveSha256, executableSha256 } = chromiumBuild(platform);
+  return { url, archiveSha256, executableSha256 };
+}
+
+// ditto and tar keep the symlinks and code signature of a macOS app bundle.
+function extractCommand(url: string, file: string, directory: string, platform: NodeJS.Platform): string[] {
+  if (url.endsWith(".tar.gz")) return ["tar", "-xzf", file, "-C", directory];
+  if (url.endsWith(".tar.zst")) return ["tar", "--zstd", "-xf", file, "-C", directory];
+  return platform === "darwin" ? ["ditto", "-x", "-k", file, directory] : ["tar.exe", "-xf", file, "-C", directory];
+}
+
+async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, platform: NodeJS.Platform): Promise<string> {
   const hashFile = deps.hashFile ?? sha256File;
   const target = join(root, spec.dir);
   const executable = join(target, spec.executable);
@@ -145,18 +206,14 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
   const archive = join(temp, "runtime.archive");
   const extracted = join(temp, "extracted");
   mkdirSync(extracted, { recursive: true });
-  const mac = process.platform === "darwin";
   try {
     await (deps.download ?? ((url, output) => run([
-      mac ? "curl" : "curl.exe", "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors", "--output", output, url,
+      platform === "win32" ? "curl.exe" : "curl", "--fail", "--location", "--silent", "--show-error", "--retry", "2", "--retry-all-errors", "--output", output, url,
     ])))(spec.url, archive);
     if (await hashFile(archive) !== spec.archiveSha256) {
       throw new Error(`${spec.label} archive did not match its pinned SHA-256`);
     }
-    // ditto and tar keep the symlinks and code signature of a macOS app bundle.
-    await (deps.extract ?? ((file, directory) => run(spec.url.endsWith(".tar.gz")
-      ? ["tar", "-xzf", file, "-C", directory]
-      : mac ? ["ditto", "-x", "-k", file, directory] : ["tar.exe", "-xf", file, "-C", directory])))(archive, extracted);
+    await (deps.extract ?? ((file, directory) => run(extractCommand(spec.url, file, directory, platform))))(archive, extracted);
     const runtime = spec.archiveRoot ? join(extracted, spec.archiveRoot) : extracted;
     if (await hashFile(join(runtime, spec.executable)) !== spec.executableSha256) {
       throw new Error(`${spec.label} archive contained an unexpected executable`);
@@ -172,22 +229,27 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
 const installing = new Map<string, Promise<string>>();
 
 /** Install a pinned runtime once at a time and return its executable. */
-function ensure(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps): Promise<string> {
+function ensure(spec: PinnedRuntime, root: string, deps: AliasmodeChromiumDeps, platform: NodeJS.Platform): Promise<string> {
   const key = `${root}\0${spec.dir}`;
   let pending = installing.get(key);
   if (!pending) {
-    pending = install(spec, root, deps).finally(() => installing.delete(key));
+    pending = install(spec, root, deps, platform).finally(() => installing.delete(key));
     installing.set(key, pending);
   }
   return pending;
 }
 
 /** Install the pinned Chromium 155 runtime and return its executable. */
-export function ensureAliasmodeChromium(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
-  return ensure(CHROMIUM_155, root, deps);
+export function ensureAliasmodeChromium(root: string, deps: AliasmodeChromiumDeps = {}, platform = process.platform): Promise<string> {
+  return ensure(chromium155(platform), root, deps, platform);
 }
 
 /** Install the pinned CloakBrowser build for Apple Silicon macOS and return its executable. */
 export function ensureCloakBrowserMacos(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
-  return ensure(CLOAKBROWSER_MACOS, root, deps);
+  return ensure(CLOAKBROWSER_MACOS, root, deps, "darwin");
+}
+
+/** Install the pinned CloakBrowser build for Linux x64 and return its executable. */
+export function ensureCloakBrowserLinux(root: string, deps: AliasmodeChromiumDeps = {}): Promise<string> {
+  return ensure(CLOAKBROWSER_LINUX, root, deps, "linux");
 }

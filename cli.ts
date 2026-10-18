@@ -23,6 +23,7 @@
 import { parseExport, decodeText, splitRecords } from "./parse.ts";
 import { ProfileStore } from "./store.ts";
 import { Launcher, readSnapshotChildBounded } from "./launcher.ts";
+import { linuxChromiumSandboxBlocked } from "./aliasmode-chromium.ts";
 import { AutofillBridge } from "./autofill-bridge.ts";
 import {
   defaultPlaywrightRuntimeRoot,
@@ -402,6 +403,7 @@ function makeLauncher(
       `--aliasmode-launcher-pid=${process.pid}`,
       ...(has(rest, "no-sandbox") ? ["--no-sandbox"] : []),
     ],
+    ...(process.platform === "linux" && !has(rest, "no-sandbox") ? { chromiumSandboxBlocked: () => linuxChromiumSandboxBlocked() } : {}),
     ...(unsafeCanary ? {} : { ensureSearchProvider }),
     // In remote mode the coordinator injects the roamed session over CDP, so the launcher's own
     // bootstrap cookie injection is turned off — and because the login is re-injected from the hub,
@@ -2636,7 +2638,7 @@ async function main() {
         },
       })
     : undefined;
-  const mcpTunnel = (process.platform === "win32" || process.platform === "darwin") && agentNonce && cloudAuth && cloudConfig && cloudConnection
+  const mcpTunnel = agentNonce && cloudAuth && cloudConfig && cloudConnection
     ? new McpTunnelRuntime({
         baseUrl: cloudConfig.apiUrl,
         accessToken: () => cloudAuth.accessTokenOrRefresh(),

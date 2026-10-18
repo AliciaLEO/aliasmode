@@ -41,12 +41,20 @@ export function validateRuntimeDescriptor(value, expectedVersion = VERSION) {
   return value;
 }
 
-export function defaultRuntimeDescriptorPath(env = process.env) {
+/** The XDG data folder that holds the Linux app (aliasmode) and its data (com.aliasmode.desktop). */
+function linuxDataHome(env) {
+  if (env.XDG_DATA_HOME?.startsWith("/")) return env.XDG_DATA_HOME;
+  if (!env.HOME) throw new Error("HOME is required to discover AliasMode");
+  return join(env.HOME, ".local", "share");
+}
+
+export function defaultRuntimeDescriptorPath(env = process.env, platform = process.platform) {
   if (env.ALIASMODE_RUNTIME_DESCRIPTOR) return env.ALIASMODE_RUNTIME_DESCRIPTOR;
-  if (process.platform === "darwin") {
+  if (platform === "darwin") {
     if (!env.HOME) throw new Error("HOME is required to discover AliasMode");
     return join(env.HOME, "Library", "Application Support", "com.aliasmode.desktop", "agent-runtime.json");
   }
+  if (platform === "linux") return join(linuxDataHome(env), "com.aliasmode.desktop", "agent-runtime.json");
   if (!env.APPDATA) throw new Error("APPDATA is required to discover AliasMode");
   return join(env.APPDATA, "com.aliasmode.desktop", "agent-runtime.json");
 }
@@ -280,6 +288,7 @@ async function connectAgent(descriptor) {
 function defaultDesktopExecutable(env = process.env) {
   if (env.ALIASMODE_DESKTOP_EXE) return env.ALIASMODE_DESKTOP_EXE;
   if (process.platform === "darwin") return "/Applications/AliasMode.app/Contents/MacOS/aliasmode";
+  if (process.platform === "linux") return join(linuxDataHome(env), "aliasmode", "bin", "aliasmode");
   if (!env.LOCALAPPDATA) throw new Error("LOCALAPPDATA is required to start AliasMode");
   return join(env.LOCALAPPDATA, "AliasMode", "AliasMode.exe");
 }

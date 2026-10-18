@@ -816,6 +816,23 @@ test("Cloud open replaces a cached timezone with an explicitly cleared value", a
   state.store.close();
 });
 
+test("the first Cloud checkpoint carries the timezone the launch took from the proxy exit", async () => {
+  const state = setup();
+  const launcher = (state.coordinator as any).options.launcher;
+  const start = launcher.start.bind(launcher);
+  // The launcher saves the proxy exit's timezone before the browser starts.
+  launcher.start = async (profileId: string, ...rest: unknown[]) => {
+    state.store.setTimezone(profileId, "Asia/Tokyo");
+    return start(profileId, ...rest);
+  };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const [checkpoint] = state.queue.list("account1");
+  expect(state.queue.get(checkpoint!.id, "account1")!.payload.profile.timezone).toBe("Asia/Tokyo");
+  await state.coordinator.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
+
 test("Cloud browser restores the session and navigates in one attach", async () => {
   const state = setup();
   const result = await state.coordinator.open("profile1", [

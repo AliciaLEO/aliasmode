@@ -435,7 +435,7 @@ function Select-McpBrowser([Diagnostics.Process]$Process, [string]$ProfileId, [i
   $Process.StandardInput.WriteLine($request)
   $selected = Read-McpResponse $Process $Id
   if ($selected.result.isError -eq $true) {
-    throw "installed MCP host could not select the pre-existing browser"
+    throw "installed MCP host could not select the pre-existing browser: $($selected.result.content[0].text)"
   }
 }
 
@@ -868,7 +868,7 @@ public static class AliasModeWindow {
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"browser_close","arguments":{}}}')
         $closed = Read-McpResponse $mcp 31
         if ($closed.result.isError -eq $true) {
-          throw "installed MCP host could not close the selected browser"
+          throw "installed MCP host could not close the selected browser: $($closed.result.content[0].text)"
         }
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":32,"method":"tools/list","params":{}}')
         $closedTools = Read-McpResponse $mcp 32

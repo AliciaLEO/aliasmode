@@ -52,6 +52,7 @@ import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfi
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_HOST_SCALE,
+  ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
@@ -499,8 +500,9 @@ export interface LauncherOptions {
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
   /**
-   * The exit IP of a Firefox profile's proxy, which WebRTC then shows as its public address. null
-   * keeps WebRTC as it was. Defaults to a short lookup through the proxy; tests inject it.
+   * The exit IP of a profile's proxy, which AliasMode Firefox and Chromium 155 on Windows then show
+   * as WebRTC's public address. null keeps WebRTC as it was. Defaults to a short lookup through the
+   * proxy; tests inject it.
    */
   lookupExitIp?: (proxy: ProxySpec) => Promise<string | null>;
   readSession?: typeof readSessionInSubprocess;
@@ -1110,10 +1112,8 @@ export class Launcher {
   }
 
   /**
-   * The proxy exit IP that AliasMode Firefox shows as WebRTC's public address. Without an answer
-   * WebRTC stays as before: on the proxy, with no public address. Chromium 155 is not asked: behind
-   * the HTTP proxy it always gets, it opens no WebRTC UDP socket, so --fingerprint-webrtc-ip has no
-   * candidate to write the address into.
+   * The proxy exit IP that AliasMode Firefox and Chromium 155 on Windows show as WebRTC's public
+   * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
    */
   private async webRtcExitIp(profile: Profile): Promise<string | undefined> {
     if (!profile.proxy || !this.lookupExitIpFn) return undefined;
@@ -1135,6 +1135,7 @@ export class Launcher {
     relayPort?: number,
     headless = this.headless,
     restoreLastSession = false,
+    webRtcIp?: string,
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
     const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
@@ -1197,6 +1198,9 @@ export class Launcher {
       args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
     }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
+    // The engine sends no WebRTC packet behind the proxy, and shows a page the proxy's exit IP as
+    // its public address, as a browser at that exit would, in place of no candidate at all.
+    if (webRtcIp && this.chromiumWebRtcIp(profile)) args.push(`--fingerprint-webrtc-ip=${webRtcIp}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
     // headless ON. So headful = omit the flag entirely; headless = pass it.
@@ -1289,6 +1293,14 @@ export class Launcher {
     const scale = this.deviceScale(profile);
     if (scale === 1) return profile;
     return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
+  }
+
+  /**
+   * Chromium 155 on Windows shows --fingerprint-webrtc-ip behind the HTTP proxy it always gets.
+   * Upstream's Mac and Linux builds open no WebRTC UDP socket there, so the switch shows nothing.
+   */
+  private chromiumWebRtcIp(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
   }
 
   /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
@@ -1685,6 +1697,8 @@ export class Launcher {
     if (profile.engine === "firefox") {
       return this.startFreshFirefox(profile, startupUrls, opts, pendingSession);
     }
+    // Runs beside the launch preparation below; the browser arguments wait for it.
+    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile) : undefined;
 
     // A fresh generation is never spawned until the configured executable has
     // been canonicalized and matched byte-for-byte against the deployment pin.
@@ -1789,7 +1803,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, await webRtcIp,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();

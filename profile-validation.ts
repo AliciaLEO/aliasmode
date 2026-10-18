@@ -29,8 +29,10 @@ function assertCookie(value: unknown, index: number): asserts value is CookieRec
   for (const field of ["name", "value", "domain", "path"] as const) {
     if (typeof cookie[field] !== "string") throw new Error(`profile cookie ${index} ${field} must be a string`);
   }
-  if (!cookie.name || !cookie.domain || !cookie.path) {
-    throw new Error(`profile cookie ${index} requires non-empty name, domain, and path`);
+  // A cookie may have an empty name: `document.cookie = "value"` makes one, and
+  // the browser reports and restores it like any other.
+  if (!cookie.domain || !cookie.path) {
+    throw new Error(`profile cookie ${index} requires non-empty domain and path`);
   }
   for (const field of ["httpOnly", "secure"] as const) {
     if (cookie[field] !== undefined && typeof cookie[field] !== "boolean") {

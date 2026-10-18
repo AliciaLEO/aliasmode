@@ -195,7 +195,7 @@ jobs:
           (
             most=0
             for round in $(seq 1 40); do
-              pids="$(pgrep -f "profiles/$profile" | paste -sd '|' -)"
+              pids="$(pgrep -f "profiles/$profile" | paste -sd '|' - || true)"
               if [[ -n "$pids" ]]; then
                 count="$(wmctrl -lp | awk -v pids="^($pids)\$" '$3 ~ pids' | wc -l)"
                 (( count > most )) && most="$count"
@@ -349,6 +349,66 @@ jobs:
           ! kill -0 "$sidecar" 2>/dev/null
           test ! -f "$data/agent-runtime.json"
           ! pgrep -f "profiles/$profile" >/dev/null
+      - name: Click outside links in the app window
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$HOME/.local/share/aliasmode"
+          data="$HOME/.local/share/com.aliasmode.desktop"
+          evidence="$RUNNER_TEMP/evidence"
+          sudo apt-get install -y -q webkit2gtk-driver
+          # The app opens outside links with xdg-open; this one records the address instead.
+          fake="$RUNNER_TEMP/fake-browser"
+          mkdir -p "$fake"
+          OPENED="$evidence/opened-urls.txt"
+          : > "$OPENED"
+          printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$OPENED" > "$fake/xdg-open"
+          chmod +x "$fake/xdg-open"
+          cat "$fake/xdg-open"
+          # WebKitWebDriver starts the app with its window under automation, as tauri-driver does.
+          PATH="$fake:$PATH" TAURI_WEBVIEW_AUTOMATION=true WebKitWebDriver --port=4445 > "$evidence/webdriver.log" 2>&1 &
+          wd="http://127.0.0.1:4445"
+          for attempt in $(seq 1 30); do curl -sf "$wd/status" >/dev/null && break; sleep 1; done
+          session="$(jq -nc --arg app "$root/bin/aliasmode" '{capabilities: {alwaysMatch: {"webkitgtk:browserOptions": {binary: $app, args: []}}}}' \
+            | curl -sf -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
+          element() {
+            jq -nc --arg using "$1" --arg value "$2" '{using: $using, value: $value}' \
+              | curl -sf -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
+              | jq -er '.value | to_entries[0].value'
+          }
+          wait_element() {
+            local found=""
+            for attempt in $(seq 1 90); do
+              found="$(element "$1" "$2" 2>/dev/null || true)"
+              [[ -n "$found" ]] && { echo "$found"; return 0; }
+              sleep 1
+            done
+            echo "the app shows no $2" >&2
+            return 1
+          }
+          click() { curl -sf -X POST "$wd/session/$session/element/$1/click" -H 'content-type: application/json' -d '{}' >/dev/null; }
+          opened() {
+            for attempt in $(seq 1 30); do
+              grep -qF "$1" "$OPENED" && return 0
+              sleep 1
+            done
+            echo "the app did not open $1 (it opened: $(tr '\n' ' ' < "$OPENED"))"
+            return 1
+          }
+          click "$(wait_element "css selector" 'a[href*="src=sidebar-cart"]')"
+          opened "https://nobleproxy.com/t/aliasmode?src=sidebar-cart"
+          click "$(wait_element xpath "//button[normalize-space()='New Profile']")"
+          # A new Chrome profile on Linux starts on Chromium 155, and the help text must say so.
+          wait_element "css selector" 'button[aria-label="Chrome: Chromium 155 beta"]' >/dev/null
+          click "$(wait_element "css selector" 'a[href*="src=profile-dialog"]')"
+          opened "https://nobleproxy.com/t/aliasmode?src=profile-dialog"
+          import -window root "$evidence/link-new-profile.png" || true
+          cat "$OPENED"
+          desktop="$(jq -er .desktopPid "$data/agent-runtime.json")"
+          wmctrl -c AliasMode
+          for attempt in $(seq 1 60); do kill -0 "$desktop" 2>/dev/null || break; sleep 1; done
+          ! kill -0 "$desktop" 2>/dev/null
+          curl -sf -X DELETE "$wd/session/$session" >/dev/null || true
       - name: Collect logs
         if: always()
         shell: bash
@@ -362,4 +422,183 @@ jobs:
         with:
           name: aliasmode-linux-evidence-${{ matrix.os }}
           path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+
+  update:
+    name: Linux in-app update with a test key
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Install the build libraries and a desktop session
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev build-essential pkg-config \
+            xvfb openbox wmctrl imagemagick dbus-x11 webkit2gtk-driver
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Build and install the current version with a throwaway update key
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          mkdir -p "$work"
+          bunx tauri signer generate --ci -p "" -w "$work/update.key" > /dev/null
+          jq -n --arg pubkey "$(cat "$work/update.key.pub")" '{plugins: {updater: {pubkey: $pubkey}}}' > "$work/test-key.json"
+          bun run desktop:prepare:linux
+          bunx tauri build --bundles deb --config "$work/test-key.json"
+          data="$(find src-tauri/target/release/bundle/deb -mindepth 2 -maxdepth 2 -type d -name data | head -n 1)"
+          root="$HOME/.local/share/aliasmode"
+          mkdir -p "$(dirname "$root")"
+          cp -a "$data/usr" "$root"
+          rm -rf src-tauri/target/release/bundle/deb
+      - name: Build and sign the successor version
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          current="$(jq -er .version src-tauri/tauri.conf.json)"
+          if [[ "$current" == *-* ]]; then
+            successor="$current.acceptance.1"
+          else
+            successor="${current%.*}.$((${current##*.} + 1))-acceptance.1"
+          fi
+          for file in package.json version.ts src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock; do
+            test "$(grep -oF "$current" "$file" | wc -l | tr -d ' ')" = 1
+            CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
+          done
+          bun run desktop:prepare:linux
+          bunx tauri build --bundles deb --config "$work/test-key.json"
+          data="$(find src-tauri/target/release/bundle/deb -mindepth 2 -maxdepth 2 -type d -name data | head -n 1)"
+          cp -a "$data/usr" "$work/AliasMode"
+          archive="AliasMode_${successor}_x86_64-linux.tar.gz"
+          tar --hard-dereference -czf "$work/$archive" -C "$work" AliasMode
+          rm -rf "$work/AliasMode" src-tauri/target/release/bundle/deb
+          TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
+          url="https://github.com/aliasmode/aliasmode/releases/download/v$successor/$archive"
+          jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" \
+            '{version: $version, platforms: {"linux-x86_64": {url: $url, signature: $signature}}}' > "$work/latest-linux.json"
+          {
+            echo "CURRENT=$current"
+            echo "SUCCESSOR=$successor"
+            echo "ARCHIVE=$archive"
+          } >> "$GITHUB_ENV"
+      - name: Serve the successor as a GitHub release on this machine
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          cd "$work"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=AliasMode update test CA" -keyout ca.key -out ca.pem
+          openssl req -newkey rsa:2048 -nodes -subj "/CN=github.com" -keyout leaf.key -out leaf.csr
+          printf 'subjectAltName=DNS:github.com,DNS:api.github.com\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' > leaf.ext
+          openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile leaf.ext -out leaf.pem
+          sudo cp ca.pem /usr/local/share/ca-certificates/aliasmode-update-test.crt
+          sudo update-ca-certificates
+          jq -n --arg version "$SUCCESSOR" --arg archive "$ARCHIVE" --arg work "$work" '{
+            candidateVersion: $version,
+            manifestName: "latest-linux.json",
+            installerName: $archive,
+            manifestUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/latest-linux.json",
+            installerUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/\($archive)",
+            manifestPath: "\($work)/latest-linux.json",
+            installerPath: "\($work)/\($archive)",
+            certificatePath: "\($work)/leaf.pem",
+            privateKeyPath: "\($work)/leaf.key",
+            statePath: "\($work)/fixture-state.json"
+          }' > fixture.json
+          sudo cp /etc/hosts "$work/hosts.backup"
+          echo "127.0.0.1 github.com api.github.com" | sudo tee -a /etc/hosts > /dev/null
+          sudo -b "$(command -v node)" "$GITHUB_WORKSPACE/scripts/windows-updater-https-fixture.mjs" "$work/fixture.json"
+          for attempt in $(seq 1 30); do [[ -f fixture-state.json ]] && break; sleep 1; done
+          curl --fail --silent --show-error "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10" | jq -e --arg tag "v$SUCCESSOR" '.[0].tag_name == $tag'
+      - name: Update through the dashboard and verify the relaunched app
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/update"
+          evidence="$RUNNER_TEMP/update-evidence"
+          mkdir -p "$evidence"
+          root="$HOME/.local/share/aliasmode"
+          helper="$root/bin/aliasmode-mcp"
+          data="$HOME/.local/share/com.aliasmode.desktop"
+          mkdir -p "$data"
+          printf '{"version":1,"mode":"local","localAnalytics":false}\n' > "$data/config.json"
+          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$evidence/xvfb.log" 2>&1 &
+          export DISPLAY=:99
+          eval "$(dbus-launch --sh-syntax)"
+          sleep 2
+          openbox > "$evidence/openbox.log" 2>&1 &
+          # WebKitWebDriver starts the app with its window under automation, so the test can click.
+          TAURI_WEBVIEW_AUTOMATION=true WebKitWebDriver --port=4445 > "$evidence/webdriver.log" 2>&1 &
+          wd="http://127.0.0.1:4445"
+          for attempt in $(seq 1 30); do curl -sf "$wd/status" >/dev/null && break; sleep 1; done
+          session="$(jq -nc --arg app "$root/bin/aliasmode" '{capabilities: {alwaysMatch: {"webkitgtk:browserOptions": {binary: $app, args: []}}}}' \
+            | curl -sf -X POST "$wd/session" -H 'content-type: application/json' -d @- | jq -er .value.sessionId)"
+          for attempt in $(seq 1 120); do [[ -f "$data/agent-runtime.json" ]] && break; sleep 1; done
+          test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$CURRENT"
+          old_pid="$(jq -er .desktopPid "$data/agent-runtime.json")"
+          kept="$("$helper" profiles create --name keep-me | jq -er 'select(.ok) | .result.id')"
+          # The dashboard checks for updates by itself; wait until it has read the release feed.
+          for attempt in $(seq 1 60); do
+            [[ "$(sudo jq -r '.counts.manifest' "$work/fixture-state.json")" -ge 1 ]] && break
+            sleep 1
+          done
+          button=""
+          for attempt in $(seq 1 60); do
+            button="$(jq -nc '{using: "xpath", value: "//button[normalize-space()=\"Update now\"]"}' \
+              | curl -sf -X POST "$wd/session/$session/element" -H 'content-type: application/json' -d @- \
+              | jq -er '.value | to_entries[0].value' 2>/dev/null || true)"
+            [[ -n "$button" ]] && break
+            sleep 1
+          done
+          import -window root "$evidence/before-update.png" || true
+          test -n "$button"
+          curl -sf -X POST "$wd/session/$session/element/$button/click" -H 'content-type: application/json' -d '{}' >/dev/null
+          sleep 5
+          import -window root "$evidence/after-click.png" || true
+          for attempt in $(seq 1 240); do
+            version="$(jq -r '.appVersion // empty' "$data/agent-runtime.json" 2>/dev/null || true)"
+            [[ "$version" == "$SUCCESSOR" ]] && break
+            sleep 1
+          done
+          sleep 5
+          import -window root "$evidence/after-update.png" || true
+          cp "$data/update-attempt.json" "$evidence/" || true
+          test "$(jq -er .appVersion "$data/agent-runtime.json")" = "$SUCCESSOR"
+          ! kill -0 "$old_pid" 2>/dev/null
+          jq -e --arg from "$CURRENT" --arg to "$SUCCESSOR" '.state == "succeeded" and .sourceVersion == $from and .expectedVersion == $to' "$data/update-attempt.json"
+          # The new folder replaced the old one in place, and the profile data survived.
+          "$root/bin/aliasmode-mcp" version | grep -q "\"$SUCCESSOR\""
+          ls -a "$(dirname "$root")" | tee "$evidence/data-home.txt"
+          ! grep -q "^\.aliasmode-" "$evidence/data-home.txt"
+          "$helper" profiles list | grep -q "\"$kept\""
+          sudo jq -e '.counts.installer >= 1 and .counts.rejected == 0' "$work/fixture-state.json"
+      - name: Restore name resolution
+        if: always()
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          work="$RUNNER_TEMP/update"
+          [[ -f "$work/hosts.backup" ]] && sudo cp "$work/hosts.backup" /etc/hosts
+          cp "$HOME/.local/share/com.aliasmode.desktop/update-attempt.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          cp "$HOME/.local/share/com.aliasmode.desktop/logs/"*.log "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          sudo cp "$work/fixture-state.json" "$RUNNER_TEMP/update-evidence/" 2>/dev/null || true
+          sudo chmod -R a+r "$RUNNER_TEMP/update-evidence" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: aliasmode-linux-update-evidence
+          path: ${{ runner.temp }}/update-evidence
           if-no-files-found: warn

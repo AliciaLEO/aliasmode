@@ -1,9 +1,6 @@
 name: Linux desktop build
 
 on:
-  # TEMPORARY: branch test runs; remove before merge.
-  push:
-    branches: [feat/linux-desktop]
   workflow_dispatch:
   workflow_call:
     inputs:

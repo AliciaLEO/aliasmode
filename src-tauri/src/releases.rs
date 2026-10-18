@@ -15,23 +15,29 @@ use tokio::sync::Mutex;
 use url::Url;
 
 const RELEASES_API: &str = "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_MANIFEST: &str = "latest-v2.json";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_TARGET: &str = "windows-x86_64";
-// macOS reads its own feed: installed Windows clients accept only a one-platform manifest.
+// macOS and Linux read their own feeds: installed Windows clients accept only a one-platform manifest.
 #[cfg(target_os = "macos")]
 const UPDATE_MANIFEST: &str = "latest-macos.json";
 #[cfg(target_os = "macos")]
 const UPDATE_TARGET: &str = "darwin-aarch64";
+#[cfg(target_os = "linux")]
+const UPDATE_MANIFEST: &str = "latest-linux.json";
+#[cfg(target_os = "linux")]
+const UPDATE_TARGET: &str = "linux-x86_64";
 const MAX_RELEASE_HIGHLIGHTS: usize = 3;
 const UPDATE_BUSY: &str = "An update operation is already running.";
 const CHECK_FAILED: &str = "AliasMode could not check for updates. Try again.";
 const DOWNLOAD_FAILED: &str = "AliasMode could not download and verify the update. Try again.";
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const INSTALLATION_UNSAFE: &str = "AliasMode cannot safely update this installation. Close AliasMode and run the full offline installer from the release page. Do not uninstall.";
 #[cfg(target_os = "macos")]
 const INSTALLATION_UNSAFE: &str = "AliasMode cannot update this copy. Move AliasMode to the Applications folder and open it again, or run the install command again.";
+#[cfg(target_os = "linux")]
+const INSTALLATION_UNSAFE: &str = "AliasMode cannot update this copy. Close AliasMode and run the install command from aliasmode.com/download again.";
 const CLEANUP_FAILED: &str =
     "The update was not installed because AliasMode could not safely close browser services. The current version remains installed.";
 const INSTALL_FAILED: &str =
@@ -204,6 +210,8 @@ async fn fetch_releases() -> Result<Vec<GithubRelease>, String> {
 fn update_artifact_name(version: &Version) -> String {
     if cfg!(target_os = "macos") {
         format!("AliasMode_{version}_aarch64.app.tar.gz")
+    } else if cfg!(target_os = "linux") {
+        format!("AliasMode_{version}_x86_64-linux.tar.gz")
     } else {
         format!("AliasMode_{version}_x64-setup.exe")
     }
@@ -242,7 +250,7 @@ fn validate_manifest_result(
     let platform = platforms
         .get(UPDATE_TARGET)
         .and_then(Value::as_object)
-        .ok_or_else(|| "release manifest did not contain the Windows x64 update".to_owned())?;
+        .ok_or_else(|| "release manifest did not contain the update for this system".to_owned())?;
     let raw_url = platform
         .get("url")
         .and_then(Value::as_str)
@@ -327,7 +335,11 @@ pub async fn check_for_updates(
     app: AppHandle,
     coordinator: tauri::State<'_, UpdateCoordinator>,
 ) -> Result<UpdateStatus, String> {
-    if !cfg!(any(target_os = "windows", target_os = "macos")) {
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) {
         return Err("AliasMode updates are not available on this system.".to_owned());
     }
     let _guard = coordinator
@@ -430,7 +442,7 @@ where
 }
 
 /// Windows: the NSIS installer takes over and ends this process, so a return is a failure.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn install_verified_update(
     update: &Update,
     bytes: &[u8],
@@ -441,8 +453,9 @@ fn install_verified_update(
     Err("the verified installer returned without transferring control".to_owned())
 }
 
-/// macOS: the updater swaps the app bundle and returns; nothing restarts the app for us.
-#[cfg(target_os = "macos")]
+/// macOS and Linux: the app bundle or folder is swapped and the call returns; nothing
+/// restarts the app for us.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn install_verified_update(
     update: &Update,
     bytes: &[u8],
@@ -452,9 +465,18 @@ fn install_verified_update(
     // Started first, so the relaunch still happens if this process dies during the swap.
     let mut relaunch =
         update_attempt::spawn_relaunch_after_exit(handoff).map_err(|error| error.to_string())?;
-    if let Err(error) = update.install(bytes) {
+    #[cfg(target_os = "macos")]
+    let installed = update.install(bytes).map_err(|error| error.to_string());
+    // The updater's own Linux step replaces an AppImage file; this app is a folder.
+    #[cfg(target_os = "linux")]
+    let installed = {
+        let _ = update;
+        update_attempt::replace_linux_install(&handoff.canonical_root, bytes)
+            .map_err(|error| error.to_string())
+    };
+    if let Err(error) = installed {
         let _ = relaunch.kill();
-        return Err(error.to_string());
+        return Err(error);
     }
     app.exit(0);
     Ok(())
@@ -468,7 +490,11 @@ pub async fn update_now(
     coordinator: tauri::State<'_, UpdateCoordinator>,
     on_progress: Channel<UpdateProgress>,
 ) -> Result<(), String> {
-    if !cfg!(any(target_os = "windows", target_os = "macos")) {
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) {
         return Err("AliasMode updates are not available on this system.".to_owned());
     }
     let _guard = coordinator
@@ -531,7 +557,7 @@ pub async fn update_now(
                 .map_err(|error| error.to_string())
         },
         async move {
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             update_attempt::validate_registered_install(
                 &preparation_handoff,
                 env!("CARGO_PKG_VERSION"),
@@ -557,10 +583,10 @@ pub async fn update_now(
     )
     .await
     {
-        // macOS: the bundle is replaced and this process is exiting for the relaunch.
-        #[cfg(target_os = "macos")]
+        // macOS and Linux: the app is replaced and this process is exiting for the relaunch.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         Ok(()) => Ok(()),
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         Ok(()) => {
             record_update_failure(&data_dir, &handoff.id, UpdateFailureReason::InstallerLaunch);
             let _ = window.show();

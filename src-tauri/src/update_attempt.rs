@@ -26,15 +26,18 @@ impl InstallerHandoff {
         let executable = std::env::current_exe().map_err(|_| UpdateAttemptError::RunningPath)?;
         let canonical_executable =
             fs::canonicalize(executable).map_err(|_| UpdateAttemptError::RunningPath)?;
-        // Windows updates an install directory; macOS replaces the whole app bundle.
-        #[cfg(not(target_os = "macos"))]
+        // Windows updates an install directory; macOS replaces the whole app bundle and
+        // Linux the whole app folder.
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let canonical_root = canonical_executable
             .parent()
             .ok_or(UpdateAttemptError::RunningPath)?
             .to_path_buf();
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let canonical_root =
-            macos_bundle(&canonical_executable).ok_or(UpdateAttemptError::RunningPath)?;
+            install_root(&canonical_executable).ok_or(UpdateAttemptError::RunningPath)?;
+        #[cfg(target_os = "linux")]
+        ensure_replaceable(&canonical_root)?;
         Ok(Self {
             id: hex::encode(rand::random::<[u8; 16]>()),
             nsis_root: normal_windows_path(&canonical_root),
@@ -66,9 +69,34 @@ fn macos_bundle(executable: &Path) -> Option<PathBuf> {
     .then(|| bundle.to_path_buf())
 }
 
-/// Starts a detached shell that opens the replaced bundle once this process is gone.
-/// The single-instance guard would hand an earlier relaunch to the old process.
 #[cfg(target_os = "macos")]
+fn install_root(executable: &Path) -> Option<PathBuf> {
+    macos_bundle(executable)
+}
+
+/// The Linux app folder that holds this executable: `bin/aliasmode`, with resources in `lib`.
+#[cfg(target_os = "linux")]
+fn install_root(executable: &Path) -> Option<PathBuf> {
+    let bin = executable.parent()?;
+    let root = bin.parent()?;
+    (bin.file_name() == Some(OsStr::new("bin")) && root.join("lib").is_dir())
+        .then(|| root.to_path_buf())
+}
+
+/// The swap renames the app folder inside its parent, so that parent must be writable.
+/// Checked before the update closes any browser.
+#[cfg(target_os = "linux")]
+fn ensure_replaceable(root: &Path) -> Result<(), UpdateAttemptError> {
+    let parent = root.parent().ok_or(UpdateAttemptError::RunningPath)?;
+    let probe = parent.join(format!(".aliasmode-update-check-{}", std::process::id()));
+    File::create(&probe).map_err(|_| UpdateAttemptError::RunningPath)?;
+    let _ = fs::remove_file(&probe);
+    Ok(())
+}
+
+/// Starts a detached shell that opens the replaced app once this process is gone.
+/// The single-instance guard would hand an earlier relaunch to the old process.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub fn spawn_relaunch_after_exit(
     handoff: &InstallerHandoff,
 ) -> std::io::Result<std::process::Child> {
@@ -76,14 +104,24 @@ pub fn spawn_relaunch_after_exit(
         os::unix::process::CommandExt,
         process::{Command, Stdio},
     };
+    #[cfg(target_os = "macos")]
+    let (start, target) = (
+        r#"exec /usr/bin/open -n "$2" --args "$3""#,
+        handoff.canonical_root.clone(),
+    );
+    #[cfg(target_os = "linux")]
+    let (start, target) = (
+        r#"exec "$2" "$3""#,
+        handoff.canonical_root.join("bin").join("aliasmode"),
+    );
     Command::new("/bin/sh")
         .args([
             "-c",
-            r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open -n "$2" --args "$3""#,
+            &format!(r#"while kill -0 "$1" 2>/dev/null; do sleep 0.2; done; {start}"#),
             "sh",
         ])
         .arg(std::process::id().to_string())
-        .arg(&handoff.canonical_root)
+        .arg(target)
         .arg(handoff.relaunch_argument())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -483,23 +521,24 @@ pub fn reconcile_after_startup(
 
     let current_executable =
         std::env::current_exe().map_err(|_| UpdateAttemptError::RunningPath)?;
-    // macOS has no installer marker or registry: the proof is the same bundle path
-    // now running the expected version. An unchanged version means nothing was installed.
-    #[cfg(target_os = "macos")]
+    // macOS and Linux have no installer marker or registry: the proof is the same bundle
+    // or folder path now running the expected version. An unchanged version means nothing
+    // was installed.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let (marker_matches, registration_matches) = {
-        let same_bundle = fs::canonicalize(&current_executable)
+        let same_root = fs::canonicalize(&current_executable)
             .ok()
-            .and_then(|executable| macos_bundle(&executable))
-            .is_some_and(|bundle| bundle == attempt.expected_root);
+            .and_then(|executable| install_root(&executable))
+            .is_some_and(|root| root == attempt.expected_root);
         (
-            same_bundle && env!("CARGO_PKG_VERSION") == attempt.expected_version,
-            same_bundle,
+            same_root && env!("CARGO_PKG_VERSION") == attempt.expected_version,
+            same_root,
         )
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let marker_matches =
         read_marker(&attempt).is_ok_and(|version| version == attempt.expected_version);
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let registration_matches = read_registration_snapshot()
         .and_then(|registration| {
             validate_registration_snapshot(
@@ -647,6 +686,88 @@ fn replace_file(source: &Path, destination: &Path) -> Result<(), UpdateAttemptEr
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> Result<(), UpdateAttemptError> {
     fs::rename(source, destination).map_err(|_| UpdateAttemptError::Persistence)
+}
+
+/// Replaces the Linux app folder with the one in a verified `.tar.gz` update archive, whose
+/// single top folder holds `bin/aliasmode`. The new folder is unpacked beside the old one,
+/// so both renames stay on one file system, and a failed step leaves the old folder in place.
+#[cfg(target_os = "linux")]
+pub fn replace_linux_install(root: &Path, archive: &[u8]) -> std::io::Result<()> {
+    use std::{
+        io::{Error, ErrorKind},
+        path::Component,
+    };
+    let parent = root
+        .parent()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "app folder has no parent"))?;
+    let name = root
+        .file_name()
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "app folder has no name"))?
+        .to_string_lossy();
+    let staging = parent.join(format!(".{name}-update"));
+    let previous = parent.join(format!(".{name}-previous"));
+    for leftover in [&staging, &previous] {
+        if leftover.exists() {
+            fs::remove_dir_all(leftover)?;
+        }
+    }
+    fs::create_dir(&staging)?;
+    let unpacked = (|| {
+        let mut entries = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+        entries.set_preserve_permissions(true);
+        for entry in entries.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.into_owned();
+            let mut parts = path.components();
+            if !matches!(parts.next(), Some(Component::Normal(_))) {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "update entry outside its folder",
+                ));
+            }
+            let inner: PathBuf = parts.collect();
+            if inner
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+            {
+                return Err(Error::new(
+                    ErrorKind::InvalidData,
+                    "update entry outside its folder",
+                ));
+            }
+            if inner.as_os_str().is_empty() {
+                continue;
+            }
+            let target = staging.join(&inner);
+            if let Some(directory) = target.parent() {
+                fs::create_dir_all(directory)?;
+            }
+            entry.unpack(&target)?;
+        }
+        if !staging.join("bin").join("aliasmode").is_file() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "update has no AliasMode program",
+            ));
+        }
+        Ok(())
+    })();
+    if let Err(error) = unpacked {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(root, &previous) {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&staging, root) {
+        let _ = fs::rename(&previous, root);
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    // The running program keeps its open files; the old folder is no longer needed.
+    let _ = fs::remove_dir_all(&previous);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -906,5 +1027,100 @@ mod tests {
                 reason: UpdateFailureReason::BrowserCleanup,
             })
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (path, contents) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o755);
+            // append_data refuses "..", so an escaping path is written into the header by hand.
+            header.as_gnu_mut().unwrap().name[..path.len()].copy_from_slice(path.as_bytes());
+            header.set_cksum();
+            builder.append(&header, *contents).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn installed(directory: &Path) -> PathBuf {
+        let root = directory.join("aliasmode");
+        fs::create_dir_all(root.join("bin")).unwrap();
+        fs::create_dir_all(root.join("lib").join("AliasMode")).unwrap();
+        fs::write(root.join("bin").join("aliasmode"), "old").unwrap();
+        fs::write(root.join("lib").join("AliasMode").join("old-only"), "old").unwrap();
+        root
+    }
+
+    #[test]
+    fn replaces_the_whole_app_folder_and_keeps_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let root = installed(directory.path());
+        replace_linux_install(
+            &root,
+            &archive(&[
+                ("AliasMode/bin/aliasmode", b"new"),
+                ("AliasMode/lib/AliasMode/firefox/aliasmode", b"engine"),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("bin").join("aliasmode")).unwrap(),
+            "new"
+        );
+        assert!(!root.join("lib").join("AliasMode").join("old-only").exists());
+        let mode = fs::metadata(root.join("lib/AliasMode/firefox/aliasmode"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
+        let names: Vec<_> = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![OsString::from("aliasmode")]);
+    }
+
+    #[test]
+    fn keeps_the_old_folder_when_the_update_is_unusable() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = installed(directory.path());
+        for bytes in [
+            archive(&[("AliasMode/lib/AliasMode/only-resources", b"x")]),
+            archive(&[
+                ("AliasMode/bin/aliasmode", b"new"),
+                ("AliasMode/../../escape", b"x"),
+            ]),
+            b"not an archive".to_vec(),
+        ] {
+            assert!(replace_linux_install(&root, &bytes).is_err());
+            assert_eq!(
+                fs::read_to_string(root.join("bin").join("aliasmode")).unwrap(),
+                "old"
+            );
+            assert!(!directory.path().join("escape").exists());
+            assert!(!directory.path().join(".aliasmode-update").exists());
+        }
+    }
+
+    #[test]
+    fn finds_the_app_folder_from_its_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = installed(directory.path());
+        assert_eq!(
+            install_root(&root.join("bin").join("aliasmode")),
+            Some(root.clone())
+        );
+        assert_eq!(install_root(&root.join("aliasmode")), None);
+        assert!(ensure_replaceable(&root).is_ok());
     }
 }

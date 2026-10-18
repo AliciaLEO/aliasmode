@@ -45,6 +45,11 @@ windows = { version = "0.62.2", features = [
   "Win32_System_Threading",
 ] }
 
+# The Linux update unpacks the app folder itself; the updater already uses both crates.
+[target.'cfg(target_os = "linux")'.dependencies]
+flate2 = "1.1.9"
+tar = "0.4.46"
+
 [patch.crates-io]
 tauri-plugin-updater = { path = "../vendor/tauri-plugin-updater" }
 

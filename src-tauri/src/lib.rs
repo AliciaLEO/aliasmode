@@ -385,6 +385,12 @@ mod tests {
 }
 
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer shows an empty window with several graphics drivers
+    // (NVIDIA in particular). The dashboard needs no GPU path.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     let background = background_requested(std::env::args_os());
     let update_relaunch = update_attempt::parse_relaunch_argument(std::env::args_os().skip(1));
     let import_request = parse_cloakpit_import_args(std::env::args_os().skip(1));
@@ -681,9 +687,10 @@ pub fn run() {
                 let _ = runtime.remove_owned();
             }
             if let Some(sidecar) = app.try_state::<sidecar::SidecarSupervisor>() {
-                // Cmd+Q and the Dock's Quit end the app without a close request, so
-                // save sessions and close browsers here before the sidecar stops.
-                #[cfg(target_os = "macos")]
+                // Cmd+Q, the Dock's Quit and a Linux desktop session end the app without
+                // a close request, so save sessions and close browsers here before the
+                // sidecar stops.
+                #[cfg(not(windows))]
                 let _ = tauri::async_runtime::block_on(shutdown::graceful_sidecar_cleanup(
                     sidecar.inner(),
                 ));

@@ -271,14 +271,17 @@ jobs:
           $child = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($launcher.Id)" |
             Where-Object { $_.Name -eq "aliasmode-sidecar.exe" -and $_.CommandLine -match '\s__mcp\s+serve\s*$' })
           if ($child.Count -ne 1) { throw "the launcher did not start the MCP helper in the sidecar program" }
+          $hosts = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($child[0].ProcessId)" |
+            Where-Object { $_.Name -eq "node.exe" } | ForEach-Object { [int]$_.ProcessId })
+          if ($hosts.Count -ne 1) { throw "the MCP helper did not start its Node host" }
           Stop-Process -Id $launcher.Id -Force
-          $survivor = $null
+          $survivors = @()
           for ($attempt = 0; $attempt -lt 40; $attempt++) {
-            $survivor = Get-Process -Id $child[0].ProcessId -ErrorAction SilentlyContinue
-            if (-not $survivor) { break }
+            $survivors = @(@([int]$child[0].ProcessId) + $hosts | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+            if ($survivors.Count -eq 0) { break }
             Start-Sleep -Milliseconds 250
           }
-          if ($survivor) { throw "the MCP helper survived its launcher" }
+          if ($survivors.Count -ne 0) { throw "the MCP helper or its Node host survived the launcher" }
 
           # Remote MCP: the tunnel must start the installed MCP host and pass messages both ways.
           # A local server takes the place of AliasMode Cloud.
@@ -321,9 +324,16 @@ jobs:
           if (!names.includes("aliasmode_profiles_list") || !names.includes("aliasmode_browser_open")) throw new Error("the tool list is not complete");
           console.log("Remote MCP tunnel listed " + names.length + " tools");
           '@ | Set-Content -LiteralPath $check -Encoding utf8
+          $helpers = { @(Get-CimInstance Win32_Process -Filter "Name = 'aliasmode-sidecar.exe'" |
+            Where-Object { $_.CommandLine -match '\s__mcp\s' } | ForEach-Object { [int]$_.ProcessId }) }
+          $before = & $helpers
           $env:HELPER = $helper
           bun $check
           if ($LASTEXITCODE -ne 0) { throw "the Remote MCP tunnel could not use the installed MCP host" }
+          # A closed tunnel session must leave no MCP helper behind.
+          if (@(& $helpers | Where-Object { $before -notcontains $_ }).Count -ne 0) {
+            throw "the Remote MCP host survived its closed session"
+          }
       - name: Stop isolated AliasMode
         if: always()
         shell: pwsh

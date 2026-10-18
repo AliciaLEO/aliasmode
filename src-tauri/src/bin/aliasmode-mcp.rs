@@ -6,6 +6,7 @@
 use std::{
     env,
     ffi::OsString,
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -32,17 +33,21 @@ fn launcher_path() -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+fn fail(message: &str) -> ! {
+    // stderr may be closed; the exit code still reports the failure.
+    let _ = writeln!(std::io::stderr(), "[aliasmode-mcp] {message}");
+    std::process::exit(1);
+}
+
 fn main() {
     let command = launcher_path()
         .ok()
         .and_then(|launcher| sidecar_command(&launcher, env::args_os().skip(1)));
     let Some(command) = command else {
-        eprintln!("[aliasmode-mcp] the AliasMode installation folder is unavailable");
-        std::process::exit(1);
+        fail("the AliasMode installation folder is unavailable");
     };
     let error = run(command);
-    eprintln!("[aliasmode-mcp] the AliasMode program could not start: {error}");
-    std::process::exit(1);
+    fail(&format!("the AliasMode program could not start: {error}"));
 }
 
 /// Replaces this process, so the process id, signals and stdio of the client reach the helper.

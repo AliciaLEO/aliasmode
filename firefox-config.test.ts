@@ -72,6 +72,21 @@ test.each([
   if (platform === "Linux x86_64") expect(config["mediaDevices:microphoneLabels"]).toContainEqual(expect.stringMatching(/^Monitor of /));
 });
 
+test("a proxied Firefox launch shows the proxy exit IP as WebRTC's public address in its own family", () => {
+  const proxy = { type: "http" as const, host: "gate.example.net", port: "8080", user: "", pass: "" };
+  const proxied = { ...profile(9, { "webrtc:ipv4": "198.51.100.1" }), proxy };
+  const v4 = firefoxLaunchConfig(proxied, undefined, "203.0.113.7");
+  expect(v4["webrtc:ipv4"]).toBe("203.0.113.7");
+  expect(v4).not.toHaveProperty("webrtc:ipv6");
+  const v6 = firefoxLaunchConfig({ ...profile(9), proxy }, undefined, "2001:db8::7");
+  expect(v6["webrtc:ipv6"]).toBe("2001:db8::7");
+  expect(v6).not.toHaveProperty("webrtc:ipv4");
+  // Without an exit IP, or without a proxy, the launch config stays as before.
+  expect(firefoxLaunchConfig({ ...profile(9), proxy })).not.toHaveProperty("webrtc:ipv4");
+  expect(firefoxLaunchConfig(profile(9), undefined, "203.0.113.7")).not.toHaveProperty("webrtc:ipv4");
+  expect(proxied.firefox!.config["webrtc:ipv4"]).toBe("198.51.100.1");
+});
+
 test("a Firefox launch shows the window label in the native title and starts in the profile's language", () => {
   const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
   expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");

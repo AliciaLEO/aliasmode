@@ -413,8 +413,15 @@ pub async fn launch_and_verify(
             .env("CLOAKBROWSER_BINARY_SHA256", &browser.sha256);
     }
     // Chromium 155 on Windows draws pages at the primary display's scale, as Chrome does there.
+    // New profiles get a screen no smaller than that display.
     if let Ok(Some(monitor)) = app.primary_monitor() {
-        command = command.env("ALIASMODE_HOST_SCALE", monitor.scale_factor().to_string());
+        let size = monitor.size();
+        command = command
+            .env("ALIASMODE_HOST_SCALE", monitor.scale_factor().to_string())
+            .env(
+                "ALIASMODE_HOST_SCREEN",
+                format!("{}x{}", size.width, size.height),
+            );
     }
 
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;

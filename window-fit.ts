@@ -193,6 +193,14 @@ export function watchWindowFit(ws: string, area: ScreenArea, opts: WindowFitOpti
       const done = bounds.windowState === "maximized"
         ? await fitMaximized(windowId, track, fit)
         : await send("Browser.setWindowBounds", { windowId, bounds: fit });
+      // Check the fix at once: by the next read the user may already have maximized again, and
+      // that maximize must not look like a fix the window manager refused.
+      const after: WindowBounds | undefined = (await send("Browser.getWindowBounds", { windowId }))?.bounds;
+      if (after && !fitWindow(after, area, opts.scale)) {
+        track.fixed = false;
+        track.seen = JSON.stringify(after);
+        track.stable = 0;
+      }
       if (done) opts.log?.(`window ${seen} resized to fit the profile's ${area.width}x${area.height} available screen`);
     }
   };

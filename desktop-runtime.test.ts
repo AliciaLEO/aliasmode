@@ -266,4 +266,6 @@ test("the Windows installer stops a leftover sidecar before overwriting it", () 
   // A graceful attempt first, then force: a locked sidecar aborts the install.
   expect(hooks).toContain(`nsExec::Exec 'taskkill /IM "aliasmode-sidecar.exe"'`);
   expect(hooks).toContain(`nsExec::Exec 'taskkill /F /T /IM "aliasmode-sidecar.exe"'`);
+  // An update removes the Python runtime that earlier versions bundled.
+  expect(hooks).toContain(`RMDir /r "$INSTDIR\\playwright\\python"`);
 });

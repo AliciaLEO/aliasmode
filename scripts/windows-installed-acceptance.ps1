@@ -724,12 +724,15 @@ public static class AliasModeWindow {
         (Join-Path $playwrightRuntime "agent\playwright-runner.mjs"),
         (Join-Path $playwrightRuntime "agent\script-runner.mjs"),
         (Join-Path $playwrightRuntime "agent\script-runner.py"),
-        (Join-Path $playwrightRuntime "python\python.exe"),
         (Join-Path $playwrightRuntime "agent\runtime-client.mjs")
       )) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
           throw "installed agent runtime file is missing: $path"
         }
+      }
+      # Python scripts download their runtime on first use; the installer carries no Python.
+      if (Test-Path -LiteralPath (Join-Path $playwrightRuntime "python")) {
+        throw "installed agent runtime still bundles Python"
       }
       if ((& $node --version).Trim() -ne "v22.23.2") {
         throw "installed Node runtime version is incorrect"
@@ -1041,10 +1044,42 @@ async def run(*, log, **_):
     log("python-error-ready")
     raise RuntimeError("fixture failure")
 '@, [Text.UTF8Encoding]::new($false))
+      # The app's own runs: a JavaScript script runs on the bundled Node and leaves Python alone.
+      # The first Python script downloads the pinned Python runtime into the data folder, then runs.
+      $pythonRuntimeRoot = Join-Path $appDataRoot "runtimes\python-3.13.7-playwright-1.58.0"
+      if (Test-Path -LiteralPath $pythonRuntimeRoot) { throw "the Python runtime existed before any Python script" }
+      $scriptApi = "http://127.0.0.1:$($runtimeDescriptor.port)/ui/api/scripts"
+      $scriptHeaders = @{ Authorization = "Bearer $($runtimeDescriptor.nonce)" }
+      function Invoke-AppScript([string]$Language, [string]$Source, [string]$Marker) {
+        $body = @{ name = "ci-app-$Language"; description = ""; language = $Language; source = $Source } | ConvertTo-Json -Compress
+        $created = Invoke-RestMethod -Method Post -Uri $scriptApi -Headers $scriptHeaders -ContentType "application/json" -Body $body -TimeoutSec 30
+        if (-not $created.ok) { throw "the app did not save the $Language script: $($created.error)" }
+        $runBody = @{ scriptId = $created.script.id; profileIds = @($profileId); inputs = @{}; useCredentials = $false } | ConvertTo-Json -Compress -Depth 4
+        $started = Invoke-RestMethod -Method Post -Uri "$scriptApi/run" -Headers $scriptHeaders -ContentType "application/json" -Body $runBody -TimeoutSec 30
+        if (-not $started.ok) { throw "the app did not start the $Language script: $($started.error)" }
+        $deadline = (Get-Date).AddMinutes(10)
+        do {
+          Start-Sleep -Seconds 1
+          $appRun = (Invoke-RestMethod -Uri "$scriptApi/run" -Headers $scriptHeaders -TimeoutSec 30).run
+        } while ($appRun.status -ne "finished" -and (Get-Date) -lt $deadline)
+        $appLog = (Invoke-RestMethod -Uri "$scriptApi/log?runId=$($started.run.id)&offset=0" -Headers $scriptHeaders -TimeoutSec 30).text
+        Write-Host "app $Language script log:`n$appLog"
+        if ($appRun.status -ne "finished" -or $appRun.profiles[0].status -ne "succeeded" -or $appLog -notmatch [regex]::Escape($Marker)) {
+          throw "the app's $Language script did not succeed: $($appRun.profiles[0].status) $($appRun.profiles[0].error)"
+        }
+      }
+      Invoke-AppScript "javascript" 'export default async ({ page, log }) => { await page.goto("data:text/html,js"); log("app-node-script-ran"); };' "app-node-script-ran"
+      if (Test-Path -LiteralPath $pythonRuntimeRoot) { throw "a JavaScript script downloaded the Python runtime" }
+      Invoke-AppScript "python" "async def run(*, page, log, **_):`n    await page.goto(`"data:text/html,py`")`n    log(`"app-python-script-ran`")`n" "app-python-script-ran"
+      $python = Join-Path $pythonRuntimeRoot "python.exe"
+      if (-not (Test-Path -LiteralPath (Join-Path $pythonRuntimeRoot "aliasmode-runtime.sha256") -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "the Python script did not install the Python runtime"
+      }
+
       $node = Join-Path $playwrightRuntime "node\node.exe"
       $nodeRunner = Join-Path $playwrightRuntime "agent\script-runner.mjs"
       $pythonRunner = Join-Path $playwrightRuntime "agent\script-runner.py"
-      $python = Join-Path $playwrightRuntime "python\python.exe"
       Invoke-CustomScriptRunner $node $nodeRunner $nodeSuccess $scriptInput "node-success" "success"
       Invoke-CustomScriptRunner $python $pythonRunner $pythonSuccess $scriptInput "python-success" "success" -RuntimeArgs @("-u", "-X", "utf8")
       Invoke-CustomScriptRunner $node $nodeRunner $nodeError $scriptInput "node-error-ready" "error"

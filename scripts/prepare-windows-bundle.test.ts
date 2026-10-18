@@ -89,13 +89,6 @@ function workspace(): string {
   return cwd;
 }
 
-async function installPython(root: string): Promise<void> {
-  const python = join(root, "python");
-  mkdirSync(join(python, "Lib", "site-packages", "playwright", "driver"), { recursive: true });
-  writeFileSync(join(python, "python.exe"), "python");
-  writeFileSync(join(python, "Lib", "site-packages", "playwright", "driver", "node.exe"), "driver");
-}
-
 test("Windows bundle preparation packages CloakBrowser and owned Firefox with verified hashes", async () => {
   const cwd = workspace();
   const browserBytes = "official-browser";
@@ -118,7 +111,6 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
       },
-      installPython,
       installBrowser: async (installCwd, cacheDir) => {
         expect(installCwd).toBe(staging);
         expect(cacheDir).toBe(browserCache);
@@ -149,7 +141,8 @@ test("Windows bundle preparation packages CloakBrowser and owned Firefox with ve
     expect(existsSync(join(cwd, "src-tauri", "resources", "cloakbrowser", "chromedriver.exe"))).toBe(false);
     expect(readFileSync(join(cwd, "src-tauri", "resources", "firefox", "firefox", "aliasmode.exe"), "utf8")).toBe("owned-firefox");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "node", "node.exe"), "utf8")).toBe("node");
-    expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "python", "python.exe"), "utf8")).toBe("python");
+    // Python scripts download their runtime on first use; the bundle carries no Python.
+    expect(existsSync(join(cwd, "src-tauri", "resources", "playwright", "python"))).toBe(false);
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "script-runner.mjs"), "utf8")).toBe("script-runner.mjs");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "agent", "script-runner.py"), "utf8")).toBe("script-runner.py");
     expect(readFileSync(join(cwd, "src-tauri", "resources", "playwright", "worker.mjs"), "utf8")).toBe("worker");
@@ -185,7 +178,6 @@ test("Windows bundle preparation rejects a non-Windows browser payload", async (
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
       },
-      installPython,
       installBrowser: async (_staging, cacheDir) => {
         const runtime = join(cacheDir, "cloakbrowser");
         mkdirSync(runtime, { recursive: true });
@@ -217,7 +209,6 @@ test("Windows bundle preparation rejects installer paths outside its cache", asy
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
       },
-      installPython,
       installBrowser: async () => ({ path: outside, sha256: sha256("browser") }),
     })).rejects.toThrow("outside its cache directory");
   } finally {
@@ -239,7 +230,6 @@ test("Windows bundle preparation rejects a changed packaged executable", async (
         mkdirSync(join(root, "node"), { recursive: true });
         writeFileSync(join(root, "node", "node.exe"), "node");
       },
-      installPython,
       installBrowser: async (_staging, cacheDir) => {
         const runtime = join(cacheDir, "cloakbrowser");
         mkdirSync(runtime, { recursive: true });
@@ -283,26 +273,6 @@ test("Windows bundle preparation rejects a Firefox executable hash mismatch", as
       compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
       compileAgent: async (output) => { writeFileSync(output, "agent"); },
     })).rejects.toThrow("Firefox executable does not match the approved SHA-256");
-  } finally {
-    rmSync(cwd, { recursive: true, force: true });
-  }
-});
-
-test("Windows bundle preparation rejects a changed Python archive before extraction", async () => {
-  const cwd = workspace();
-  try {
-    await expect(prepareWindowsBundle({
-      cwd, platform: "win32", arch: "x64",
-      firefoxArchive: firefoxArchive(),
-      compileSidecar: async (output) => { writeFileSync(output, "sidecar"); },
-      compileAgent: async (output) => { writeFileSync(output, "agent"); },
-      installNode: async (root) => {
-        mkdirSync(join(root, "node"), { recursive: true });
-        writeFileSync(join(root, "node", "node.exe"), "node");
-      },
-      downloadPython: async () => new TextEncoder().encode("changed archive"),
-    })).rejects.toThrow("Python runtime SHA-256 mismatch");
-    expect(existsSync(join(cwd, "src-tauri", "resources", "playwright", "python"))).toBe(false);
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

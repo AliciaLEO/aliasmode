@@ -121,7 +121,8 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q xvfb openbox wmctrl xdotool imagemagick dbus-x11 sqlite3
           # Ubuntu desktops since 23.10 restrict user namespaces as below; the runner image may not.
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
+          # Ubuntu 22.04 does not, and its AppArmor 3 has no rule to allow them.
+          if [[ "${{ matrix.os }}" == ubuntu-24.04 ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1
           fi
           Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp > "$RUNNER_TEMP/xvfb.log" 2>&1 &
@@ -154,8 +155,8 @@ jobs:
           test "$before" = "$(stat -c %Y "$root")"
           test -x "$root/bin/aliasmode"
           grep -qx "Exec=\"$root/bin/aliasmode\"" "$HOME/.local/share/applications/aliasmode.desktop"
-          if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
-            test -f /etc/apparmor.d/aliasmode-chromium
+          if [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" == 1 ]]; then
+            sudo grep -q "^aliasmode-chromium " /sys/kernel/security/apparmor/profiles
           fi
       - name: Start the app, open the engines and close it
         shell: bash
@@ -227,6 +228,7 @@ jobs:
           winfx="$(jq -er '.profile.id // .id' <<<"$created")"
           "$helper" browser open --profile "$winfx" --url https://example.com/ | jq -e '.ok'
           observed="$(observe "$winfx" webglRenderer)"
+          printf "%s" "$observed" > "$evidence/firefox-windows-observed.json"
           jq '{userAgent, platform, webglVendor, webglRenderer, hardwareConcurrency}' <<<"$observed" | tee "$evidence/firefox-windows-identity.json"
           jq -e '(.webglRenderer | contains("Direct3D11")) and (.webglVendor | startswith("Google Inc.")) and (.platform == "Win32")' <<<"$observed"
           "$helper" browser close --profile "$winfx" | jq -e '.ok'
@@ -240,6 +242,7 @@ jobs:
           pgrep -af "runtimes/chromium-155.0.8059.31/chrome" | head -n 3 | tee "$evidence/chromium-155-processes.txt"
           ! grep -q -- "--no-sandbox" "$evidence/chromium-155-processes.txt"
           observed="$(observe "$chromium" platform)"
+          printf "%s" "$observed" > "$evidence/chromium-155-observed.json"
           jq '{userAgent, platform, webglVendor, webglRenderer, hardwareConcurrency}' <<<"$observed" | tee "$evidence/chromium-155-identity.json"
           jq -e '.platform == "Win32"' <<<"$observed"
           # Chromium 155 must accept the DuckDuckGo default search setup, which runs after launch.
@@ -271,6 +274,7 @@ jobs:
           ! grep -q -- "--no-sandbox" "$evidence/cloakbrowser-processes.txt"
           # The page must read the stored cores, not the engine default and not this computer's count.
           observed="$(observe "$cloak" hardwareConcurrency)"
+          printf "%s" "$observed" > "$evidence/cloakbrowser-observed.json"
           jq '{platform, hardwareConcurrency, webglRenderer}' <<<"$observed" | tee "$evidence/cloakbrowser-identity.json"
           jq -e '.hardwareConcurrency == 20 and .platform == "Win32"' <<<"$observed"
           "$helper" browser close --profile "$cloak" | jq -e '.ok'
@@ -338,8 +342,16 @@ jobs:
           done
           shot close-dialog
           test -n "$dialog"
+          # GTK ignores keys sent to a window, so the dialog gets focus and real key presses.
           xdotool windowactivate --sync "$dialog" || true
-          xdotool key --window "$dialog" alt+y
+          sleep 1
+          xdotool key alt+y
+          sleep 3
+          if xdotool search --name "Close AliasMode" >/dev/null 2>&1; then
+            # The Yes button fills the right half of the dialog's button row.
+            eval "$(xdotool getwindowgeometry --shell "$dialog")"
+            xdotool mousemove --window "$dialog" $((WIDTH * 3 / 4)) $((HEIGHT - 16)) click 1
+          fi
           for attempt in $(seq 1 90); do
             kill -0 "$desktop" 2>/dev/null || break
             sleep 1

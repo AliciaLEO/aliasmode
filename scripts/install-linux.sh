@@ -107,7 +107,12 @@ profile aliasmode-chromium @{HOME}/.local/share/com.aliasmode.desktop/runtimes/*
   include if exists <local/aliasmode-chromium>
 }
 PROFILE
-  as_root apparmor_parser -r "$apparmor_profile"
+  # AppArmor before version 4 (Ubuntu 22.04) has no rule that allows user namespaces.
+  if ! as_root apparmor_parser -r "$apparmor_profile" \
+    || ! as_root grep -q "^aliasmode-chromium " /sys/kernel/security/apparmor/profiles; then
+    as_root rm -f "$apparmor_profile"
+    echo "AliasMode warning: AppArmor on this computer cannot allow the Chrome sandbox, so Chrome profiles cannot open. Firefox profiles work." >&2
+  fi
 }
 
 installed_version() {

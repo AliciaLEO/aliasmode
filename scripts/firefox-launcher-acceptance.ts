@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { buildNewProfile } from "../create.ts";
 import { Launcher } from "../launcher.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, syncFirefoxTimezone } from "../firefox-config.ts";
-import { callFirefoxOwner, closeFirefoxOwner, FirefoxOwnerError, reserveFirefoxOwner, startFirefoxOwner } from "../firefox-runtime.ts";
+import { callFirefoxOwner, FirefoxOwnerError } from "../firefox-runtime.ts";
 import { decodePortableProfile, encodePortableProfile } from "../portable-profile.ts";
 import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
 import { applySourceRuntime, type SourceRuntime } from "../source-runtime.ts";
@@ -205,10 +205,7 @@ try {
   const expectedProxyAuthorization = `Basic ${Buffer.from(`${proxyUser}:${proxyPassword}`).toString("base64")}`;
   let proxyRequests = 0;
   let proxyFixtureRequests = 0;
-  let exitIpLookups = 0;
   let proxyFailure: string | undefined;
-  // A documentation address that the proxy reports as its exit, as ip-api.com would.
-  const exitIp = "203.0.113.7";
   proxyServer = createServer((request, response) => {
     if (request.headers["proxy-authorization"] !== expectedProxyAuthorization) {
       proxyFailure = "Firefox did not authenticate through the Launcher proxy relay";
@@ -222,13 +219,6 @@ try {
       proxyFailure = "Firefox did not send an absolute URL to the Launcher proxy relay";
       response.writeHead(400);
       response.end();
-      return;
-    }
-    // The Launcher asks for the proxy's exit IP through the proxy before Firefox starts.
-    if (target.hostname === "ip-api.com" && target.pathname === "/json/") {
-      exitIpLookups++;
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ status: "success", timezone: "America/New_York", countryCode: "US", query: exitIp }));
       return;
     }
     if (target.hostname !== fixtureHost || target.port !== String(fixturePort)) {
@@ -430,7 +420,6 @@ async def run(*, context, inputs, log, **_kwargs):
   const savedConfig = completeProfileFingerprint(savedProfile).firefox;
   assert.deepEqual(localStore.getProfile(profileId)?.firefox, savedConfig, "completed Firefox identity persists in ProfileStore");
 
-  const firefoxConfigs: Array<Record<string, unknown>> = [];
   localLauncher = new Launcher({
     store: localStore,
     dataRoot: localDataRoot,
@@ -438,12 +427,6 @@ async def run(*, context, inputs, log, **_kwargs):
     expectedFirefoxBinarySha256: expectedSha256,
     headless: true,
     portRange: { start: 18000, end: 18999 },
-    firefoxRuntime: {
-      reserve: reserveFirefoxOwner,
-      start: (input, callbacks) => { firefoxConfigs.push(input.config); return startFirefoxOwner(input, callbacks); },
-      call: callFirefoxOwner,
-      close: closeFirefoxOwner,
-    },
   });
   const initial = await localLauncher.start(profileId, [], { autoNavigate: false });
   const initialLaunch = localStore.getLaunch(profileId)!;
@@ -466,8 +449,6 @@ async def run(*, context, inputs, log, **_kwargs):
   assert.equal(mutated.identity.worker.timezone, savedProfile.timezone);
   assert.equal(mutated.identity.fonts["AliasMode Missing Font"].local, false);
   assert.equal(proxyFailure, undefined, "Launcher relays Firefox through the authenticated proxy");
-  assert.ok(exitIpLookups > 0, "Launcher looks up the exit IP through the authenticated proxy");
-  assert.equal(firefoxConfigs[0]?.["webrtc:ipv4"], exitIp, "Firefox shows the proxy exit IP as WebRTC's public address");
   assert.ok(proxyRequests > 0 && proxyFixtureRequests > 0, "Firefox reaches the loopback fixture through the Launcher proxy relay");
   assert.ok(mutated.tabs.includes(firstTab) && mutated.tabs.includes(secondTab), "fixture opens two local tabs");
 

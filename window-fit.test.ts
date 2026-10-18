@@ -114,6 +114,12 @@ function fakeBrowser(windows: Map<number, any>, refuse = false) {
 const MAXIMIZED_1080P = { left: -8, top: -8, width: 1936, height: 1048 };
 
 const ticks = (n: number) => new Promise((r) => setTimeout(r, n * 5 + 5));
+/** Waits for the watcher to reach a state; Windows timers fire about every 15.6 ms, not every 5. */
+async function settle<T>(read: () => T, expected: T, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !Bun.deepEquals(read(), expected)) await ticks(1);
+  expect(read()).toEqual(expected);
+}
 
 test("the watcher fixes a maximize at once and a dragged window after it settles", async () => {
   const windows = new Map<number, any>([[1, { left: 0, top: 0, width: 936, height: 810, windowState: "normal" }]]);
@@ -147,15 +153,12 @@ test("on a display larger than the profile's screen, maximize toggles between th
   const fit = watchWindowFit("ws://fake", AREA, { intervalMs: 5, WebSocket: browser.Socket });
   await ticks(2);
   browser.maximize(1, MAXIMIZED_1080P);
-  await ticks(3);
-  expect(windows.get(1)).toEqual({ windowState: "normal", ...AREA });
+  await settle(() => windows.get(1), { windowState: "normal", ...AREA });
   // Maximizing that window again brings back the window from before, as a restore does.
   browser.maximize(1, MAXIMIZED_1080P);
-  await ticks(3);
-  expect(windows.get(1)).toEqual(before);
+  await settle(() => windows.get(1), before);
   browser.maximize(1, MAXIMIZED_1080P);
-  await ticks(3);
-  expect(windows.get(1)).toEqual({ windowState: "normal", ...AREA });
+  await settle(() => windows.get(1), { windowState: "normal", ...AREA });
   // Each answer holds: nothing more is sent while the user leaves the window alone.
   const sent = browser.sets.length;
   await ticks(6);

@@ -278,7 +278,7 @@ jobs:
           bun -e '
             import { buildNewProfile } from "./create.ts";
             import { serializeAdsTxt } from "./parse.ts";
-            const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows" }, () => false);
+            const profile = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows", chromiumRuntime: "cloakbrowser" }, () => false);
             // As made on Windows: a CloakBrowser profile with its stored processor cores.
             process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
           ' > "$data/inbox/ci-cloakbrowser.txt"

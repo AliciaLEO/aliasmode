@@ -336,6 +336,8 @@
   "155 beta": "155 бета",
   "155 (default)": "155 (по умолчанию)",
   "Beta. Downloads once (about 190 MB) on each computer that opens it.": "Бета-версия. Загружается один раз (около 190 МБ) на каждом компьютере, где её открывают.",
+  "Downloads once (about 190 MB) on each computer that opens it.": "Браузер загружается один раз (около 190 МБ) на каждом компьютере, где его открывают.",
+  "CloakBrowser profiles on one computer can be linked to each other. Use AliasMode Chromium or AliasMode Firefox for separate identities.": "Профили CloakBrowser на одном компьютере могут быть связаны между собой. Для отдельных цифровых личностей используйте AliasMode Chromium или AliasMode Firefox.",
   "Expand sidebar": "Развернуть боковую панель",
   "Collapse sidebar": "Свернуть боковую панель",
   "Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports": "Импорт профилей из AdsPower, GoLogin, Multilogin, Donut и других читаемых экспортов",

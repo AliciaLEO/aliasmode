@@ -174,6 +174,12 @@ export function hostChromiumRuntime(platform = process.platform, env = process.e
   return platform === "darwin" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;
 }
 
+/** New Chromium profiles that name no runtime use Chromium 155 wherever this computer can run it. */
+export function defaultChromiumRuntime(platform = process.platform, arch: string = process.arch, env = process.env): "aliasmode" | undefined {
+  if (platform === "darwin") return hostChromiumRuntime(platform, env);
+  return supportsChromium155Host(platform, arch) ? "aliasmode" : undefined;
+}
+
 /**
  * The primary display's scale, which the desktop app passes in ALIASMODE_HOST_SCALE
  * (1.25 at 125%). 1 when it is missing or is not a display scale.

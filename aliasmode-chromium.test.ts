@@ -8,6 +8,7 @@ import {
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   cloakBrowserExecutableSha256,
+  defaultChromiumRuntime,
   ensureAliasmodeChromium,
   ensureCloakBrowser,
   hostChromiumRuntime,
@@ -115,7 +116,7 @@ test("rejects an archive or executable that does not match its pin", async () =>
 test("new profiles keep their Chromium runtime fixed locally and in Cloud payloads", () => {
   const store = new ProfileStore(":memory:");
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
-  const standard = buildNewProfile({}, () => false);
+  const standard = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   expect(standard.chromiumRuntime).toBeUndefined();
   expect(() => buildNewProfile({ engine: "firefox", chromiumRuntime: "aliasmode" }, () => false)).toThrow();
   expect(() => buildNewProfile({ chromiumRuntime: "chrome-200" }, () => false)).toThrow("unsupported Chromium runtime");
@@ -150,7 +151,7 @@ test("new profiles keep their Chromium runtime fixed locally and in Cloud payloa
 
 test("exports keep the Chrome version so a re-import cannot downgrade it", () => {
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
-  const standard = buildNewProfile({}, () => false);
+  const standard = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   const text = serializeAdsTxt([beta, standard]);
   expect(text.match(/^chromium_runtime=aliasmode$/gm)).toHaveLength(1);
   const imported = parseExport(text).profiles;
@@ -165,6 +166,15 @@ test("macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser bin
   expect(hostChromiumRuntime("darwin", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
   expect(hostChromiumRuntime("win32", {})).toBeUndefined();
   expect(hostChromiumRuntime("linux", {})).toBeUndefined();
+});
+
+test("new Chromium profiles use Chromium 155 wherever the computer can run it", () => {
+  expect(defaultChromiumRuntime("win32", "x64", {})).toBe("aliasmode");
+  expect(defaultChromiumRuntime("linux", "x64", {})).toBe("aliasmode");
+  expect(defaultChromiumRuntime("darwin", "arm64", {})).toBe("aliasmode");
+  expect(defaultChromiumRuntime("darwin", "arm64", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
+  expect(defaultChromiumRuntime("win32", "arm64", {})).toBeUndefined();
+  expect(defaultChromiumRuntime("linux", "arm64", {})).toBeUndefined();
 });
 
 test("the host display scale comes from the desktop app, and 1 stands in for a missing or invalid value", () => {

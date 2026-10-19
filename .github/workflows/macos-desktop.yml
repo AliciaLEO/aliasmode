@@ -215,7 +215,7 @@ jobs:
           "$helper" browser close --profile "$winfx" | jq -e '.ok'
 
           # No runtime flag: on macOS a Chromium profile must default to the 155 runtime.
-          created="$("$helper" profiles create --name ci-chromium --temporary)"
+          created="$("$helper" profiles create --name ci-chromium --temporary --engine chromium)"
           chromium="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
           "$helper" browser open --profile "$chromium" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
           sleep 5
@@ -255,7 +255,7 @@ jobs:
           bun -e '
             import { buildNewProfile } from "./create.ts";
             import { serializeAdsTxt } from "./parse.ts";
-            const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows" }, () => false);
+            const profile = buildNewProfile({ name: "ci-cloakbrowser", platformOs: "windows", chromiumRuntime: "cloakbrowser" }, () => false);
             // As made on Windows: a CloakBrowser profile with its stored processor cores.
             process.stdout.write(serializeAdsTxt([{ ...profile, hardware: { cores: 20 } }]));
           ' > "$data/inbox/ci-cloakbrowser.txt"

@@ -410,7 +410,7 @@ function Initialize-McpHost([Diagnostics.Process]$Process, [switch]$ValidateResp
 }
 
 function New-OpenPersistentProfile([string]$Helper, [string]$Name) {
-  $profile = (& $Helper profiles create --name $Name | ConvertFrom-Json)
+  $profile = (& $Helper profiles create --name $Name --chromium-runtime cloakbrowser | ConvertFrom-Json)
   if ($LASTEXITCODE -ne 0 -or -not $profile.ok -or -not $profile.result.id) {
     throw "installed helper could not create the pre-existing profile"
   }
@@ -917,7 +917,7 @@ public static class AliasModeWindow {
           method = "tools/call"
           params = @{
             name = "aliasmode_profile_create"
-            arguments = @{ name = "ci-owned" }
+            arguments = @{ name = "ci-owned"; chromiumRuntime = "cloakbrowser" }
           }
         } | ConvertTo-Json -Compress -Depth 8
         $mcp.StandardInput.WriteLine($createRequest)
@@ -978,7 +978,7 @@ public static class AliasModeWindow {
     }
     "runtime-desktop" {
       Set-AcceptanceStage "runtime-desktop-json-cli"
-      $profile = (& $helper profiles create --name ci-agent --temporary | ConvertFrom-Json)
+      $profile = (& $helper profiles create --name ci-agent --temporary --chromium-runtime cloakbrowser | ConvertFrom-Json)
       if ($LASTEXITCODE -ne 0 -or -not $profile.ok -or -not $profile.result.id) {
         throw "installed JSON CLI could not create a temporary profile: $($profile.error)"
       }

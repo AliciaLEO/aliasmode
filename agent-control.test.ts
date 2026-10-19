@@ -521,3 +521,36 @@ test("Local profiles.create sets the timezone from the proxy", async () => {
     globalThis.fetch = realFetch;
   }
 });
+
+/** Runs `run` as if on Windows x64, Apple Silicon macOS, or Linux x64. */
+async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise<void>): Promise<void> {
+  const host = { platform: process.platform, arch: process.arch };
+  Object.defineProperties(process, { platform: { value: platform }, arch: { value: platform === "darwin" ? "arm64" : "x64" } });
+  try {
+    await run();
+  } finally {
+    Object.defineProperties(process, { platform: { value: host.platform }, arch: { value: host.arch } });
+  }
+}
+
+// The MCP create tool and `aliasmode-mcp profiles create` both send this request.
+test.each([
+  ["win32", "chromium", "aliasmode"],
+  ["darwin", "firefox", undefined],
+  ["linux", "firefox", undefined],
+] as const)("profiles.create on %s defaults to %s, and an explicit browser request wins", async (platform, engine, runtime) => {
+  const h = harness();
+  const saved: any[] = [];
+  const session = new AgentControlSession({ ...h.deps, store: { ...h.deps.store, upsertProfile: (profile: any) => saved.push(profile) } as any });
+  await onHost(platform, async () => {
+    for (const input of [{}, { chromiumRuntime: "cloakbrowser" }, { engine: "chromium" }, { engine: "firefox" }]) {
+      expect(await session.enqueue(wire("profiles.create", { input: { name: "agent", ...input } }))).toMatchObject({ ok: true });
+    }
+  });
+  expect(saved.map((profile) => [profile.engine, profile.chromiumRuntime])).toEqual([
+    [engine, runtime],
+    ["chromium", undefined],
+    ["chromium", "aliasmode"],
+    ["firefox", undefined],
+  ]);
+});

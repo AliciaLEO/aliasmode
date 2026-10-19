@@ -7,8 +7,8 @@ AliasMode is a free, open-source antidetect browser and local-first profile mana
 ## Quick facts
 
 - **Is AliasMode open source?** Yes, from engine to app. This repository is the complete desktop application — dashboard, local runtime, Local API, and MCP server — under Apache-2.0. The AliasMode Firefox antidetect engine, with every fingerprint patch, is MPL-2.0 at [aliasmode/aliasmode-firefox](https://github.com/aliasmode/aliasmode-firefox). AliasMode Cloud is an optional hosted sync service.
-- **Which browser engines does it use?** Two, chosen per profile. AliasMode Firefox is our own open-source antidetect engine with C++ fingerprint spoofing (Windows x64, macOS Apple Silicon, Linux x64). Chromium profiles run in CloakBrowser, a third-party engine included at no extra cost.
-- **Is AliasMode a CloakBrowser wrapper?** No. AliasMode ships its own open-source engine, AliasMode Firefox, and supports CloakBrowser as a second engine for Chromium profiles. AliasMode adds fingerprint profiles, per-profile proxies, Scripts, Trash, bulk Proxy Tools, portable encrypted profile sync, the AliasMode Local API (AdsPower-compatible), Playwright over CDP, and MCP servers for AI agents.
+- **Which browser engines does it use?** The engine is chosen per profile. New profiles use [AliasMode Chromium](https://github.com/aliasmode/aliasmode-chromium) on Windows and AliasMode Firefox on macOS and Linux. AliasMode Firefox is our own open-source antidetect engine with C++ fingerprint spoofing (Windows x64, macOS Apple Silicon, Linux x64). CloakBrowser, a third-party engine included at no extra cost, stays available for Chromium profiles. CloakBrowser profiles on one computer can be linked to each other.
+- **Is AliasMode a CloakBrowser wrapper?** No. AliasMode ships its own open-source engines, AliasMode Chromium and AliasMode Firefox, and supports CloakBrowser as an optional engine for Chromium profiles. AliasMode adds fingerprint profiles, per-profile proxies, Scripts, Trash, bulk Proxy Tools, portable encrypted profile sync, the AliasMode Local API (AdsPower-compatible), Playwright over CDP, and MCP servers for AI agents.
 - **Does data stay local?** In Local mode, yes: no account, no AliasMode Cloud traffic, and profiles stay on the computer.
 - **Where do I get proxies?** Use any HTTP or SOCKS5 proxy. NobleProxy supports AliasMode and its users: AliasMode users pay 40% less for dedicated static residential proxies at [nobleproxy.com](https://nobleproxy.com/t/aliasmode?src=readme).
 - **What does it cost?** Nothing. Every feature is free, including both browser engines, which AliasMode downloads and verifies for you. No separate purchase, subscription, or account is required.
@@ -76,7 +76,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/in
 
 The script downloads the newest macOS build from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg`. The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
 
-New Chromium profiles made on macOS use Chromium 155. A CloakBrowser profile made on Windows opens on macOS with the macOS build of CloakBrowser (Chrome 145), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
+New profiles made on macOS use AliasMode Firefox, and new Chromium profiles use the Chromium 155 beta. A CloakBrowser profile made on Windows opens on macOS with the macOS build of CloakBrowser (Chrome 145), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
 
 Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
 
@@ -94,7 +94,7 @@ curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/in
 
 The script downloads the newest Linux build from GitHub Releases, verifies its published SHA-256, installs the app into `~/.local/share/aliasmode`, and adds AliasMode to the app menu. It asks for your password once (sudo) when the computer misses WebKitGTK 4.1 or a library that the browsers need, and on Ubuntu 23.10 or newer to let the Chrome sandbox start through an AppArmor profile.
 
-Chromium profiles use Chromium 155 or CloakBrowser (Chrome 146), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows and macOS apps.
+New profiles use AliasMode Firefox. Chromium profiles use the Chromium 155 beta or CloakBrowser (Chrome 146), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows and macOS apps.
 
 Packaging requires Linux x64, Bun, the Rust toolchain and the WebKitGTK 4.1 development package:
 
@@ -113,7 +113,7 @@ bun run desktop:prepare
 bun run desktop:build:nsis
 ```
 
-The installer does not include CloakBrowser. The app downloads the pinned CloakBrowser build into its data folder when a Chromium profile needs it, and starts that download when the app starts. AliasMode verifies the archive and executable SHA-256 hashes before every browser launch, and the download survives app updates.
+New profiles use AliasMode Chromium, which the app downloads on first use. The installer does not include CloakBrowser. The app downloads the pinned CloakBrowser build into its data folder when a CloakBrowser profile needs it, and starts that download when the app starts. AliasMode verifies the archive and executable SHA-256 hashes before every browser launch, and the download survives app updates.
 
 ### Import from Cloakpit
 
@@ -184,7 +184,9 @@ The website copies two contracts from this repository:
 
 AliasMode Firefox is AliasMode's own antidetect engine, built on top of Camoufox and published at [aliasmode/aliasmode-firefox](https://github.com/aliasmode/aliasmode-firefox) under MPL-2.0. AliasMode downloads it from that repository's releases and verifies the archive and executable SHA-256 hashes before launch. Firefox profiles do not support Chrome extensions or CDP.
 
-For Chromium profiles, AliasMode downloads CloakBrowser from its official releases on first use and verifies the pinned archive and executable SHA-256 hashes. The runtime is included at no extra cost: no separate CloakBrowser purchase, subscription, or account is required. The CloakBrowser binary is a third-party component and is not part of this repository or the Apache-2.0 license.
+New profiles use AliasMode Chromium on Windows and AliasMode Firefox on macOS and Linux. Chromium profiles use Chromium 155: on Windows this is AliasMode Chromium, published at [aliasmode/aliasmode-chromium](https://github.com/aliasmode/aliasmode-chromium), and on macOS and Linux it is a beta. AliasMode downloads it on first use and verifies the pinned archive and executable SHA-256 hashes.
+
+CloakBrowser stays available for Chromium profiles that ask for it. CloakBrowser profiles on one computer can be linked to each other, so use AliasMode Chromium or AliasMode Firefox for separate identities. AliasMode downloads CloakBrowser from its official releases on first use and verifies the pinned archive and executable SHA-256 hashes. The runtime is included at no extra cost: no separate CloakBrowser purchase, subscription, or account is required. The CloakBrowser binary is a third-party component and is not part of this repository or the Apache-2.0 license.
 
 ## Security
 

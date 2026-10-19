@@ -26,6 +26,7 @@ import type { RemoteCoordinator } from "./remote.ts";
 import type { Profile } from "./types.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones } from "./geoip.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { isValidProfileName } from "./profile-validation.ts";
 
 /** Best-effort geoip fetch, injectable for tests; defaults to real ip-api.com. */
@@ -90,6 +91,9 @@ function inputFromCreateBody(body: any): NewProfileInput {
         }
       : null,
     screen: typeof screenRaw === "string" ? screenRaw.replace(/_/g, "x") : "",
+    // AliasMode fields. Omitted means this computer's default browser.
+    ...(body?.engine ? { engine: body.engine } : {}),
+    ...(body?.chromium_runtime ? { chromiumRuntime: body.chromium_runtime } : {}),
   };
 }
 
@@ -222,6 +226,7 @@ export async function handleUserApi(
     }
     const input = inputFromCreateBody(body);
     try {
+      if (remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
       if (remote) {
         // Hub owns id generation, fingerprint seed, and geoip timezone.
         const { id } = await remote.createProfile(input);
@@ -230,7 +235,10 @@ export async function handleUserApi(
       const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
       // Match the browser clock to the proxy's geo, exactly as /ui/api create and
       // AdsPower's automatic_timezone do. Best-effort: never fail create on geoip.
-      if (profile.proxy) await attachTimezones([profile], geoipFetch, true).catch(() => {});
+      if (profile.proxy) {
+        await attachTimezones([profile], geoipFetch, true).catch(() => {});
+        syncFirefoxTimezone(profile);
+      }
       if (roster?.createProfile) return ok(await roster.createProfile(profile));
       store.upsertProfile(profile);
       return ok({ id: profile.id });

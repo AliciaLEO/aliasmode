@@ -521,7 +521,7 @@ async def run(*, context, inputs, log, **_kwargs):
     localStore.upsertProfile(profile(concurrentFirefoxId, createFirefoxProfileConfig(1440, 900)));
     localStore.upsertProfile(profile(concurrentFirefoxPeerId, createFirefoxProfileConfig(1440, 900)));
     const chromiumProfile = buildNewProfile(
-      { engine: "chromium", name: "Chromium concurrent acceptance", screen: "1440x900" },
+      { engine: "chromium", chromiumRuntime: "cloakbrowser", name: "Chromium concurrent acceptance", screen: "1440x900" },
       (id) => localStore.getProfile(id) !== null,
     );
     const chromiumId = chromiumProfile.id;

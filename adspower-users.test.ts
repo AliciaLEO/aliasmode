@@ -163,6 +163,46 @@ test("user/create without a proxy succeeds and skips geoip", async () => {
   expect(p.group).toBe("g");
 });
 
+/** Runs `run` as if on Windows x64, Apple Silicon macOS, or Linux x64. */
+async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise<void>): Promise<void> {
+  const host = { platform: process.platform, arch: process.arch };
+  Object.defineProperties(process, { platform: { value: platform }, arch: { value: platform === "darwin" ? "arm64" : "x64" } });
+  try {
+    await run();
+  } finally {
+    Object.defineProperties(process, { platform: { value: host.platform }, arch: { value: host.arch } });
+  }
+}
+
+test.each([
+  ["win32", "chromium", "aliasmode"],
+  ["darwin", "firefox", undefined],
+  ["linux", "firefox", undefined],
+] as const)("user/create on %s defaults to %s, and an explicit browser request wins", async (platform, engine, runtime) => {
+  const { store, launcher } = setup();
+  const create = async (body: object) => {
+    const response = await (await handleUserApi(post("/api/v1/user/create", { name: "n", ...body }), launcher, store, null, geoip))!.json();
+    expect(response.code).toBe(0);
+    return store.getProfile(response.data.id)!;
+  };
+  await onHost(platform, async () => {
+    const created = await create({});
+    expect(created.engine).toBe(engine);
+    expect(created.chromiumRuntime).toBe(runtime);
+    const cloak = await create({ chromium_runtime: "cloakbrowser" });
+    expect(cloak.engine).toBe("chromium");
+    expect(cloak.chromiumRuntime).toBeUndefined();
+    expect(await create({ engine: "chromium" })).toMatchObject({ engine: "chromium", chromiumRuntime: "aliasmode" });
+    // A Firefox profile keeps the proxy's timezone in its saved configuration.
+    const firefox = await create({
+      engine: "firefox",
+      user_proxy_config: { proxy_type: "http", proxy_host: "9.9.9.9", proxy_port: "8000" },
+    });
+    expect(firefox.engine).toBe("firefox");
+    expect(firefox.firefox!.config.timezone).toBe("America/New_York");
+  });
+});
+
 test("user/update persists the exact name and AdsPower credential fields", async () => {
   const { store, launcher } = setup();
   const before = store.getProfile("k1d0cd11")!;

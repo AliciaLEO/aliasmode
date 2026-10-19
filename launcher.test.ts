@@ -5030,7 +5030,7 @@ test("Chromium 155 beta download failure is a public preflight error", async () 
 
 test("the macOS app opens a CloakBrowser profile with the downloaded macOS build, never with Chromium 155", async () => {
   const store = new ProfileStore(":memory:");
-  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   store.upsertProfile(profile);
   const f = fleet();
   const spawnedArgs: string[][] = [];
@@ -5062,7 +5062,7 @@ test("the macOS app opens a CloakBrowser profile with the downloaded macOS build
 test("a failed CloakBrowser download is a public preflight error on every desktop system", async () => {
   for (const [hostPlatform, hostArch] of [["darwin", "arm64"], ["linux", "x64"], ["win32", "x64"]] as const) {
     const store = new ProfileStore(":memory:");
-    const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+    const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
     store.upsertProfile(profile);
     const launcher = new ProductionLauncher({
       store,
@@ -5082,7 +5082,7 @@ test("a failed CloakBrowser download is a public preflight error on every deskto
 
 test("the Linux app opens a CloakBrowser profile with the downloaded Linux build and no desktop keyring", async () => {
   const store = new ProfileStore(":memory:");
-  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   store.upsertProfile(profile);
   const f = fleet();
   const spawnedArgs: string[][] = [];
@@ -5110,7 +5110,7 @@ test("the Linux app opens a CloakBrowser profile with the downloaded Linux build
 
 test("the Windows app opens a CloakBrowser profile with the downloaded build and its pinned kernel hash", async () => {
   const store = new ProfileStore(":memory:");
-  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   store.upsertProfile(profile);
   const f = fleet();
   const spawnedArgs: string[][] = [];
@@ -5143,7 +5143,7 @@ test("prefetch downloads each runtime and font pack that saved profiles need, an
   const root = join(tmpdir(), `aliasmode-prefetch-${crypto.randomUUID()}`);
   mkdirSync(join(root, "cloakbrowser-145.0.7632.109.2"), { recursive: true });
   mkdirSync(join(root, "chromium-155.0.8059.31-aliasmode.1"));
-  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
   const firefox = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
   store.upsertProfile(cloak);
@@ -5204,7 +5204,7 @@ test("prefetch downloads each runtime and font pack that saved profiles need, an
 test("a Linux computer that blocks the Chrome sandbox gets a public preflight error before any download", async () => {
   const store = new ProfileStore(":memory:");
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
-  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
   store.upsertProfile(beta);
   store.upsertProfile(cloak);
   let downloads = 0;

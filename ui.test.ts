@@ -735,7 +735,7 @@ test("new profiles and moves inherit Local group extension defaults", async () =
     new Request("http://x/ui/api/profiles", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "new", group: "With defaults" }),
+      body: JSON.stringify({ name: "new", group: "With defaults", engine: "chromium" }),
     }),
     {} as any,
     s,
@@ -2717,10 +2717,12 @@ test("app mode API exposes unconfigured first launch and persists Local selectio
     null,
     { appConfig },
   );
-  const { chromiumRuntime: _forcedRuntime, defaultChromiumRuntime, ...config } = await initial!.json();
+  const { chromiumRuntime: _forcedRuntime, defaultChromiumRuntime, defaultEngine, ...config } = await initial!.json();
   expect(config).toEqual({ version: 1, mode: "unconfigured", localAnalytics: false });
   // The dashboard starts new Chrome profiles on Chromium 155 only where this computer can run it.
   expect(defaultChromiumRuntime).toBe(supportsChromium155Host(process.platform, process.arch) ? "aliasmode" : undefined);
+  // New profiles start on AliasMode Chromium on Windows and AliasMode Firefox on macOS and Linux.
+  expect(defaultEngine).toBe(process.platform === "win32" ? "chromium" : "firefox");
 
   const selected = await handleUiRequest(
     new Request("http://x/ui/api/app-mode", {

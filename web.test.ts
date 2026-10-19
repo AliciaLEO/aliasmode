@@ -21,13 +21,18 @@ test("profile identity cards do not fetch egress IP automatically", () => {
 
 test("identity cards load stored Chromium and Firefox metadata without egress lookup", async () => {
   const store = new ProfileStore(":memory:");
-  const chromium = buildNewProfile({ engine: "chromium", name: "Chromium card" }, () => false);
+  const chromium = buildNewProfile({ chromiumRuntime: "cloakbrowser", name: "Chromium card" }, () => false);
   const firefox = buildNewProfile({ engine: "firefox", name: "Firefox card" }, (id) => id === chromium.id);
-  store.upsertProfiles([chromium, firefox]);
+  const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", name: "Chromium 155 card" }, (id) => id === chromium.id || id === firefox.id);
+  store.upsertProfiles([chromium, firefox, chromium155]);
   const server = serveDashboard({ port: 0, launcher: {} as any, store, log: () => {} });
 
   try {
-    for (const [profile, browser] of [[chromium, "CloakBrowser"], [firefox, "AliasMode Firefox"]] as const) {
+    for (const [profile, browser] of [
+      [chromium, "CloakBrowser"],
+      [firefox, "AliasMode Firefox"],
+      [chromium155, process.platform === "win32" ? "AliasMode Chromium" : "Chromium 155 beta"],
+    ] as const) {
       const response = await fetch(`http://127.0.0.1:${server.port}/card?id=${profile.id}`);
       expect(response.status).toBe(200);
       const card = await response.text();

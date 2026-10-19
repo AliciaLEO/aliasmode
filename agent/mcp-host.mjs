@@ -115,7 +115,7 @@ const ALIAS_TOOLS = [
   },
   {
     name: "aliasmode_profile_create",
-    description: "Create a persistent AliasMode profile, or an explicit temporary profile.",
+    description: "Create a persistent AliasMode profile, or an explicit temporary profile. Without engine, Windows creates an AliasMode Chromium profile, and macOS and Linux create an AliasMode Firefox profile.",
     annotations: toolAnnotations("Create an AliasMode profile"),
     inputSchema: {
       type: "object",
@@ -124,6 +124,11 @@ const ALIAS_TOOLS = [
         group: { type: "string" },
         platform: { type: "string" },
         engine: { type: "string", enum: ["chromium", "firefox"] },
+        chromiumRuntime: {
+          type: "string",
+          enum: ["aliasmode", "cloakbrowser"],
+          description: "Chromium profiles only. aliasmode (Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other.",
+        },
         screen: { type: "string" },
         proxy: {
           anyOf: [

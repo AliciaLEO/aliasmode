@@ -12,15 +12,15 @@
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
 import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime } from "./firefox-config.ts";
-import { chromiumDeviceScale, hostChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
+import { chromiumDeviceScale, defaultChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
 import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 
 export interface NewProfileInput {
-  /** Browser identity engine. Defaults to Chromium for compatibility. */
+  /** Browser identity engine. Omitted means this computer's default engine. */
   engine?: ProfileEngine;
-  /** Opt-in Chromium runtime. Omitted means CloakBrowser. */
+  /** "aliasmode" (Chromium 155) or "cloakbrowser". Omitted means Chromium 155 where this computer can run it. */
   chromiumRuntime?: string;
   name?: string;
   group?: string;
@@ -84,6 +84,14 @@ export function defaultScreen(floor: { width: number; height: number } | null, r
   return { width, height };
 }
 
+/**
+ * The engine of a new profile that names none: AliasMode Chromium on Windows and AliasMode
+ * Firefox on macOS and Linux. CloakBrowser profiles on one computer can be linked to each other.
+ */
+export function defaultProfileEngine(platform: NodeJS.Platform = process.platform): ProfileEngine {
+  return platform === "darwin" || platform === "linux" ? "firefox" : "chromium";
+}
+
 /** A unique profile id, collision-checked against `exists`. */
 export function generateId(exists: (id: string) => boolean): string {
   for (let i = 0; i < 100; i++) {
@@ -98,10 +106,13 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
 
-  const engine = input.engine === undefined ? "chromium" : input.engine;
+  // A named Chromium runtime implies Chromium. A CloakBrowser profile stores no runtime.
+  const cloakBrowser = input.chromiumRuntime === "cloakbrowser";
+  const engine = input.engine ?? (input.chromiumRuntime ? "chromium" : defaultProfileEngine());
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
-  const chromiumRuntime = normalizeChromiumRuntime(input.chromiumRuntime, engine)
-    ?? (engine === "chromium" ? hostChromiumRuntime() : undefined);
+  if (cloakBrowser && engine !== "chromium") throw new Error("only Chromium profiles can choose a Chromium runtime");
+  const chromiumRuntime = cloakBrowser ? undefined
+    : normalizeChromiumRuntime(input.chromiumRuntime, engine) ?? (engine === "chromium" ? defaultChromiumRuntime() : undefined);
   const screen = (input.screen || "").trim();
   const selected = screen ? parseStrictResolution(screen) : defaultScreen(hostScreenFloor(engine, chromiumRuntime));
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();

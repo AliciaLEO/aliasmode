@@ -33,6 +33,7 @@ import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 
 import { handleUserApi, type ProfileRoster } from "./adspower-users.ts";
+import { defaultProfileEngine } from "./create.ts";
 import {
   AGENT_CONTROL_MAX_MESSAGE_BYTES,
   AGENT_CONTROL_PATH,
@@ -92,7 +93,10 @@ function renderProfileCard(store: ProfileStore, id: string): Response {
   const p = store.getProfile(id);
   if (!p) return new Response("unknown profile", { status: 404, headers: { "content-type": "text/plain" } });
   const engine = typeof p === "object" && "engine" in p && p.engine === "firefox" ? "firefox" : "chromium";
-  const browser = engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser";
+  // Named as in the dashboard: Chromium 155 is AliasMode Chromium where it is the default engine.
+  const browser = engine === "firefox" ? "AliasMode Firefox"
+    : !p.chromiumRuntime ? "CloakBrowser"
+    : defaultProfileEngine() === "chromium" ? "AliasMode Chromium" : "Chromium 155 beta";
   const capabilities = engine === "firefox"
     ? "Native Firefox profile · no CDP, PDF, or Chrome extensions"
     : "CDP, PDF, and Chrome extensions";

@@ -112,6 +112,8 @@ export interface AppModeConfig {
   chromiumRuntime?: "aliasmode";
   /** Set when this computer can run Chromium 155: the New profile dialog then starts on it. */
   defaultChromiumRuntime?: "aliasmode";
+  /** The engine of new profiles on this computer: Chromium on Windows, Firefox on macOS and Linux. Absent in legacy Remote mode. */
+  defaultEngine?: "chromium" | "firefox";
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {
@@ -664,8 +666,8 @@ export interface NewProfileInput {
   name?: string;
   /** Browser family selected for a new Local profile. */
   engine?: "chromium" | "firefox";
-  /** Opt-in Chromium 155 beta for a new Local Chromium profile. */
-  chromiumRuntime?: "aliasmode";
+  /** Chromium runtime of a new Chromium profile: Chromium 155 or CloakBrowser. */
+  chromiumRuntime?: "aliasmode" | "cloakbrowser";
   group?: string;
   platform?: string;
   proxy?: ProxyCheckInput | null;

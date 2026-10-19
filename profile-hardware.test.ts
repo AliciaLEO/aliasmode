@@ -6,9 +6,8 @@ import { decodePortableProfile, encodePortableProfile } from "./portable-profile
 import { ProfileStore } from "./store.ts";
 
 const cloakProfile = () => {
-  // On macOS a new Chromium profile uses the 155 runtime, so build the CloakBrowser shape directly.
-  const { chromiumRuntime: _runtime, ...profile } = buildNewProfile({}, () => false);
-  return { ...profile, hardware: profile.hardware ?? generateProfileHardware(profile.fingerprintSeed) };
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  return { ...profile, hardware: profile.hardware! };
 };
 
 test("a new CloakBrowser profile stores its processor cores and reports them on every launch", () => {

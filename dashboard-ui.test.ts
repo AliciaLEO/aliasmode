@@ -259,7 +259,7 @@ test("dashboard selects browser for new profiles", () => {
   expect(createModal).toContain('engine: "chromium", label: "Chrome"');
   expect(createModal).toContain('engine: "firefox", label: "Firefox"');
   // The help text follows the engine that this computer creates, such as Chromium 155 on a Mac.
-  expect(createModal).toContain('const runtime = browserLabel(engine, appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime);');
+  expect(createModal).toContain('const runtime = browserLabel(engine, appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime, ownChromium);');
   expect(createModal).toContain('type="radio" name="browser-engine"');
   expect(createModal).toContain('checked={form.engine === engine}');
   expect(createModal).toContain('setF("engine", engine)');
@@ -273,16 +273,30 @@ test("dashboard selects browser for new profiles", () => {
   expect(styles).toContain('.browser-card:has(input:checked) { background: var(--browser-selected);');
   expect(styles).not.toContain('.browser-option:has(input:checked) { color: var(--browser-surface); }');
   expect(app).toContain("engine: form.engine,");
-  expect(editModal).toContain("value={browserLabel(editEngine, editChromiumRuntime)} readOnly");
+  expect(editModal).toContain("value={browserLabel(editEngine, editChromiumRuntime, ownChromium)} readOnly");
   expect(editModal).not.toContain('setEF("engine"');
   expect(editModal).not.toContain('setEF("chromiumRuntime"');
+  // New profiles start on this computer's default engine: AliasMode Chromium on Windows, AliasMode
+  // Firefox on macOS and Linux. Chromium 155 is AliasMode Chromium on Windows and a beta elsewhere.
+  expect(app).toContain('const ownChromium = appMode?.defaultEngine === "chromium";');
+  expect(app).toContain('return ownChromium ? "AliasMode Chromium" : "Chromium 155 beta";');
+  expect(app).toContain('setForm({ ...BLANK_FORM, engine: appMode?.defaultEngine ?? "chromium", chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group:');
   // Chrome version: 155 is the default where this computer can run it, and 146 stays the default
-  // elsewhere. 155 works in Local and Cloud, not legacy Remote.
+  // elsewhere. 155 works in Local and Cloud, not legacy Remote. Choosing 146 asks for CloakBrowser.
   expect(createModal).toContain('{form.engine === "chromium" && !appMode?.legacyRemote && !appMode?.chromiumRuntime && (');
-  expect(createModal).toContain('? <><option value="aliasmode">{t("155 (default)")}</option><option value="">{t("146")}</option></>');
+  expect(createModal).toContain('? <><option value="aliasmode">{ownChromium ? t("155 (default)") : t("155 beta")}</option><option value="">{t("146")}</option></>');
   expect(createModal).toContain(': <><option value="">{t("146 (default)")}</option><option value="aliasmode">{t("155 beta")}</option></>}');
-  expect(app).toContain('setForm({ ...BLANK_FORM, chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group:');
   expect(app).toContain('chromiumRuntime: "" as "" | "aliasmode"');
+  expect(app).toContain('...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime || "cloakbrowser" } : {}),');
+  // A CloakBrowser choice or profile shows the linkability note, in every bundled language.
+  const note = "CloakBrowser profiles on one computer can be linked to each other. Use AliasMode Chromium or AliasMode Firefox for separate identities.";
+  expect(app).toContain(`const CLOAKBROWSER_NOTE = "${note}";`);
+  expect(createModal).toMatch(/<small>\{!form\.chromiumRuntime\s+\? t\(CLOAKBROWSER_NOTE\)/);
+  expect(editModal).toContain('{editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}');
+  for (const locale of ["ru-RU", "zh-CN"]) {
+    const catalog = JSON.parse(readFileSync(join(import.meta.dir, "web", "locales", `${locale}.json`), "utf8"));
+    expect(catalog[note]).toContain("AliasMode Chromium");
+  }
   expect(app).toContain('Native Firefox profile · no CDP, PDF, or Chrome extensions');
   expect(app).toContain('{p.engine === "chromium" && <>');
   expect(app).toContain('selectedProfilesSupportChromeExtensions');

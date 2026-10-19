@@ -1,11 +1,11 @@
 import { test, expect } from "bun:test";
-import { buildNewProfile, defaultScreen, generateId, hostScreenFloor } from "./create.ts";
+import { buildNewProfile, defaultProfileEngine, defaultScreen, generateId, hostScreenFloor } from "./create.ts";
 import { graphicsIdentity } from "./firefox-config.ts";
 import { deterministicSeed, deriveFingerprintFlags, hostPlatformOs, platformFromUA } from "./fingerprint.ts";
 import { ProfileStore } from "./store.ts";
 
 test("buildNewProfile makes a unique id with a seed-derived fingerprint and no forced UA", () => {
-  const p = buildNewProfile({ name: "sophia", group: "va1" }, () => false);
+  const p = buildNewProfile({ engine: "chromium", name: "sophia", group: "va1" }, () => false);
   expect(p.id).toMatch(/^[a-z0-9]{8}$/);
   expect(p.name).toBe("sophia");
   expect(p.group).toBe("va1");
@@ -19,7 +19,7 @@ test("buildNewProfile makes a unique id with a seed-derived fingerprint and no f
 });
 
 test("new Chromium profiles keep their initial timezone across launches", () => {
-  const profile = buildNewProfile({}, () => false);
+  const profile = buildNewProfile({ engine: "chromium" }, () => false);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   expect(profile.timezone).toBe(timezone);
   const flags = deriveFingerprintFlags(profile);
@@ -44,7 +44,7 @@ test("a new Firefox profile stores its own graphics card, matched to its system 
   expect(String(windows.firefox!.config["webGl:renderer"])).not.toMatch(/SwiftShader|Basic Render/);
   // The choice comes from the profile seed, so it is stable for that profile.
   expect(graphicsIdentity("windows", windows.fingerprintSeed)["webGl:renderer"]).toBe(windows.firefox!.config["webGl:renderer"]);
-  expect(buildNewProfile({}, () => false).firefox).toBeUndefined();
+  expect(buildNewProfile({ engine: "chromium" }, () => false).firefox).toBeUndefined();
 });
 
 test("buildNewProfile generates and fixes a selected Windows identity for Firefox", () => {
@@ -70,6 +70,22 @@ test("buildNewProfile generates and fixes a selected Windows identity for Firefo
 
 test("buildNewProfile rejects an unknown browser engine", () => {
   expect(() => buildNewProfile({ engine: "webkit" as any }, () => false)).toThrow("unsupported profile engine");
+});
+
+test("new profiles default to AliasMode Chromium on Windows and AliasMode Firefox on macOS and Linux", () => {
+  expect(defaultProfileEngine("win32")).toBe("chromium");
+  expect(defaultProfileEngine("darwin")).toBe("firefox");
+  expect(defaultProfileEngine("linux")).toBe("firefox");
+  expect(buildNewProfile({}, () => false).engine).toBe(defaultProfileEngine());
+
+  // A named runtime implies Chromium. An explicit CloakBrowser request makes a CloakBrowser profile on any computer.
+  expect(buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false)).toMatchObject({ engine: "chromium", chromiumRuntime: "aliasmode" });
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  expect(cloak.engine).toBe("chromium");
+  expect(cloak.chromiumRuntime).toBeUndefined();
+  expect(cloak.hardware).toBeDefined();
+  expect(() => buildNewProfile({ engine: "firefox", chromiumRuntime: "cloakbrowser" }, () => false))
+    .toThrow("only Chromium profiles can choose a Chromium runtime");
 });
 
 

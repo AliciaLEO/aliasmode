@@ -44,7 +44,7 @@ test("locale input is canonical BCP-47, not browser arguments", () => {
 });
 
 test("Chromium locale is saved rather than taken from measured language or the next host", () => {
-  const profile = buildNewProfile({}, () => false);
+  const profile = buildNewProfile({ engine: "chromium" }, () => false);
   delete profile.locale;
   profile.timezone = "America/New_York";
   profile.fpObserved = { language: "zh-CN" };
@@ -105,7 +105,7 @@ test("closed-profile migration is persistent and leaves live Firefox identities 
   const dir = mkdtempSync(join(tmpdir(), "aliasmode-locale-"));
   const path = join(dir, "profiles.sqlite");
   let store = new ProfileStore(path);
-  const closed = buildNewProfile({}, () => false);
+  const closed = buildNewProfile({ engine: "chromium" }, () => false);
   const active = buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false);
   const legacy = { version: 1 as const, runtimeVersion: active.firefox!.runtimeVersion, config: { "navigator.platform": "Win32", timezone: "America/New_York" } };
   try {

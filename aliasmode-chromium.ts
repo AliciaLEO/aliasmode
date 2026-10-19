@@ -15,14 +15,14 @@ import {
 // own directory, so a browser still running from an earlier build keeps its files.
 // A new build changes the version, the release tag and the two SHA-256 values of its release.
 const WINDOWS_VERSION = "155.0.8059.85";
-const WINDOWS_RELEASE = "aliasmode.1";
+const WINDOWS_RELEASE = "aliasmode.2";
 const WINDOWS_BUILD = {
   root: `aliasmode-chromium-${WINDOWS_VERSION}-windows-x64`,
   url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${WINDOWS_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${WINDOWS_VERSION}-windows-x64.zip`,
   dir: `chromium-${WINDOWS_VERSION}-${WINDOWS_RELEASE}`,
-  archiveSha256: "ecb92e028a1d59e6c5d23acac095fe4ed6ec802fe16110f0a7dc06d3710af119",
+  archiveSha256: "f52c6db95f039f7c93996e0a0f22687f8260f6fa88a9738eec2557be29e841c3",
   executable: "chrome.exe",
-  executableSha256: "8619f0596a9987a33a7cde59f768a382ac99a1cf359b9ec8182dec0745787689",
+  executableSha256: "c49a5ef03306e4e786d5561143e800ff30b461f3b4298a2817eb364042a79fa2",
   // Pages read and draw at --force-device-scale-factor, and
   // --aliasmode-window-label names the window without touching page titles.
   hostScale: true,

@@ -877,6 +877,15 @@ public static class AliasModeWindow {
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"browser_close","arguments":{}}}')
         $closed = Read-McpResponse $mcp 31
         if ($closed.result.isError -eq $true) {
+          $sidecarLog = Get-ChildItem (Join-Path $appDataRoot "logs\aliasmode-*.log") -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if ($sidecarLog) {
+            Get-Content $sidecarLog.FullName |
+              Select-String -Pattern 'stop [A-Za-z0-9_-]+:|reconcileOrphans|process scan' |
+              Select-Object -Last 20 |
+              ForEach-Object { Write-Host "stop trace: $($_.Line -replace 'pid=\d+', 'pid=<pid>')" }
+          }
           throw "installed MCP host could not close the selected browser: $($closed.result.content[0].text)"
         }
         $mcp.StandardInput.WriteLine('{"jsonrpc":"2.0","id":32,"method":"tools/list","params":{}}')

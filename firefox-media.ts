@@ -22,7 +22,7 @@ interface VoiceManifest {
   langPacks?: Record<string, VoicePack>;
   fallbackLocale?: string;
   additions?: Array<{
-    kind: string; prob?: number; deferred?: boolean; requiresLocale?: string;
+    id?: string; kind: string; prob?: number; deferred?: boolean; requiresLocale?: string;
     voices?: string[]; groups?: string[]; sizes?: Size[];
   }>;
 }
@@ -74,6 +74,14 @@ function voiceUri(os: OsKey, name: string, lang: string): string {
     ?? `urn:moz-tts:osx:com.apple.speech.synthesis.voice.${name.replace(/[^A-Za-z0-9]/g, "")}`;
 }
 
+/**
+ * Share of desktops with voices beyond the stock set: speech packs of a second language on
+ * Windows, downloaded MacinTalk voices on macOS. The manifest's lower estimates left most
+ * profiles on one computer with the same list; AliasMode Chromium's Windows voices use 62% too.
+ */
+const EXTRA_VOICE_SHARE = 0.62;
+const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"]);
+
 /** The speech voices of a desktop with this system and display language. No voice is the default, as in stock Firefox. */
 export function firefoxVoices(os: PersonaOs, locale: string, seed: number): JsonValue[] {
   const random = draws(seed);
@@ -102,7 +110,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
   for (const addition of manifest.additions ?? []) {
     if (addition.deferred) continue;
     if (addition.requiresLocale && !locale.toLowerCase().startsWith(addition.requiresLocale.toLowerCase())) continue;
-    if (random() >= (addition.prob ?? 0)) continue;
+    if (random() >= (EXTRA_VOICE_ADDITIONS.has(addition.id ?? "") ? Math.max(addition.prob ?? 0, EXTRA_VOICE_SHARE) : addition.prob ?? 0)) continue;
     const count = () => addition.sizes ? pick(random, addition.sizes, (size) => size.w).n : Number.POSITIVE_INFINITY;
     if (addition.kind === "bundle") add(addition.voices);
     else if (addition.kind === "alacarte") {

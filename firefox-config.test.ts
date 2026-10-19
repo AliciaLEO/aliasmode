@@ -210,3 +210,41 @@ test("a new Firefox profile always keeps a taskbar, also where the generator dre
     expect(config["window.outerHeight"]).toBeLessThanOrEqual(config["screen.availHeight"]!);
   }
 });
+
+test("a Firefox launch shows its own subset of the stock font list, the same on every launch", () => {
+  const stocked = (seed: number, platform: string) => completeProfileFingerprint(profile(seed, { "navigator.platform": platform }));
+  const core: Record<string, string[]> = {
+    Win32: ["Arial", "Times New Roman", "Segoe UI", "Calibri", "Tahoma", "Verdana", "Courier New", "Microsoft YaHei", "SimSun",
+      "Segoe Fluent Icons", "Ink Free", "Bahnschrift", "Gadugi", "Myanmar Text", "Javanese Text", "HoloLens MDL2 Assets"],
+    MacIntel: ["Helvetica", "Helvetica Neue", "Geneva", "Luminari", "Galvji", "STIX Two Math", "Noto Sans Gunjala Gondi", "Noto Serif Yezidi"],
+    "Linux x86_64": ["Arimo", "Tinos", "Cousine", "Noto Sans SC", "Noto Serif Yezidi", "Twemoji Mozilla"],
+  };
+  for (const [platform, kept] of Object.entries(core)) {
+    const stock = stocked(1, platform).firefox!.config.fonts as string[];
+    const lists = Array.from({ length: 12 }, (_, i) => firefoxLaunchConfig(stocked(i + 1, platform)).fonts as string[]);
+    expect(new Set(lists.map((list) => list.join("|"))).size).toBeGreaterThan(3);
+    expect(lists.some((list) => list.length < stock.length)).toBe(true);
+    for (const list of lists) {
+      for (const font of kept) expect(list).toContain(font);
+      expect(list.every((font) => stock.includes(font))).toBe(true);
+    }
+    expect(firefoxLaunchConfig(stocked(1, platform)).fonts).toEqual(lists[0]!);
+  }
+  // The stored list is unchanged, and a list the user changed is shown as stored.
+  const one = stocked(5, "Win32");
+  const saved = structuredClone(one.firefox!.config.fonts);
+  firefoxLaunchConfig(one);
+  expect(one.firefox!.config.fonts).toEqual(saved);
+  expect(firefoxLaunchConfig(profile(5, { fonts: ["Arial", "Gabriola"] })).fonts).toEqual(["Arial", "Gabriola"]);
+});
+
+test("most Firefox profiles list voices beyond the stock set, each the same on every launch", () => {
+  for (const platform of ["Win32", "MacIntel"]) {
+    const counts = Array.from({ length: 200 }, (_, i) => (firefoxLaunchConfig(profile(i + 1, { "navigator.platform": platform })).voices as JsonValue[]).length);
+    const stock = Math.min(...counts);
+    const share = counts.filter((count) => count > stock).length / counts.length;
+    expect(share).toBeGreaterThan(0.5);
+    expect(share).toBeLessThan(0.75);
+  }
+  expect(firefoxLaunchConfig(profile(9)).voices).toEqual(firefoxLaunchConfig(profile(9)).voices!);
+});

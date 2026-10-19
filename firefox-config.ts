@@ -175,6 +175,8 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
   config["aliasmode:textSeed"] ??= seed("aliasmode:textSeed");
   const os = firefoxPersonaOs(profile, config);
+  // With the stock list every profile of one OS shows the same fonts.
+  if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
   // Without its own list the engine shows this computer's voices.
   config.voices ??= firefoxVoices(os, firefoxStartupLocale(profile), seed("voices"));
   config["voices:blockIfNotDefined"] ??= true;
@@ -188,6 +190,66 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   if (profile.proxy && webRtcIp) config[isIP(webRtcIp) === 6 ? "webrtc:ipv6" : "webrtc:ipv4"] = webRtcIp;
   fitFirefoxWindow(config);
   return config;
+}
+
+const OS_FONT_KEYS: Record<PersonaOs, "win" | "mac" | "lin"> = { windows: "win", macos: "mac", linux: "lin" };
+
+/** Noto families for historic scripts; a name ending in "*" matches every name it starts. */
+const HISTORIC_NOTO = [
+  "Avestan", "Bhaiksuki", "Brahmi", "Carian", "Cauc*", "Cuneiform", "Cypriot", "Duployan", "Egypt*", "Elbasan",
+  "Glagolitic", "Gothic", "Grantha", "Hatran", "Imp*", "Ins*", "Kaithi", "Kharoshthi", "Khojki", "Khudawadi",
+  "Linear*", "Lycian", "Lydian", "Mahajani", "Manichaean", "Marchen", "Meroitic", "Modi", "Multani", "Nabataean",
+  "Old*", "Palmyrene", "Phoenician", "Psa*", "Runic", "Sharada", "Siddham", "Takri", "Tirhuta", "Ugaritic",
+].map((script) => `Noto Sans ${script}`);
+
+/**
+ * Groups of rarely used families a stock install has, each shown by `presence` of profiles,
+ * the same groups and shares as AliasMode Chromium's Windows font packs. Core families and
+ * the families detectors use to tell the OS version (FONT_VERSION_MARKERS) are never in a group.
+ */
+const OPTIONAL_FONT_GROUPS: Record<PersonaOs, Array<{ id: string; presence: number; fonts: string[] }>> = {
+  windows: [
+    { id: "handwriting", presence: 0.7, fonts: ["Gabriola", "MV Boli", "Segoe Print", "Segoe Script"] },
+    { id: "supplemental-scripts", presence: 0.7, fonts: ["Microsoft Himalaya", "Microsoft New Tai Lue", "Microsoft PhagsPa", "Microsoft Tai Le", "Microsoft Yi Baiti", "Mongolian Baiti"] },
+    { id: "historic-scripts", presence: 0.75, fonts: ["Ebrima", "Segoe UI Historic", "Sylfaen"] },
+    { id: "cjk-extension-b", presence: 0.7, fonts: ["MingLiU-ExtB", "MingLiU_HKSCS-ExtB", "PMingLiU-ExtB", "SimSun-ExtB", "細明體-ExtB", "細明體_HKSCS-ExtB", "新細明體-ExtB"] },
+  ],
+  macos: [
+    { id: "decorative", presence: 0.7, fonts: ["Academy Engraved LET", "Bodoni Ornaments", "Chalkduster", "Herculanum", "Hoefler Text Ornaments", "Party LET", "Phosphate", "Savoye LET", "Trattatello", "Zapfino"] },
+    { id: "pt", presence: 0.7, fonts: ["PT *"] },
+    { id: "stix-legacy", presence: 0.75, fonts: ["STIX*"] },
+    { id: "historic-scripts", presence: 0.7, fonts: HISTORIC_NOTO },
+  ],
+  linux: [
+    { id: "noto-serif", presence: 0.7, fonts: ["Noto Serif *"] },
+    { id: "tifinagh-variants", presence: 0.75, fonts: ["Noto Sans Tifinagh *"] },
+    { id: "historic-scripts", presence: 0.7, fonts: HISTORIC_NOTO },
+    { id: "minority-scripts", presence: 0.75, fonts: [
+      "Adlam", "Bamum", "Bassa Vah", "Batak", "Buginese", "Buhid", "Chakma", "Cham", "Deseret", "Hanifi*", "Hanunoo",
+      "Kayah Li", "Lepcha", "Limbu", "Lisu", "Mandaic", "Medefaidrin", "Meetei Mayek", "Mende Kikakui", "Miao", "Mro",
+      "NKo", "Newa", "Ol Chiki", "Osage", "Osmanya", "Pahawh Hmong", "Pau Cin Hau", "Rejang", "Samaritan", "Saurashtra",
+      "Shavian", "Sora*", "Soyombo", "Sundanese", "Syloti Nagri", "Tagalog", "Tagbanwa", "Tai Le", "Tai Tham", "Tai Viet",
+      "Vai", "Wancho", "Warang Citi", "Yi", "Zanabazar Square",
+    ].map((script) => `Noto Sans ${script}`) },
+  ],
+};
+
+/** Families CreepJS reads the macOS version from; a group pattern never hides them. */
+const FONT_VERSION_MARKERS = new Set(["Noto Sans Canadian Aboriginal", "Noto Sans Gunjala Gondi", "Noto Sans Masaram Gondi", "Noto Serif Yezidi", "STIX Two Math", "STIX Two Text"]);
+
+const isStrings = (value: JsonValue | undefined): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * The fonts one launch shows: a stored list that is the stock list of the profile's OS, less the
+ * optional groups this profile does not draw. A list the user changed is shown as stored.
+ */
+function firefoxProfileFonts(os: PersonaOs, stored: string[], fraction: (group: string) => number): string[] {
+  const stock = fonts[OS_FONT_KEYS[os]] as string[];
+  if (stored.length !== stock.length || !stock.every((font) => stored.includes(font))) return stored;
+  const hidden = OPTIONAL_FONT_GROUPS[os].filter((group) => fraction(group.id) >= group.presence).flatMap((group) => group.fonts);
+  const inHidden = (font: string) => !FONT_VERSION_MARKERS.has(font)
+    && hidden.some((pattern) => pattern.endsWith("*") ? font.startsWith(pattern.slice(0, -1)) : font === pattern);
+  return stored.filter((font) => !inHidden(font));
 }
 
 /** The profile's language for the browser interface, Intl and form messages (as upstream Camoufox sets it). */

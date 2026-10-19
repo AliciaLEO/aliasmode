@@ -69,15 +69,15 @@ permissions:
   actions: read
   contents: read
 
-# The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r5).
+# The aliasmode/aliasmode-firefox build.yml run under test (release aliasmode-runtime-156.0.1-beta.36-r6).
 # The macOS and Linux jobs install the archive of the release that the app pins; its archives are
 # that run's archives, without fonts of other operating systems (the app downloads font packs).
 env:
-  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r5
-  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39255444623"
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r6
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39282389485"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
   ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-render-noise
-  ALIASMODE_FIREFOX_BUILD_SHA: 858c971e24301abb85ab5caa169e8a3e416cc7e2
+  ALIASMODE_FIREFOX_BUILD_SHA: 55839fa8b2005eff21cd6d660548009900f332a4
 
 jobs:
   windows:

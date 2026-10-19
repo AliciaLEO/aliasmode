@@ -2172,7 +2172,11 @@ test("Cloud export uses the authoritative portable profile", async () => {
     ...local,
     name: "Authoritative Cloud name",
     timezone: "UTC",
-    cookies: [{ name: "auth_token", value: "CLOUD_COOKIE", domain: ".x.com", path: "/" }],
+    cookies: [
+      { name: "auth_token", value: "CLOUD_COOKIE", domain: ".x.com", path: "/" },
+      // `document.cookie = "value"` makes a cookie with an empty name; export keeps it.
+      { name: "", value: "NAMELESS_COOKIE", domain: "x.com", path: "/" },
+    ],
   };
   const cloudBundle = JSON.stringify({
     cookies: cloudProfile.cookies,
@@ -2216,6 +2220,7 @@ test("Cloud export uses the authoritative portable profile", async () => {
   const exportedSession = parseExport(text).imports[0]!.sessionBundle!;
   expect(JSON.parse(exportedSession).origins).toEqual(JSON.parse(cloudBundle).origins);
   expect(JSON.parse(exportedSession).tabs).toEqual(["https://x.com/messages"]);
+  expect(JSON.parse(exportedSession).cookies).toContainEqual(expect.objectContaining({ name: "", value: "NAMELESS_COOKIE" }));
   const form = new FormData();
   form.append("group", "Imported");
   form.append("files", new File([text], "export.txt"));

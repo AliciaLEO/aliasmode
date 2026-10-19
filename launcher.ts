@@ -3208,8 +3208,11 @@ export class Launcher {
 
     if (teardownConfirmed) {
       if (launch && !this.forgetLaunch(profileId, launch)) {
-        teardownConfirmed = false;
-        this.log(`stop ${profileId}: launch generation changed during teardown; leaving the replacement owned`);
+        // A dashboard poll may have forgotten this same dead launch first.
+        if (this.store.getLaunch(profileId)) {
+          teardownConfirmed = false;
+          this.log(`stop ${profileId}: launch generation changed during teardown; leaving the replacement owned`);
+        }
       }
       else {
         this.closeRelay(profileId);

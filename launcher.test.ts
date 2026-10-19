@@ -3335,6 +3335,45 @@ test("a stop succeeds when a dashboard poll clears the same closed launch first"
   store.close();
 });
 
+test("a forced stop succeeds when a dashboard poll clears the same dead launch first", async () => {
+  const store = seeded();
+  let cdpAlive = true;
+  let ownedAlive = true;
+  const killed: number[] = [];
+  let launcher!: Launcher;
+  launcher = new Launcher({
+    store,
+    binaryPath: "/fake/cloak",
+    dataRoot: "/tmp/cloak-forced-reconciled-test",
+    portProbe: () => true,
+    spawn: () => ({ pid: 8125, kill() {} }),
+    fetch: async () => ({
+      ok: cdpAlive,
+      json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/forced" }),
+    }),
+    isPidAlive: (pid) => pid === 8125 && ownedAlive,
+    findOwnedBrowserPids: async () => ownedAlive ? [8125] : [],
+    // The process outlives the graceful window, as a slow Windows exit does.
+    browserClose: async () => { cdpAlive = false; return true; },
+    teardownTimeoutMs: 0,
+    killPid: async (pid) => {
+      killed.push(pid);
+      ownedAlive = false;
+      // The dashboard's poll sees the dead browser and forgets the launch before stop() does.
+      await launcher.reconcileOrphans();
+    },
+    ensureCookies: async () => ({ injected: false }),
+    navigate: async () => {},
+    labelWindow: async () => {},
+  });
+  await launcher.start("k1d0cd11");
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(killed).toEqual([8125]);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
 test("post-restart reattach verifies ownership and refreshes a changed live CDP websocket", async () => {
   const store = seeded();
   const profile = store.getProfile("k1d0cd11")!;

@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { renameWhenUnlocked } from "./aliasmode-chromium.ts";
+import { renameWhenUnlocked } from "./browser-install.ts";
 import { sha256File } from "./browser-install.ts";
 
 export type FontPackOs = "windows" | "macos" | "linux";

@@ -48,6 +48,20 @@ export async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
+// Antivirus can briefly hold freshly extracted files open, so Windows refuses the rename.
+export async function renameWhenUnlocked(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
+      await Bun.sleep(500);
+    }
+  }
+}
+
 async function preparePinnedWindowsArchive(cacheDir: string): Promise<void> {
   mkdirSync(cacheDir, { recursive: true });
   const archivePath = join(cacheDir, `${CLOAKBROWSER_VERSION}-${WINDOWS_ARCHIVE_NAME}`);
@@ -97,7 +111,7 @@ async function preparePinnedWindowsArchive(cacheDir: string): Promise<void> {
       throw new Error("pinned CloakBrowser archive contained an unexpected Windows x64 executable");
     }
     rmSync(binaryDir, { recursive: true, force: true });
-    renameSync(extractRoot, binaryDir);
+    await renameWhenUnlocked(extractRoot, binaryDir);
   } finally {
     rmSync(extractRoot, { recursive: true, force: true });
   }

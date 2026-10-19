@@ -3,11 +3,11 @@
  * the opt-in Chromium 155 beta, and CloakBrowser. Each is pinned by archive and
  * executable SHA-256, and lives in the app's data folder, which survives app updates.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import {
   CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
-  CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, sha256File,
+  CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, renameWhenUnlocked, sha256File,
 } from "./browser-install.ts";
 
 // AliasMode's own Windows build of the patch series. Its package includes Chromium's
@@ -211,20 +211,6 @@ export interface AliasmodeChromiumDeps {
 async function run(command: string[]): Promise<void> {
   const child = Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
   if (await child.exited !== 0) throw new Error(`${command[0]} exited with code ${child.exitCode}`);
-}
-
-// Antivirus can briefly hold freshly extracted files open, so Windows refuses the rename.
-export async function renameWhenUnlocked(from: string, to: string): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      renameSync(from, to);
-      return;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code ?? "";
-      if (attempt >= 20 || !["EPERM", "EACCES", "EBUSY"].includes(code)) throw error;
-      await Bun.sleep(500);
-    }
-  }
 }
 
 /**

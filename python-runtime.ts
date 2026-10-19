@@ -8,7 +8,7 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { renameWhenUnlocked } from "./aliasmode-chromium.ts";
+import { renameWhenUnlocked } from "./browser-install.ts";
 import { sha256File } from "./browser-install.ts";
 import { downloadResumable, type ResumableDownloadDeps } from "./runtime-download.ts";
 import { extractZipTo } from "./unzip.ts";

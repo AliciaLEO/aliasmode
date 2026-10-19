@@ -459,12 +459,21 @@ function Disconnect-McpHost([Diagnostics.Process]$Process) {
 function Get-ProcessTreeIds([int]$RootId) {
   $ids = [Collections.Generic.HashSet[int]]::new()
   $pending = [Collections.Generic.Queue[int]]::new()
+  $created = @{}
   [void]$ids.Add($RootId)
   $pending.Enqueue($RootId)
+  $root = Get-CimInstance Win32_Process -Filter "ProcessId = $RootId" -ErrorAction SilentlyContinue
+  if ($root) { $created[$RootId] = $root.CreationDate }
   while ($pending.Count -gt 0) {
     $parentId = $pending.Dequeue()
     foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentId" -ErrorAction SilentlyContinue)) {
-      if ($ids.Add([int]$child.ProcessId)) { $pending.Enqueue([int]$child.ProcessId) }
+      # Windows reuses process ids, and a process keeps the id of its exited parent. A "child"
+      # older than its parent belongs to an earlier process with that id (system processes too).
+      if ($created.ContainsKey($parentId) -and $child.CreationDate -lt $created[$parentId]) { continue }
+      if ($ids.Add([int]$child.ProcessId)) {
+        $created[[int]$child.ProcessId] = $child.CreationDate
+        $pending.Enqueue([int]$child.ProcessId)
+      }
     }
   }
   return @($ids)

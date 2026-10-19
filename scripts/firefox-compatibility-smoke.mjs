@@ -100,7 +100,11 @@ async function syntheticDuckDuckGo(context) {
 function nativeBrowserLookupScript() {
   return `ObjC.import('AppKit');
 ObjC.import('Foundation');
-const canonicalPath = (url) => url ? ObjC.unwrap(url.URLByResolvingSymlinksInPath.path) : null;
+// Some running applications have no bundle or executable URL; JXA gives them a nil object.
+const canonicalPath = (url) => {
+  const resolved = url && typeof url.isNil === "function" && !url.isNil() ? url.URLByResolvingSymlinksInPath : undefined;
+  return resolved ? ObjC.unwrap(resolved.path) : null;
+};
 const targetBundlePath = canonicalPath($.NSURL.fileURLWithPath($(${JSON.stringify(nativeAppBundle)})));
 const targetExecutablePath = canonicalPath($.NSURL.fileURLWithPath($(${JSON.stringify(nativeExecutable)})));
 const applications = $.NSWorkspace.sharedWorkspace.runningApplications;

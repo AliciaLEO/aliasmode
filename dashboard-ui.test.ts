@@ -293,9 +293,18 @@ test("dashboard selects browser for new profiles", () => {
   expect(app).toContain(`const CLOAKBROWSER_NOTE = "${note}";`);
   expect(createModal).toMatch(/<small>\{!form\.chromiumRuntime\s+\? t\(CLOAKBROWSER_NOTE\)/);
   expect(editModal).toContain('{editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}');
+  // The fingerprint hints hold for every engine, so they name none.
+  const hints = [
+    "The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.",
+    "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.",
+  ];
+  for (const hint of hints) expect(app).toContain(`t("${hint}")`);
+  expect(app).not.toContain("CloakBrowser keeps the locked values");
+  expect(app).not.toContain("CloakBrowser controls the other values");
   for (const locale of ["ru-RU", "zh-CN"]) {
     const catalog = JSON.parse(readFileSync(join(import.meta.dir, "web", "locales", `${locale}.json`), "utf8"));
     expect(catalog[note]).toContain("AliasMode Chromium");
+    for (const hint of hints) expect(catalog[hint]).toBeTruthy();
   }
   expect(app).toContain('Native Firefox profile · no CDP, PDF, or Chrome extensions');
   expect(app).toContain('{p.engine === "chromium" && <>');

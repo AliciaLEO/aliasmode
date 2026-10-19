@@ -174,11 +174,8 @@ async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise
   }
 }
 
-test.each([
-  ["win32", "chromium", "aliasmode"],
-  ["darwin", "firefox", undefined],
-  ["linux", "firefox", undefined],
-] as const)("user/create on %s defaults to %s, and an explicit browser request wins", async (platform, engine, runtime) => {
+// The API's clients use the CDP WebSocket, so it creates Chromium 155 profiles on every computer.
+test.each(["win32", "darwin", "linux"] as const)("user/create on %s defaults to Chromium 155, and an explicit browser request wins", async (platform) => {
   const { store, launcher } = setup();
   const create = async (body: object) => {
     const response = await (await handleUserApi(post("/api/v1/user/create", { name: "n", ...body }), launcher, store, null, geoip))!.json();
@@ -186,9 +183,7 @@ test.each([
     return store.getProfile(response.data.id)!;
   };
   await onHost(platform, async () => {
-    const created = await create({});
-    expect(created.engine).toBe(engine);
-    expect(created.chromiumRuntime).toBe(runtime);
+    expect(await create({})).toMatchObject({ engine: "chromium", chromiumRuntime: "aliasmode" });
     const cloak = await create({ chromium_runtime: "cloakbrowser" });
     expect(cloak.engine).toBe("chromium");
     expect(cloak.chromiumRuntime).toBeUndefined();

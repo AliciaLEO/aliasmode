@@ -844,10 +844,10 @@ function FingerprintSettings({
           : onTimezoneChange
             ? engine === "firefox"
               ? t("Only timezone can be changed. The screen is chosen when the profile is created. The rest of the Firefox fingerprint stays coordinated.")
-              : t("Screen, operating system, and timezone can be changed. CloakBrowser controls the other values.")
+              : t("Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.")
             : engine === "firefox"
               ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
-              : t("CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
+              : t("The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
         {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{t("Undo fingerprint edits")}</button>}
       </div>
     </details>

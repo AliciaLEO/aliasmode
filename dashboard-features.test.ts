@@ -84,7 +84,8 @@ test("serializeCsv/AdsTxt round-trip through parseUpdateFile", () => {
 
 test("serializeXlsxRows emits the documented columns in order", () => {
   const { headers } = serializeXlsxRows([profile()]);
-  expect(headers).toEqual([...XLSX_COLUMNS]);
+  // A Chromium profile names its runtime, so a re-import keeps its browser.
+  expect(headers).toEqual([...XLSX_COLUMNS, "chromium_runtime"]);
   expect(headers[0]).toBe("id"); // first, so a re-upload can match rows
 });
 

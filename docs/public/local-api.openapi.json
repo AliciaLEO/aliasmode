@@ -631,7 +631,7 @@
           "user"
         ],
         "summary": "Create a profile",
-        "description": "Creates an AliasMode profile from an AdsPower-shaped payload. A blank `name` is replaced by the generated profile id. `group_id` `\"0\"` means ungrouped. `fingerprint_config.screen_resolution` uses AdsPower's `WIDTH_HEIGHT` form; omit it for a realistic random resolution. New profiles use AliasMode Chromium on Windows and AliasMode Firefox on macOS and Linux unless `engine` or `chromium_runtime` names another browser. When a proxy is given, the browser timezone is matched to the proxy's location on a best-effort basis. Fails with `invalid JSON body` or the validation error.",
+        "description": "Creates an AliasMode profile from an AdsPower-shaped payload. A blank `name` is replaced by the generated profile id. `group_id` `\"0\"` means ungrouped. `fingerprint_config.screen_resolution` uses AdsPower's `WIDTH_HEIGHT` form; omit it for a realistic random resolution. Unless `engine` or `chromium_runtime` names another browser, the new profile is a Chromium profile on every computer, because this API's clients use the CDP WebSocket from `browserStart`: AliasMode Chromium on Windows and the Chromium 155 beta on macOS and Linux. The dashboard, CLI, and MCP tools create AliasMode Firefox profiles on macOS and Linux instead. When a proxy is given, the browser timezone is matched to the proxy's location on a best-effort basis. Fails with `invalid JSON body` or the validation error.",
         "x-aliasmode-version-introduced": "0.1.0-beta.42",
         "requestBody": {
           "required": true,
@@ -1551,7 +1551,7 @@
               "chromium",
               "firefox"
             ],
-            "description": "AliasMode field. Browser engine of the new profile. Omit it for this computer's default: `chromium` (AliasMode Chromium) on Windows and `firefox` (AliasMode Firefox) on macOS and Linux."
+            "description": "AliasMode field. Browser engine of the new profile. Defaults to `chromium` on every computer, because this API's clients use the CDP WebSocket from `browserStart`, which only Chromium profiles have. `firefox` creates an AliasMode Firefox profile, which has no CDP WebSocket."
           },
           "chromium_runtime": {
             "type": "string",

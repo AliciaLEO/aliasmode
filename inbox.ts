@@ -11,6 +11,7 @@ import { readdirSync, existsSync, mkdirSync, watch, statSync } from "node:fs";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { completeProfileFingerprint } from "./firefox-config.ts";
+import { withDefaultBrowser } from "./create.ts";
 import type { ParsedProfileImport } from "./parse.ts";
 import { parseImportFile } from "./import-formats.ts";
 import { FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
@@ -202,6 +203,14 @@ export async function prepareImportBuffers(
   const { resolved } = await attachTimezones(toResolve.map((item) => item.profile), timezoneFetch);
   for (const { entry, profile } of toResolve) Object.assign(entry.profile, { timezone: profile.timezone, locale: profile.locale });
   if (toResolve.length) log(`import: resolved timezone for ${resolved}/${toResolve.length} supplied proxy/proxies`);
+
+  // A new profile whose import names no browser gets this computer's default. Stored
+  // hardware belongs to CloakBrowser. A saved profile never changes its browser.
+  for (const entry of collected) {
+    if (saved(entry.profile.id) || entry.profile.engine === "firefox" || entry.profile.hardware) continue;
+    if (entry.sourceFields.chromium_runtime?.trim()) continue;
+    entry.profile = withDefaultBrowser(entry.profile);
+  }
 
   return {
     imports: collected,

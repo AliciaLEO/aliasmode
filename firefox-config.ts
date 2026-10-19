@@ -328,12 +328,12 @@ export function normalizeProfileEngine(value: unknown, firefox: unknown): {
   return { engine };
 }
 
-/** Absent or empty means the default CloakBrowser runtime. */
+/** Absent, empty, or "cloakbrowser" means the CloakBrowser runtime, which is stored as no runtime. */
 export function normalizeChromiumRuntime(value: unknown, engine: ProfileEngine): ChromiumRuntime | undefined {
   if (value === undefined || value === null || value === "") return undefined;
-  if (value !== "aliasmode") throw new Error("unsupported Chromium runtime");
+  if (value !== "aliasmode" && value !== "cloakbrowser") throw new Error("unsupported Chromium runtime");
   if (engine !== "chromium") throw new Error("only Chromium profiles can choose a Chromium runtime");
-  return value;
+  return value === "aliasmode" ? value : undefined;
 }
 
 function normalizeJsonRecord(value: Record<string, unknown>): Record<string, JsonValue> {

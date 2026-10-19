@@ -91,8 +91,9 @@ function inputFromCreateBody(body: any): NewProfileInput {
         }
       : null,
     screen: typeof screenRaw === "string" ? screenRaw.replace(/_/g, "x") : "",
-    // AliasMode fields. Omitted means this computer's default browser.
-    ...(body?.engine ? { engine: body.engine } : {}),
+    // AliasMode fields. This API's contract is a CDP WebSocket, so a request that names no
+    // engine gets Chromium on every computer.
+    engine: body?.engine || "chromium",
     ...(body?.chromium_runtime ? { chromiumRuntime: body.chromium_runtime } : {}),
   };
 }

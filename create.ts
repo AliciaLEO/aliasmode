@@ -11,7 +11,7 @@
  */
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
-import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime } from "./firefox-config.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime, syncFirefoxTimezone } from "./firefox-config.ts";
 import { chromiumDeviceScale, defaultChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
 import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
@@ -107,12 +107,11 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
 
   // A named Chromium runtime implies Chromium. A CloakBrowser profile stores no runtime.
-  const cloakBrowser = input.chromiumRuntime === "cloakbrowser";
   const engine = input.engine ?? (input.chromiumRuntime ? "chromium" : defaultProfileEngine());
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
-  if (cloakBrowser && engine !== "chromium") throw new Error("only Chromium profiles can choose a Chromium runtime");
-  const chromiumRuntime = cloakBrowser ? undefined
-    : normalizeChromiumRuntime(input.chromiumRuntime, engine) ?? (engine === "chromium" ? defaultChromiumRuntime() : undefined);
+  const chromiumRuntime = input.chromiumRuntime
+    ? normalizeChromiumRuntime(input.chromiumRuntime, engine)
+    : engine === "chromium" ? defaultChromiumRuntime() : undefined;
   const screen = (input.screen || "").trim();
   const selected = screen ? parseStrictResolution(screen) : defaultScreen(hostScreenFloor(engine, chromiumRuntime));
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
@@ -154,4 +153,32 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     cookies: [],
     seeded: false,
   });
+}
+
+/**
+ * A new imported profile that names no browser, as AdsPower and other tools export it, gets the
+ * browser of every other new profile on this computer. It keeps its screen, system, seed and
+ * timezone. Chrome extensions need Chromium.
+ */
+export function withDefaultBrowser(profile: Profile): Profile {
+  const engine = profile.engine ?? (profile.extensions?.length ? "chromium" : defaultProfileEngine());
+  if (engine === "chromium") {
+    const chromiumRuntime = defaultChromiumRuntime();
+    return { ...profile, engine, ...(chromiumRuntime ? { chromiumRuntime } : {}) };
+  }
+  const platformOs = parsePlatformOs(profile.platformOs) ?? hostPlatformOs();
+  const firefox = createFirefoxProfileConfig(profile.screenWidth, profile.screenHeight, platformOs, profile.fingerprintSeed);
+  const { "navigator.userAgent": ua, "screen.width": width, "screen.height": height, timezone } = firefox.config;
+  const imported: Profile = {
+    ...profile,
+    engine,
+    firefox,
+    platformOs,
+    ua: typeof ua === "string" ? ua : "",
+    screenWidth: typeof width === "number" ? width : profile.screenWidth,
+    screenHeight: typeof height === "number" ? height : profile.screenHeight,
+    timezone: profile.timezone || (typeof timezone === "string" ? timezone : Intl.DateTimeFormat().resolvedOptions().timeZone),
+  };
+  syncFirefoxTimezone(imported);
+  return completeProfileFingerprint(imported);
 }

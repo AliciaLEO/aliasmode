@@ -149,16 +149,19 @@ test("new profiles keep their Chromium runtime fixed locally and in Cloud payloa
   store.close();
 });
 
-test("exports keep the Chrome version so a re-import cannot downgrade it", () => {
+test("exports name the Chrome version of every Chromium profile so a re-import keeps it", () => {
   const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
   const standard = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
-  const text = serializeAdsTxt([beta, standard]);
+  const firefox = buildNewProfile({ engine: "firefox" }, () => false);
+  const text = serializeAdsTxt([beta, standard, firefox]);
   expect(text.match(/^chromium_runtime=aliasmode$/gm)).toHaveLength(1);
+  expect(text.match(/^chromium_runtime=cloakbrowser$/gm)).toHaveLength(1);
+  expect(text.match(/^chromium_runtime=/gm)).toHaveLength(2);
   const imported = parseExport(text).profiles;
   expect(imported.find((profile) => profile.id === beta.id)?.chromiumRuntime).toBe("aliasmode");
   expect(imported.find((profile) => profile.id === standard.id)?.chromiumRuntime).toBeUndefined();
-  expect(serializeXlsxRows([beta, standard]).headers).toContain("chromium_runtime");
-  expect(serializeXlsxRows([standard]).headers).not.toContain("chromium_runtime");
+  expect(serializeXlsxRows([standard]).headers).toContain("chromium_runtime");
+  expect(serializeXlsxRows([firefox]).headers).not.toContain("chromium_runtime");
 });
 
 test("macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser binary is configured", () => {

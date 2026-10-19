@@ -17,7 +17,7 @@ const isStrings = (value: JsonValue | undefined) => Array.isArray(value) && valu
 
 /** The engine crashes on a value of the wrong type (settings/properties.json of the 156 engine). */
 function expectEngineTypes(config: Record<string, JsonValue>) {
-  expect(isUint(config["audio:seed"])).toBe(true);
+  for (const key of ["audio:seed", "aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(isUint(config[key])).toBe(true);
   expect(config["voices:blockIfNotDefined"]).toBeBoolean();
   expect(config["mediaDevices:enabled"]).toBeBoolean();
   for (const kind of ["micros", "webcams", "speakers"]) expect(isUint(config[`mediaDevices:${kind}`])).toBe(true);
@@ -36,7 +36,7 @@ function expectEngineTypes(config: Record<string, JsonValue>) {
   }
 }
 
-test("each Firefox launch gets an audio seed, voices and media devices from its profile seed, never stored", () => {
+test("each Firefox launch gets audio, canvas and text seeds, voices and media devices from its profile seed, never stored", () => {
   const one = profile(3983315515, { "navigator.globalPrivacyControl": true, "canvas:seed": 7, "fonts:spacing_seed": 8 });
   const saved = structuredClone(one.firefox);
   const first = firefoxLaunchConfig(one);
@@ -50,7 +50,8 @@ test("each Firefox launch gets an audio seed, voices and media devices from its 
   }
   expect(firefoxLaunchConfig(structuredClone(one))).toEqual(first);
   expect(one.firefox).toEqual(saved);
-  expect(firefoxLaunchConfig(profile(2354318635))["audio:seed"]).not.toBe(first["audio:seed"]);
+  const other = firefoxLaunchConfig(profile(2354318635));
+  for (const key of ["audio:seed", "aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(other[key]).not.toBe(first[key]);
 });
 
 test("a Firefox launch keeps a seed, voice list or media device set that the profile stores", () => {

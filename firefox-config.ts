@@ -170,6 +170,10 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   const seed = (key: string) => deterministicSeed(`${profile.fingerprintSeed}:${key}`);
   // Without a seed every profile on one computer gives the same audio output.
   config["audio:seed"] ??= seed("audio:seed");
+  // Without these, profiles on one computer read back the same canvas and WebGL pixels and
+  // measure the same text widths.
+  config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
+  config["aliasmode:textSeed"] ??= seed("aliasmode:textSeed");
   const os = firefoxPersonaOs(profile, config);
   // Without its own list the engine shows this computer's voices.
   config.voices ??= firefoxVoices(os, firefoxStartupLocale(profile), seed("voices"));

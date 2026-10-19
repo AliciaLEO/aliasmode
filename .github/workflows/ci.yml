@@ -25,12 +25,12 @@ permissions:
 # whose archive the installer bundles. The release carries that run's archives, which hold no
 # fonts of other operating systems; the app downloads those as font packs when a profile needs them.
 env:
-  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r4
-  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: 448746b8293176c6d7149764099eb8a1cf5c725d82ec269f9b1961492193d9b8
-  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39114113148"
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r5
+  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: c87423643c581411283b17ce78c70c40a0af91984a59174c05cb1940c2ea862f
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39255444623"
   ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
-  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-r3-fontpacks
-  ALIASMODE_FIREFOX_BUILD_SHA: a1de38c423eacd3d9bccfdf8130479eb26aa5c5f
+  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-render-noise
+  ALIASMODE_FIREFOX_BUILD_SHA: 858c971e24301abb85ab5caa169e8a3e416cc7e2
 
 concurrency:
   group: >-

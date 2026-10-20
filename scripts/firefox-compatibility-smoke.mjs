@@ -114,7 +114,7 @@ for (let index = 0; index < applications.count; index += 1) {
   const application = applications.objectAtIndex(index);
   const bundlePath = canonicalPath(application.bundleURL);
   const executablePath = canonicalPath(application.executableURL);
-  const name = application.localizedName ? ObjC.unwrap(application.localizedName) : "";
+  const name = String(ObjC.unwrap(application.localizedName) ?? "");
   const pid = Number(application.processIdentifier);
   if (bundlePath === targetBundlePath || executablePath === targetExecutablePath) {
     matches.push({ pid, name, bundlePath, executablePath });

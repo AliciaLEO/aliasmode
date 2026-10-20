@@ -86,10 +86,13 @@ const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"])
  * The voices stock Firefox 156.0.1 lists on a stock install of each macOS version, captured on
  * GitHub runners: [name, lang, identifier] in AVSpeechSynthesisVoice.speechVoices order, without
  * the Eloquence and novelty voices OSXSpeechSynthesizerService.mm leaves out. Apple Silicon and
- * Intel give the same list, and the system language changes only the default. Newer versions
- * weigh more.
+ * Intel give the same list. Newer versions weigh more. Before macOS 26 the system language changes
+ * only the default. macOS 26 ("localeFirst") lists the default first, then the other voices of
+ * the system locale, then those of its language, each in the stored order. Only en-US and de-DE
+ * are captured; the rule gives both exactly (for de-DE, the default and then the stored order),
+ * and other locales are assumed to follow it.
  */
-const MAC_VOICE_LISTS = macVoiceLists as Array<{ macos: string; weight: number; voices: Array<[string, string, string]> }>;
+const MAC_VOICE_LISTS = macVoiceLists as Array<{ macos: string; weight: number; localeFirst?: boolean; voices: Array<[string, string, string]> }>;
 
 /** The language's main region where macOS has voices for several (otherwise its only one). */
 const MAC_MAIN_REGION: Record<string, string> = { en: "US", es: "ES", fr: "FR", nl: "NL", pt: "BR", zh: "CN" };
@@ -101,7 +104,7 @@ const MAC_MAIN_REGION: Record<string, string> = { en: "US", es: "ES", fr: "FR", 
  */
 function macDefaultVoice(voices: Array<{ lang: string; voiceUri: string }>, locale: string): number | undefined {
   const tag = new Intl.Locale(locale);
-  const system = voices.flatMap((voice, index) => voice.voiceUri.startsWith("urn:moz-tts:osx:com.apple.voice.compact.")
+  const system = voices.flatMap((voice, index) => /^urn:moz-tts:osx:com\.apple\.voice\.(super-)?compact\./.test(voice.voiceUri)
     && new Intl.Locale(voice.lang).language === tag.language ? [index] : []);
   const region = (index: number) => new Intl.Locale(voices[index]!.lang).region;
   return system.find((index) => region(index) === tag.region)
@@ -117,7 +120,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
   const random = draws(seed);
   const key = OS_KEYS[os];
   // A Mac has the stock list of one macOS version.
-  const stock = os === "macos" ? pick(random, MAC_VOICE_LISTS, (list) => list.weight).voices : [];
+  const stock = os === "macos" ? pick(random, MAC_VOICE_LISTS, (list) => list.weight) : undefined;
   const manifest = (voiceManifests as Record<OsKey, VoiceManifest>)[key];
   const packs = manifest.langPacks ?? {};
   const entries: string[] = [];
@@ -158,7 +161,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
       for (const group of sample(random, eligible, count(), (name) => packs[name]!.weight || 0.01)) takePack(group);
     }
   }
-  const voices = stock.map(([name, lang, id]) => ({ name, lang, voiceUri: `urn:moz-tts:osx:${id}`, isDefault: false, isLocalService: true }));
+  const voices = (stock?.voices ?? []).map(([name, lang, id]) => ({ name, lang, voiceUri: `urn:moz-tts:osx:${id}`, isDefault: false, isLocalService: true }));
   for (const entry of [...entries, ...legacy]) {
     // "Name:lang:type"; a name may itself contain a colon.
     const typeAt = entry.lastIndexOf(":");
@@ -172,6 +175,12 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
   }
   const defaultVoice = os === "macos" ? macDefaultVoice(voices, locale) : undefined;
   if (defaultVoice !== undefined) voices[defaultVoice]!.isDefault = true;
+  if (stock?.localeFirst) {
+    const language = new Intl.Locale(locale).language;
+    const tier = (voice: (typeof voices)[number]) => voice.isDefault ? 0
+      : voice.lang === locale ? 1 : new Intl.Locale(voice.lang).language === language ? 2 : 3;
+    voices.sort((a, b) => tier(a) - tier(b));
+  }
   return voices;
 }
 

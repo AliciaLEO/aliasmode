@@ -74,7 +74,7 @@ test.each([
   expect(voices.some((voice) => uri.test(voice.voiceUri))).toBe(true);
   // Stock Firefox marks the system voice of the display language as the default on macOS only.
   expect(voices.filter((voice) => voice.isDefault).map((voice) => voice.voiceUri))
-    .toEqual(platform === "MacIntel" ? ["urn:moz-tts:osx:com.apple.voice.compact.en-US.Samantha"] : []);
+    .toEqual(platform === "MacIntel" ? [expect.stringMatching(/^urn:moz-tts:osx:com\.apple\.voice\.(super-)?compact\.en-US\.Samantha$/)] : []);
   if (platform === "Linux x86_64") expect(config["mediaDevices:microphoneLabels"]).toContainEqual(expect.stringMatching(/^Monitor of /));
 });
 
@@ -371,26 +371,51 @@ test("a macOS profile lists one macOS version's stock voices in stock order, and
   ]);
   expect(stock("14.8.9")).toHaveLength(62);
   expect(stock("14.8.9")[5]).toBe("Helena|de-DE|urn:moz-tts:osx:com.apple.ttsbundle.siri_Helena_de-DE_compact");
+  // macOS 26.6 orders its 53 voices by the system language: these are the en-US and de-DE captures.
+  const mac26 = {
+    "en-US": ["Samantha", "Fred", "Junior", "Kathy", "Ralph", "Daniel", "Karen", "Moira", "Rishi", "Tessa", "Alice", "Alva", "Amélie",
+      "Amira", "Anna", "Carmit", "Damayanti", "Daria", "Ellen", "Ioana", "Joana", "Kanya", "Kyoko", "Lana", "Laura", "Lekha", "Lesya", "Linh",
+      "Luciana", "Majed", "Tünde", "Meijia", "Melina", "Milena", "Mónica", "Montse", "Nora", "Paulina", "Sara", "Satu", "Sinji", "Thomas",
+      "Tina", "Tingting", "Xander", "Yelda", "Yuna", "Zosia", "Zuzana", "Vani", "Soumya", "Geeta", "Piya"],
+    "de-DE": ["Anna", "Alice", "Alva", "Amélie", "Amira", "Carmit", "Damayanti", "Daniel", "Daria", "Ellen", "Ioana", "Joana", "Kanya",
+      "Karen", "Kyoko", "Lana", "Laura", "Lekha", "Lesya", "Linh", "Luciana", "Majed", "Tünde", "Meijia", "Melina", "Milena", "Moira",
+      "Mónica", "Montse", "Nora", "Paulina", "Rishi", "Samantha", "Sara", "Satu", "Sinji", "Tessa", "Thomas", "Tina", "Tingting", "Xander",
+      "Yelda", "Yuna", "Zosia", "Zuzana", "Vani", "Soumya", "Fred", "Geeta", "Junior", "Kathy", "Piya", "Ralph"],
+  };
+  expect(stock("26.6.2")).toHaveLength(53);
+  expect(stock("26.6.2")).toContain("Samantha|en-US|urn:moz-tts:osx:com.apple.voice.super-compact.en-US.Samantha");
   const downloaded = (voice: { voiceUri: string }) => /speech\.synthesis\.voice\.(Agnes|Alex|Bruce|Vicki)$/.test(voice.voiceUri);
   const versions = new Set<string>();
   for (let seed = 1; seed <= 100; seed++) {
     const list = voices("en-US", seed);
-    // Without its downloaded extras, the list is one version's stock list, the same on every launch.
-    const base = list.filter((voice) => !downloaded(voice)).map(entry);
-    const version = ["15.7.9", "14.8.9"].find((macos) => JSON.stringify(stock(macos)) === JSON.stringify(base));
+    // Without its downloaded extras, the list is one version's stock list in stock order, the same on every launch.
+    const base = { "en-US": list, "de-DE": voices("de-DE", seed) };
+    const [english, german] = (["en-US", "de-DE"] as const).map((locale) => base[locale].filter((voice) => !downloaded(voice)));
+    const version = ["15.7.9", "14.8.9"].find((macos) => JSON.stringify(stock(macos)) === JSON.stringify(english!.map(entry)))
+      ?? (english!.map(entry).sort().join() === [...stock("26.6.2")].sort().join() ? "26.6.2" : undefined);
     expect(version).toBeDefined();
     versions.add(version!);
+    if (version === "26.6.2") {
+      expect(english!.map((voice) => voice.name)).toEqual(mac26["en-US"]);
+      expect(german!.map((voice) => voice.name)).toEqual(mac26["de-DE"]);
+      // Other locales are assumed to follow the same rule: Thomas, then the other French voice.
+      expect(voices("fr-FR", seed).slice(0, 2).map((voice) => voice.name)).toEqual(["Thomas", "Amélie"]);
+    } else {
+      // Before macOS 26 the system language changes only the default.
+      expect(german!.map(entry)).toEqual(english!.map(entry));
+    }
     expect(voices("en-US", seed)).toEqual(list);
     expect(list.every((voice) => voice.isLocalService)).toBe(true);
-    // A downloaded voice joins its language; the system language changes only the default.
-    list.forEach((voice, at) => { if (downloaded(voice)) expect(list[at - 1]!.lang).toBe("en-US"); });
-    expect(voices("de-DE", seed).map(entry)).toEqual(list.map(entry));
+    // A downloaded voice joins its language.
+    for (const locale of ["en-US", "de-DE"] as const) {
+      base[locale].forEach((voice, at) => { if (downloaded(voice)) expect(base[locale][at - 1]!.lang).toBe("en-US"); });
+    }
     expect(defaults("en-US", seed)).toEqual(["Samantha en-US"]);
     expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
     expect(defaults("en-GB", seed)).toEqual(["Daniel en-GB"]);
     expect(defaults("en-US", seed, "Win32")).toEqual([]);
   }
-  expect([...versions].sort()).toEqual(["14.8.9", "15.7.9"]);
+  expect([...versions].sort()).toEqual(["14.8.9", "15.7.9", "26.6.2"]);
   for (const [locale, voice] of [
     ["fr-CA", "Amélie fr-CA"], ["en-CA", "Samantha en-US"], ["es-AR", "Mónica es-ES"], ["de-AT", "Anna de-DE"],
     ["zh-Hant-TW", "Meijia zh-TW"], ["ar-SA", "Majed ar-001"], ["ja-JP", "Kyoko ja-JP"],

@@ -289,6 +289,16 @@ test("most Windows Firefox profiles list voices beyond the stock set, macOS prof
   expect(firefoxLaunchConfig(profile(9)).voices).toEqual(firefoxLaunchConfig(profile(9)).voices!);
 });
 
+test("a macOS profile on another computer lists only the Hiragino faces its font pack holds", () => {
+  const stockMac = ["Helvetica", "Hiragino Sans", "Hiragino Mincho ProN W3", "ヒラギノ角ゴシック W3", ".Hiragino Kaku Gothic Interface",
+    "Hiragino Sans GB", "Hiragino Sans GB W3", "ヒラギノ角ゴ 簡体中文", "冬青黑体简体中文"];
+  const mac = { ...profile(5, { "navigator.platform": "MacIntel", fonts: stockMac }), platformOs: "macos" as const };
+  expect(firefoxLaunchConfig(mac, undefined, "/runtimes/firefox-fonts/macos").fonts)
+    .toEqual(["Helvetica", "Hiragino Sans GB", "Hiragino Sans GB W3", "ヒラギノ角ゴ 簡体中文", "冬青黑体简体中文"]);
+  // On a Mac the profile uses the Mac's own fonts, so the list stays.
+  expect(firefoxLaunchConfig(mac).fonts).toEqual(stockMac);
+});
+
 test("a macOS profile shows Apple graphics only, with the texture limits stock Firefox reports on a Mac", () => {
   for (let seed = 1; seed <= 500; seed++) {
     const keys = graphicsIdentity("macos", seed);

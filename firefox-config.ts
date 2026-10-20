@@ -284,6 +284,11 @@ export function firefoxLaunchConfig(
   }
   // With the stock list every profile of one OS shows the same fonts.
   if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
+  // Of the Hiragino faces the macOS font pack holds only Hiragino Sans GB, so on another computer
+  // the others cannot load, and a listed font that never loads is a tell.
+  if (fontsDir && os === "macos" && isStrings(config.fonts)) {
+    config.fonts = config.fonts.filter((font) => !/^\.?(Hiragino|ヒラギノ)/.test(font) || /Sans GB|^ヒラギノ角ゴ 簡体中文/.test(font));
+  }
   // Without its own list the engine shows this computer's voices.
   config.voices ??= firefoxVoices(os, firefoxStartupLocale(profile), seed("voices"));
   config["voices:blockIfNotDefined"] ??= true;

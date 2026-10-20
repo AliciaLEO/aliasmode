@@ -1911,6 +1911,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
       let routeHandler;
       let storageDetached = false;
       let browserDetached = false;
+      let signedIn = false;
       const context = {
         pages: () => hiddenPage ? [anchor, hiddenPage] : [anchor],
         async route(_url, handler) { routeHandler = handler; },
@@ -1926,7 +1927,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
                 return { targetInfo: { targetId: "hidden-target", type: "other" } };
               }
               if (["Network.enable", "Network.setBypassServiceWorker", "DOMStorage.enable", "IndexedDB.enable"].includes(method)) return {};
-              if (method === "DOMStorage.getDOMStorageItems") return { entries: [["theme", "dark"]] };
+              if (method === "DOMStorage.getDOMStorageItems") return { entries: signedIn ? [["dc2_auth_key", '"key"']] : [["theme", "dark"]] };
               if (method === "IndexedDB.requestDatabaseNames") return { databaseNames: ["cache-db", "tt-passcode"] };
               if (method === "IndexedDB.requestDatabase") return {
                 databaseWithObjectStores: {
@@ -1935,8 +1936,10 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
                   objectStores: ["store", "cache"].map((name) => ({ name, keyPath: { type: "null" }, autoIncrement: false, indexes: [] })),
                 },
               };
+              // Chromium 146 and 155 answer "Could not get index" to an empty index name.
+              if (method === "IndexedDB.requestData" && "indexName" in params) throw new Error("Protocol error (IndexedDB.requestData): Could not get index");
               if (method === "IndexedDB.requestData") return {
-                objectStoreDataEntries: [
+                objectStoreDataEntries: signedIn ? [] : [
                   { primaryKey: { value: "sessionEncrypted" }, value: { objectId: "session-value" } },
                   { primaryKey: { value: "globalEncrypted" }, value: { objectId: "global-value" } },
                 ],
@@ -1976,7 +1979,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
         },
         async detach() { browserDetached = true; },
       };
-      export const chromium = { async connectOverCDP() { return {
+      export const chromium = { async connectOverCDP(endpoint) { signedIn = endpoint === "ws://signed-in"; return {
         contexts: () => [context],
         async newBrowserCDPSession() { return browserCdp; },
         async close() {
@@ -2015,6 +2018,15 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
       tabs: [],
       telegramClient: "a",
     });
+    // A normal login is in localStorage, so a closed Telegram origin carries no IndexedDB, as a live page does.
+    const signedIn = JSON.parse(await runPlaywrightWorker<string>("session-capture", {
+      endpoint: "ws://signed-in",
+      captureSeed: { origins: ["https://web.telegram.org"], telegramClient: "a" },
+    }, { runtimeRoot: root, timeoutMs: 5_000 }));
+    expect(signedIn.origins).toEqual([{
+      origin: "https://web.telegram.org",
+      localStorage: [{ name: "dc2_auth_key", value: '"key"' }],
+    }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

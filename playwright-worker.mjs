@@ -205,6 +205,18 @@ function localStorageHasTelegramAuth(entries) {
   });
 }
 
+/** passcodeDatabasePresent for records already read over CDP. */
+function indexedDBHasTelegramAuth(databases) {
+  return databases.some((database) => (telegramRule(database.name)?.presence ?? []).some((presence) => presence.stores.some((storeName) => {
+    const keys = (database.stores.find((store) => store.name === storeName)?.records ?? [])
+      .filter((record) => record.valueEncoded !== undefined || (record.value !== undefined && record.value !== null))
+      .map((record) => String(record.key));
+    if (presence.allKeys?.every((key) => keys.includes(key))) return true;
+    const matcher = presence.anyKeyPattern && new RegExp(presence.anyKeyPattern, presence.caseInsensitive ? "i" : "");
+    return !!matcher && keys.some((key) => matcher.test(key));
+  })));
+}
+
 async function passcodeDatabasePresent(page) {
   return page.evaluate(async (rules) => {
     if (globalThis.location.origin !== "https://web.telegram.org") throw new Error("Wrong capture origin");
@@ -451,7 +463,6 @@ async function collectTelegramIndexedDB(cdp, origin) {
           securityOrigin: origin,
           databaseName: name,
           objectStoreName: store.name,
-          indexName: "",
           skipCount,
           pageSize: 1_000,
         });
@@ -610,7 +621,9 @@ async function createReadOnlyStorageReader(browser, context) {
           storageId: { securityOrigin: origin, isLocalStorage: true },
         });
         const localStorage = (response.entries ?? []).map(([name, value]) => ({ name, value }));
-        const indexedDB = origin === TELEGRAM_ORIGIN ? await collectTelegramIndexedDB(cdp, origin) : [];
+        const collected = origin === TELEGRAM_ORIGIN ? await collectTelegramIndexedDB(cdp, origin) : [];
+        // As for a live Telegram page: a normal A/K login is in localStorage; only a passcode login needs IndexedDB.
+        const indexedDB = localStorageHasTelegramAuth(localStorage) && !indexedDBHasTelegramAuth(collected) ? [] : collected;
         return { localStorage, ...(indexedDB.length ? { indexedDB } : {}) };
       } finally {
         await context.unroute(url, handler).catch(() => {});

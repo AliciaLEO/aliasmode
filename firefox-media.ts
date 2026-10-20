@@ -2,11 +2,12 @@
  * Speech voices and media devices for an AliasMode Firefox profile. Without its own list the
  * engine shows this computer's voices, and a desktop with no media devices is a headless tell.
  * The models and data come from the Camoufox launcher (firefox-data/, MIT, see LICENSE there):
- * the voices a stock Windows, macOS or Linux desktop has for its display language, and the
- * sound cards, headsets, displays and cameras common on each system.
+ * the voices a stock Windows or Linux desktop has for its display language, macOS's optional
+ * voice downloads, and the sound cards, headsets, displays and cameras common on each system.
+ * The macOS lists (mac-voices.json) are what stock Firefox 156.0.1 itself lists on stock macOS.
  */
 import voiceManifests from "./firefox-data/voice-manifests.json";
-import voiceUris from "./firefox-data/voice-uris.json";
+import macVoiceLists from "./firefox-data/mac-voices.json";
 import mediaCatalogue from "./firefox-data/media-devices.json";
 import { seedFraction } from "./fingerprint.ts";
 import type { JsonValue } from "./types.ts";
@@ -69,9 +70,8 @@ function voiceUri(os: OsKey, name: string, lang: string): string {
     const escaped = [...name].map((ch) => ch === " " ? "%20" : ch.charCodeAt(0) <= 0x7f ? ch : encodeURIComponent(ch)).join("");
     return `urn:moz-tts:speechd:${escaped}?${lang}`;
   }
-  // Every base macOS voice has a captured identifier; the optional downloads are MacinTalk voices.
-  return (voiceUris.mac as Record<string, string>)[`${name}|${lang}`]
-    ?? `urn:moz-tts:osx:com.apple.speech.synthesis.voice.${name.replace(/[^A-Za-z0-9]/g, "")}`;
+  // The stock macOS voices carry their identifier (MAC_VOICE_LISTS); the optional downloads are MacinTalk voices.
+  return `urn:moz-tts:osx:com.apple.speech.synthesis.voice.${name.replace(/[^A-Za-z0-9]/g, "")}`;
 }
 
 /**
@@ -83,15 +83,13 @@ const EXTRA_VOICE_SHARE = 0.62;
 const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"]);
 
 /**
- * Voices stock Firefox leaves out on macOS (OSXSpeechSynthesizerService.mm): the Eloquence voices
- * (com.apple.eloquence.*) and, on macOS 14 and later, the novelty voices.
+ * The voices stock Firefox 156.0.1 lists on a stock install of each macOS version, captured on
+ * GitHub runners: [name, lang, identifier] in AVSpeechSynthesisVoice.speechVoices order, without
+ * the Eloquence and novelty voices OSXSpeechSynthesizerService.mm leaves out. Apple Silicon and
+ * Intel give the same list, and the system language changes only the default. Newer versions
+ * weigh more.
  */
-const MAC_NOVELTY_VOICES = new Set([
-  "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Good News", "Jester", "Organ", "Superstar",
-  "Trinoids", "Whisper", "Wobble", "Zarvox",
-]);
-const macHidesVoice = (voice: { name: string; voiceUri: string }) =>
-  voice.voiceUri.startsWith("urn:moz-tts:osx:com.apple.eloquence.") || MAC_NOVELTY_VOICES.has(voice.name);
+const MAC_VOICE_LISTS = macVoiceLists as Array<{ macos: string; weight: number; voices: Array<[string, string, string]> }>;
 
 /** The language's main region where macOS has voices for several (otherwise its only one). */
 const MAC_MAIN_REGION: Record<string, string> = { en: "US", es: "ES", fr: "FR", nl: "NL", pt: "BR", zh: "CN" };
@@ -118,6 +116,8 @@ function macDefaultVoice(voices: Array<{ lang: string; voiceUri: string }>, loca
 export function firefoxVoices(os: PersonaOs, locale: string, seed: number): JsonValue[] {
   const random = draws(seed);
   const key = OS_KEYS[os];
+  // A Mac has the stock list of one macOS version.
+  const stock = os === "macos" ? pick(random, MAC_VOICE_LISTS, (list) => list.weight).voices : [];
   const manifest = (voiceManifests as Record<OsKey, VoiceManifest>)[key];
   const packs = manifest.langPacks ?? {};
   const entries: string[] = [];
@@ -158,18 +158,18 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
       for (const group of sample(random, eligible, count(), (name) => packs[name]!.weight || 0.01)) takePack(group);
     }
   }
-  const voices = [...entries, ...legacy].map((entry) => {
+  const voices = stock.map(([name, lang, id]) => ({ name, lang, voiceUri: `urn:moz-tts:osx:${id}`, isDefault: false, isLocalService: true }));
+  for (const entry of [...entries, ...legacy]) {
     // "Name:lang:type"; a name may itself contain a colon.
     const typeAt = entry.lastIndexOf(":");
     const langAt = entry.lastIndexOf(":", typeAt - 1);
     const name = entry.slice(0, langAt);
     const lang = entry.slice(langAt + 1, typeAt);
-    return { name, lang, voiceUri: voiceUri(key, name, lang), isDefault: false, isLocalService: entry.slice(typeAt + 1) === "local" };
-  }).filter((voice) => os !== "macos" || !macHidesVoice(voice));
-  // Stock Firefox lists macOS voices in AVSpeechSynthesisVoice.speechVoices order: by language,
-  // then by identifier (a Siri "ttsbundle" voice before the compact one), not by name.
-  const order = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
-  if (os === "macos") voices.sort((a, b) => order(a.lang, b.lang) || order(a.voiceUri, b.voiceUri));
+    // speechVoices groups macOS voices by language, so a downloaded voice joins its language.
+    const at = os === "macos" ? voices.findLastIndex((voice) => voice.lang === lang) : -1;
+    voices.splice(at < 0 ? voices.length : at + 1, 0,
+      { name, lang, voiceUri: voiceUri(key, name, lang), isDefault: false, isLocalService: entry.slice(typeAt + 1) === "local" });
+  }
   const defaultVoice = os === "macos" ? macDefaultVoice(voices, locale) : undefined;
   if (defaultVoice !== undefined) voices[defaultVoice]!.isDefault = true;
   return voices;

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   completeProfileFingerprint, createFirefoxProfileConfig, firefoxGraphicsRenderer, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity,
 } from "./firefox-config.ts";
+import macVoiceLists from "./firefox-data/mac-voices.json";
 import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
 import type { FirefoxProfileConfig, JsonValue, Profile } from "./types.ts";
 
@@ -267,9 +268,12 @@ test("a Firefox launch shows its own subset of the stock font list, the same on 
 
 test("most Firefox profiles list voices beyond the stock set, each the same on every launch", () => {
   for (const platform of ["Win32", "MacIntel"]) {
-    const counts = Array.from({ length: 200 }, (_, i) => (firefoxLaunchConfig(profile(i + 1, { "navigator.platform": platform })).voices as JsonValue[]).length);
-    const stock = Math.min(...counts);
-    const share = counts.filter((count) => count > stock).length / counts.length;
+    const lists = Array.from({ length: 200 }, (_, i) => firefoxLaunchConfig(profile(i + 1, { "navigator.platform": platform })).voices as Array<{ voiceUri: string }>);
+    // A Mac's extras are downloaded MacinTalk voices; the stock list depends on its macOS version.
+    const extra = platform === "MacIntel"
+      ? (list: Array<{ voiceUri: string }>) => list.some((voice) => /speech\.synthesis\.voice\.(Agnes|Alex|Bruce|Vicki)$/.test(voice.voiceUri))
+      : (list: Array<{ voiceUri: string }>) => list.length > Math.min(...lists.map((other) => other.length));
+    const share = lists.filter(extra).length / lists.length;
     expect(share).toBeGreaterThan(0.5);
     expect(share).toBeLessThan(0.75);
   }
@@ -349,32 +353,44 @@ test("an existing profile opens with stock Firefox's usable area and no touch po
   expect(linux).toMatchObject({ "screen.availTop": 0, "screen.availHeight": 768 });
 });
 
-test("a macOS profile lists the voices stock Firefox shows there and marks one default, the system voice of its locale or else of its language", () => {
+test("a macOS profile lists one macOS version's stock voices in stock order, and the system voice of its locale is the default", () => {
   const voices = (locale: string, seed: number, platform = "MacIntel") => firefoxLaunchConfig({ ...profile(seed, { "navigator.platform": platform }), locale })
-    .voices as Array<{ name: string; lang: string; voiceUri: string; isDefault: boolean }>;
+    .voices as Array<{ name: string; lang: string; voiceUri: string; isDefault: boolean; isLocalService: boolean }>;
   const defaults = (locale: string, seed: number, platform = "MacIntel") =>
     voices(locale, seed, platform).filter((voice) => voice.isDefault).map((voice) => `${voice.name} ${voice.lang}`);
+  const entry = (voice: { name: string; lang: string; voiceUri: string }) => `${voice.name}|${voice.lang}|${voice.voiceUri}`;
+  const stock = (macos: string) => macVoiceLists.find((list) => list.macos === macos)!.voices
+    .map(([name, lang, id]) => `${name}|${lang}|urn:moz-tts:osx:${id}`);
+  // Stock Firefox 156.0.1 on macOS 15.7.9 (Apple Silicon and Intel) and on 14.8.9, by AVSpeechSynthesisVoice order.
+  expect(stock("15.7.9")).toHaveLength(64);
+  expect(stock("15.7.9").slice(0, 8)).toEqual([
+    "Majed|ar-001|urn:moz-tts:osx:com.apple.voice.compact.ar-001.Maged", "Daria|bg-BG|urn:moz-tts:osx:com.apple.voice.compact.bg-BG.Daria",
+    "Montse|ca-ES|urn:moz-tts:osx:com.apple.voice.compact.ca-ES.Montserrat", "Zuzana|cs-CZ|urn:moz-tts:osx:com.apple.voice.compact.cs-CZ.Zuzana",
+    "Sara|da-DK|urn:moz-tts:osx:com.apple.voice.compact.da-DK.Sara", "Helena|de-DE|urn:moz-tts:osx:com.apple.ttsbundle.siri_helena_de-DE_compact",
+    "Anna|de-DE|urn:moz-tts:osx:com.apple.voice.compact.de-DE.Anna", "Martin|de-DE|urn:moz-tts:osx:com.apple.ttsbundle.siri_martin_de-DE_compact",
+  ]);
+  expect(stock("14.8.9")).toHaveLength(62);
+  expect(stock("14.8.9")[5]).toBe("Helena|de-DE|urn:moz-tts:osx:com.apple.ttsbundle.siri_Helena_de-DE_compact");
+  const downloaded = (voice: { voiceUri: string }) => /speech\.synthesis\.voice\.(Agnes|Alex|Bruce|Vicki)$/.test(voice.voiceUri);
+  const versions = new Set<string>();
   for (let seed = 1; seed <= 100; seed++) {
-    expect(defaults("en-US", seed)).toEqual(["Samantha en-US"]);
-    expect(defaults("en-GB", seed)).toEqual(["Daniel en-GB"]);
-    expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
-    expect(defaults("en-US", seed, "Win32")).toEqual([]);
-    // OSXSpeechSynthesizerService.mm leaves out the Eloquence and novelty voices.
     const list = voices("en-US", seed);
-    for (const voice of list) {
-      expect(voice.voiceUri).not.toContain("com.apple.eloquence");
-      expect(["Albert", "Bad News", "Bells", "Trinoids", "Whisper", "Wobble", "Zarvox"]).not.toContain(voice.name);
-    }
-    // In speechVoices order, as stock Firefox 156 on macOS 15 lists them: by language, then identifier.
-    const keys = list.map((voice) => `${voice.lang} ${voice.voiceUri}`);
-    expect(keys).toEqual([...keys].sort());
-    expect(list.slice(0, 5).map((voice) => `${voice.name} ${voice.lang}`))
-      .toEqual(["Majed ar-001", "Daria bg-BG", "Montse ca-ES", "Zuzana cs-CZ", "Sara da-DK"]);
+    // Without its downloaded extras, the list is one version's stock list, the same on every launch.
+    const base = list.filter((voice) => !downloaded(voice)).map(entry);
+    const version = ["15.7.9", "14.8.9"].find((macos) => JSON.stringify(stock(macos)) === JSON.stringify(base));
+    expect(version).toBeDefined();
+    versions.add(version!);
+    expect(voices("en-US", seed)).toEqual(list);
+    expect(list.every((voice) => voice.isLocalService)).toBe(true);
+    // A downloaded voice joins its language; the system language changes only the default.
+    list.forEach((voice, at) => { if (downloaded(voice)) expect(list[at - 1]!.lang).toBe("en-US"); });
+    expect(voices("de-DE", seed).map(entry)).toEqual(list.map(entry));
+    expect(defaults("en-US", seed)).toEqual(["Samantha en-US"]);
+    expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
+    expect(defaults("en-GB", seed)).toEqual(["Daniel en-GB"]);
+    expect(defaults("en-US", seed, "Win32")).toEqual([]);
   }
-  // A downloaded voice sits with its language, by identifier: Alex before Samantha in en-US.
-  const english = Array.from({ length: 50 }, (_, i) => voices("en-US", i + 1).filter((voice) => voice.lang === "en-US").map((voice) => voice.name))
-    .find((names) => names.includes("Alex"))!;
-  expect(english.indexOf("Alex")).toBeLessThan(english.indexOf("Samantha"));
+  expect([...versions].sort()).toEqual(["14.8.9", "15.7.9"]);
   for (const [locale, voice] of [
     ["fr-CA", "Amélie fr-CA"], ["en-CA", "Samantha en-US"], ["es-AR", "Mónica es-ES"], ["de-AT", "Anna de-DE"],
     ["zh-Hant-TW", "Meijia zh-TW"], ["ar-SA", "Majed ar-001"], ["ja-JP", "Kyoko ja-JP"],

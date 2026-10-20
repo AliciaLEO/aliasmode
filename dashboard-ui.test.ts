@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { localeTimezoneMismatch } from "./profile-locale.ts";
 
 const app = readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8").replaceAll("\r\n", "\n");
 const proxyOffer = readFileSync(join(import.meta.dir, "web", "proxy-offer.tsx"), "utf8");
@@ -325,7 +326,15 @@ test("both engines offer OS choices at creation and only Chromium allows later O
 test("Local timezone follows the proxy and can be refreshed on request", () => {
   expect(app).toContain("Stored · set from the proxy automatically");
   expect(app).toContain("refreshProfileTimezone(id)");
-  expect(app).toContain("Set timezone from proxy");
+  expect(app).toContain("Set timezone and language from proxy");
+});
+
+test("Edit shows the profile language and flags one that does not match the timezone", () => {
+  expect(app).toContain("localeTimezoneMismatch(editForm.locale, editForm.timezone ?? \"\")");
+  expect(localeTimezoneMismatch("en-GB", "America/New_York")).toBe(true);
+  expect(localeTimezoneMismatch("en-US", "America/New_York")).toBe(false);
+  expect(localeTimezoneMismatch("en", "America/New_York")).toBe(false);
+  expect(localeTimezoneMismatch("en-GB", "Not/AZone")).toBe(false);
 });
 
 test("running profile rows expose Bring to front in Local and Cloud mode", () => {

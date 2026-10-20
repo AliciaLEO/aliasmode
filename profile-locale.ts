@@ -818,6 +818,18 @@ export function localeForTimezone(timezone: string): string {
   return localeForCountry(TIMEZONE_COUNTRIES[timezone]) ?? "en-US";
 }
 
+/** True when the locale names a region that differs from the timezone's country. Unknown either way never mismatches. */
+export function localeTimezoneMismatch(locale: string, timezone: string): boolean {
+  const country = TIMEZONE_COUNTRIES[timezone];
+  if (!country || !locale) return false;
+  try {
+    const region = new Intl.Locale(locale).region;
+    return !!region && region !== country;
+  } catch {
+    return false;
+  }
+}
+
 export function normalizeProfileLocale(value: unknown): string | undefined {
   if (value === undefined || value === "") return undefined;
   if (typeof value !== "string") throw new Error("invalid locale: expected a BCP-47 language tag");

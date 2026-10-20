@@ -9,6 +9,7 @@ import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
+import { localeTimezoneMismatch } from "../profile-locale.ts";
 import { folderTree, folderScope, folderGrantPermission, type FolderInfo } from "../folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
@@ -2615,6 +2616,7 @@ function App() {
           customNo: p.customNo ?? "",
           platformOs: p.platformOs ?? "",
           timezone: p.timezone,
+          locale: p.locale ?? "",
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
@@ -2690,9 +2692,9 @@ function App() {
     setTimezoneBusy(true);
     setEditErr(null);
     try {
-      const { timezone } = await refreshProfileTimezone(id);
+      const { timezone, locale } = await refreshProfileTimezone(id);
       if (editFetchId.current !== id || generation !== editProxyCheckGeneration.current) return;
-      setEditForm((form) => ({ ...form, timezone }));
+      setEditForm((form) => ({ ...form, timezone, locale }));
       setEditInitialFingerprint((initial) => ({ ...initial, timezone }));
       await load();
     } catch (error) {
@@ -4748,13 +4750,21 @@ function App() {
                           onClick={refreshEditedTimezone}
                         >
                           <Icon name="activity" className="sm" />
-                          {timezoneBusy ? t("Looking up timezone…") : editHasProxy ? t("Set timezone from proxy") : t("Use current connection timezone")}
+                          {timezoneBusy ? t("Looking up timezone and language…") : editHasProxy ? t("Set timezone and language from proxy") : t("Use current connection timezone and language")}
                         </button>
                       </div>
                       <p className="hint">{editProxyChanged
                         ? t("Save proxy changes before setting the timezone.")
                         : t("This action saves the timezone immediately. It applies the next time this profile opens.")}</p>
                     </>
+                  )}
+                  {editForm.locale && (
+                    <p className="hint">
+                      {t("Language")}: {editForm.locale}
+                      {localeTimezoneMismatch(editForm.locale, editForm.timezone ?? "") && (
+                        <><br />{t("This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.")}</>
+                      )}
+                    </p>
                   )}
                   <div className="fld-row">
                     <CopyField label={t("Username")} value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />

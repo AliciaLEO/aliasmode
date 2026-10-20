@@ -99,6 +99,18 @@ test("Firefox Cloud edits set a new proxy's timezone in the saved config", async
   expect(updated.payload.profile.firefox.config.timezone).toBe("Europe/Paris");
 });
 
+test("Cloud proxy edits set the language from the proxy country", async () => {
+  const authoritative = { ...response(), payload: firefoxPayload() };
+  authoritative.payload.profile.locale = "en-GB";
+  let updated: any;
+  const editor = new CloudProfileEditor({
+    getProfile: async () => authoritative,
+    updateProfile: async (_id: string, request: unknown) => { updated = request; },
+  } as any, readOnlyStore(), timezoneFetch({ "new-proxy.example": "America/New_York" }));
+  await editor.save("cloud1", 7, { proxy: "new-proxy.example:8080" });
+  expect(updated.payload.profile.locale).toBe("en-US");
+});
+
 test("Firefox Cloud edits keep saved identity and session when the timezone lookup fails", async () => {
   const authoritative = { ...response(), payload: firefoxPayload() };
   let updated: any;

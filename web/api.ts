@@ -729,6 +729,8 @@ export interface EditProfile {
   customNo?: string;
   /** Stored timezone; blank uses the browser default. */
   timezone: string;
+  /** Stored language tag, e.g. "en-GB"; blank when unset. */
+  locale?: string;
   cookieCount: number;
   seeded: boolean;
   mobilePersona: boolean;
@@ -772,7 +774,7 @@ export async function updateProfile(id: string, set: Record<string, unknown>, ex
   return { ...body, status: r.status };
 }
 
-export async function refreshProfileTimezone(id: string): Promise<{ timezone: string }> {
+export async function refreshProfileTimezone(id: string): Promise<{ timezone: string; locale: string }> {
   const path = `/ui/api/profiles/${encodeURIComponent(id)}/timezone`;
   const response = await fetch(path, {
     method: "POST",
@@ -783,7 +785,7 @@ export async function refreshProfileTimezone(id: string): Promise<{ timezone: st
   if (!response.ok || body.ok !== true || typeof body.timezone !== "string") {
     throw new Error(body.error || "timezone lookup failed");
   }
-  return { timezone: body.timezone };
+  return { timezone: body.timezone, locale: typeof body.locale === "string" ? body.locale : "" };
 }
 
 export async function convertMobileProfile(id: string): Promise<any> {

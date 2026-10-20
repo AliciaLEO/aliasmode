@@ -31,6 +31,7 @@ export interface CloudProfileEditView {
   resolution: string;
   platformOs: string;
   timezone: string;
+  locale: string;
   extensions: string[];
   tags: string;
   cookieCount: number;
@@ -76,6 +77,7 @@ function editView(profile: Profile, expectedVersion: number): CloudProfileEditVi
     resolution: `${profile.screenWidth}*${profile.screenHeight}`,
     platformOs: profile.platformOs ?? "",
     timezone: profile.timezone,
+    locale: profile.locale ?? "",
     extensions: profile.extensions ?? [],
     tags: (profile.tags ?? []).join(", "),
     cookieCount: profile.cookies.length,
@@ -212,7 +214,7 @@ export class CloudProfileEditor {
     }
     const proxyChanged = applyEdits(profile, set);
     if (proxyChanged && profile.proxy && !("timezone" in set)) {
-      await attachTimezones([profile], this.timezoneFetch).catch(() => {});
+      await attachTimezones([profile], this.timezoneFetch, !("locale" in set)).catch(() => {});
       syncFirefoxTimezone(profile);
     }
 

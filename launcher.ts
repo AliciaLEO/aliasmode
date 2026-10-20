@@ -3247,42 +3247,9 @@ export class Launcher {
     }
   }
 
-  /** In-memory page target fingerprint for dirty-session detection; null means the probe was uncertain or stale. */
-  async pageTargetFingerprint(
-    profileId: string,
-    expected: { debugPort: number; startedAt: number },
-  ): Promise<string | null> {
-    const launch = this.store.getLaunch(profileId);
-    if (!launch || launch.debugPort !== expected.debugPort || launch.startedAt !== expected.startedAt) return null;
-    try {
-      if (launch.engine === "firefox") {
-        const status = await this.firefoxStatus(launch);
-        const targets = status.pageTargets.flatMap((target) => {
-          const url = canonicalUserPageUrl(target.url);
-          return url ? [{ id: target.id, url }] : [];
-        }).sort((left, right) => left.id.localeCompare(right.id) || left.url.localeCompare(right.url));
-        return JSON.stringify(targets);
-      }
-      const response = await this.fetchFn(`http://127.0.0.1:${launch.debugPort}/json/list`);
-      if (!response.ok) return null;
-      const raw = await response.json();
-      if (!Array.isArray(raw)) return null;
-      const targets = raw.flatMap((target) => {
-        if (target?.type !== "page" || typeof target.id !== "string" || typeof target.url !== "string") return [];
-        const url = canonicalUserPageUrl(target.url);
-        return url ? [{ id: target.id, url }] : [];
-      }).sort((left, right) => left.id.localeCompare(right.id) || left.url.localeCompare(right.url));
-      const current = this.store.getLaunch(profileId);
-      if (!current || current.debugPort !== expected.debugPort || current.startedAt !== expected.startedAt) return null;
-      return JSON.stringify(targets);
-    } catch {
-      return null;
-    }
-  }
-
   browserStorageWatchPaths(profileId: string): string[] {
     const root = this.store.getLaunch(profileId)?.userDataDir ?? this.userDataDir(profileId);
-    if (this.store.getProfile(profileId)?.engine === "firefox") return [root, join(root, "storage", "default")];
+    if (this.store.getProfile(profileId)?.engine === "firefox") return [join(root, "storage", "default")];
     return [
       join(root, "Default", "Network"),
       join(root, "Default", "Local Storage", "leveldb"),

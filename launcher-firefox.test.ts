@@ -530,7 +530,6 @@ test("Firefox target probes ignore replaced launch generations", async () => {
     f.store.recordLaunch({ ...launch, startedAt: launch.startedAt + 1 });
     return { ...result, hasPages: false, pageTargets: [] };
   };
-  expect(await f.launcher.pageTargetFingerprint(f.profile.id, launch)).toBeNull();
   f.store.recordLaunch(launch);
   expect(await f.launcher.hasPageTargets(f.profile.id)).toBe(true);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);

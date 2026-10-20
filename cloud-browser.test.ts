@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CloudApiError } from "./cloud-client.ts";
-import { CloudBrowserCoordinator, observeBrowserTargets } from "./cloud-browser.ts";
+import { CloudBrowserCoordinator } from "./cloud-browser.ts";
 import type { OpenProfileResponse, PortableProfileV1 } from "./contracts/cloud-v1.ts";
 import type { Profile } from "./types.ts";
 import { BrowserLaunchError, Launcher as ProductionLauncher } from "./launcher.ts";
@@ -79,14 +79,13 @@ function setup(options: {
   session?: PortableProfileV1["session"];
   accountId?: () => string;
   heartbeatMs?: number;
-  dirtyMonitorMs?: number;
+  storageCheckpoints?: boolean;
   checkpointDebounceMs?: number;
   checkpointMinIntervalMs?: number;
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   watchPaths?: string[];
   watchPath?: (path: string, dirty: () => void) => { close(): void };
-  observeTargets?: (endpoint: string, onTarget: (origin: string | null) => void) => { close(): void };
 } = {}) {
   const events: string[] = [];
   const logs: string[] = [];
@@ -267,7 +266,6 @@ function setup(options: {
         ? "alive" as const
         : "generation_changed" as const;
     },
-    async pageTargetFingerprint() { return "[]"; },
     browserStorageWatchPaths() { return options.watchPaths ?? []; },
     async active() { return options.activeResult ?? true; },
     async verifyRunningIdentity(profileId: string) {
@@ -285,13 +283,12 @@ function setup(options: {
     accountId: options.accountId ?? (() => "account1"),
     deviceId: () => "device1",
     heartbeatMs: options.heartbeatMs ?? 0,
-    dirtyMonitorMs: options.dirtyMonitorMs ?? 0,
+    storageCheckpoints: options.storageCheckpoints ?? false,
     checkpointDebounceMs: options.checkpointDebounceMs,
     checkpointMinIntervalMs: options.checkpointMinIntervalMs,
     setIntervalFn: options.setIntervalFn,
     clearIntervalFn: options.clearIntervalFn,
     watchPath: options.watchPath,
-    observeTargets: options.observeTargets ?? (() => ({ close() {} })),
     log(message) {
       logs.push(message);
     },
@@ -430,7 +427,7 @@ async function runProductionCloudPreflight(
     accountId: () => "account1",
     deviceId: () => "device1",
     heartbeatMs: 0,
-    dirtyMonitorMs: 0,
+    storageCheckpoints: false,
     readSession: async () => JSON.stringify({ cookies: [] }),
     applySession: async () => {},
   });
@@ -524,16 +521,8 @@ test("legacy Chromium and native Firefox Cloud profiles preflight independently"
   }
 });
 
-test("Firefox Cloud checkpoints use owner polling and preserve V2 through offline close", async () => {
-  let cdpObservers = 0;
-  let polls = 0;
-  const state = setup({
-    closeTransportFailure: true,
-    dirtyMonitorMs: 2_000,
-    setIntervalFn: () => ({}),
-    clearIntervalFn: () => {},
-    observeTargets: () => { cdpObservers++; return { close() {} }; },
-  });
+test("Firefox Cloud checkpoints preserve V2 through offline close", async () => {
+  const state = setup({ closeTransportFailure: true });
   const options = (state.coordinator as any).options;
   const legacy = payload();
   const firefoxPayload = {
@@ -556,14 +545,11 @@ test("Firefox Cloud checkpoints use owner polling and preserve V2 through offlin
     state.store.recordLaunch({ ...state.store.getLaunch("profile1")!, engine: "firefox", ws: endpoint });
     return { ...result, ws: endpoint };
   };
-  options.launcher.pageTargetFingerprint = async () => { polls++; return "[]"; };
   options.applySession = async (ws: string) => { expect(ws).toBe(endpoint); };
   const session = { ...legacy.session, tabs: ["https://x.com/messages"], origins: [] };
   options.readSession = async (ws: string) => { expect(ws).toBe(endpoint); return JSON.stringify(session); };
   try {
     expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
-    expect(cdpObservers).toBe(0);
-    expect(polls).toBeGreaterThan(0);
     const roster = await state.coordinator.listRoster();
     expect(roster.profiles[0]?.engine).toBe("firefox");
     expect(roster.profiles[0]).not.toHaveProperty("debugPort");
@@ -1819,164 +1805,107 @@ test("Cloud heartbeat resets no-page confirmation after a visible page returns",
   state.store.close();
 });
 
-test("Cloud target observer reports page creates, navigations, and destruction", () => {
-  const originalWebSocket = globalThis.WebSocket;
-  class FakeWebSocket {
-    static latest: FakeWebSocket;
-    readonly listeners = new Map<string, Set<(event: any) => void>>();
-    readonly sent: string[] = [];
-    closed = false;
-
-    constructor(readonly endpoint: string) {
-      FakeWebSocket.latest = this;
-    }
-
-    addEventListener(type: string, listener: (event: any) => void) {
-      const listeners = this.listeners.get(type) ?? new Set();
-      listeners.add(listener);
-      this.listeners.set(type, listeners);
-    }
-
-    removeEventListener(type: string, listener: (event: any) => void) {
-      this.listeners.get(type)?.delete(listener);
-    }
-
-    send(message: string) { this.sent.push(message); }
-    close() { this.closed = true; }
-    emit(type: string, event: any) {
-      for (const listener of this.listeners.get(type) ?? []) listener(event);
-    }
-  }
-
-  try {
-    (globalThis as any).WebSocket = FakeWebSocket;
-    const events: Array<string | null> = [];
-    const observer = observeBrowserTargets("ws://browser", (origin) => events.push(origin));
-    const socket = FakeWebSocket.latest!;
-    socket.emit("open", {});
-    expect(socket.sent.map((message) => JSON.parse(message))).toEqual([{
-      id: 1,
-      method: "Target.setDiscoverTargets",
-      params: { discover: true },
-    }]);
-
-    const emitMessage = (message: unknown) => socket.emit("message", { data: JSON.stringify(message) });
-    emitMessage({ method: "Target.targetCreated", params: { targetInfo: {
-      targetId: "page-1", type: "page", url: "https://x.com/home",
-    } } });
-    emitMessage({ method: "Target.targetInfoChanged", params: { targetInfo: {
-      targetId: "page-1", type: "page", url: "https://x.com/messages",
-    } } });
-    emitMessage({ method: "Target.targetCreated", params: { targetInfo: {
-      targetId: "internal", type: "page", url: "chrome://ungoogled-first-run/",
-    } } });
-    emitMessage({ method: "Target.targetCreated", params: { targetInfo: {
-      targetId: "worker", type: "service_worker", url: "https://x.com/sw.js",
-    } } });
-    emitMessage({ method: "Target.targetDestroyed", params: { targetId: "worker" } });
-    emitMessage({ method: "Target.targetDestroyed", params: { targetId: "internal" } });
-    emitMessage({ method: "Target.targetDestroyed", params: { targetId: "page-1" } });
-
-    expect(events).toEqual([
-      "https://x.com",
-      "https://x.com",
-      null,
-      null,
-      null,
-    ]);
-    observer.close();
-    expect(socket.closed).toBe(true);
-    emitMessage({ method: "Target.targetCreated", params: { targetInfo: {
-      targetId: "late", type: "page", url: "https://late.example/",
-    } } });
-    expect(events).toHaveLength(5);
-  } finally {
-    (globalThis as any).WebSocket = originalWebSocket;
-  }
-});
-
-test("Cloud production timers do not arm the fast dirty monitor", async () => {
+test("Cloud production timers arm only the heartbeat and watch browser storage", async () => {
   const state = setup();
   const intervals: number[] = [];
+  const watched: string[] = [];
   const options = {
     ...(state.coordinator as any).options,
     heartbeatMs: 60_000,
-    dirtyMonitorMs: undefined,
+    storageCheckpoints: undefined,
     setIntervalFn: (_fn: () => void, ms: number) => {
       intervals.push(ms);
       return intervals.length;
     },
     clearIntervalFn: () => {},
+    watchPath: (path: string) => { watched.push(path); return { close() {} }; },
   };
+  options.launcher.browserStorageWatchPaths = () => ["local-storage"];
   const coordinator = new CloudBrowserCoordinator(options);
 
   expect((await coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   expect(intervals).toEqual([60_000]);
+  expect(watched).toEqual(["local-storage"]);
 
   await coordinator.close("profile1");
   state.queue.close();
   state.store.close();
 });
 
-test("Cloud dirty monitor coalesces storage changes and captures target changes without Cloud calls", async () => {
-  const state = setup();
+test("Cloud storage writes checkpoint the open tabs once per debounce and at most once per interval", async () => {
   const storageDirty: Array<() => void> = [];
-  let pollTargets!: () => void;
-  let fingerprint = "targets:1";
   let watcherCloses = 0;
-  let sessionValue = "storage-change";
+  const state = setup({
+    session: {
+      cookies: [],
+      origins: [
+        { origin: "https://closed.example", localStorage: [{ name: "token", value: "saved" }] },
+        { origin: "https://web.telegram.org", localStorage: [{ name: "dc", value: "1" }] },
+      ],
+    },
+    storageCheckpoints: true,
+    checkpointDebounceMs: 30,
+    checkpointMinIntervalMs: 400,
+    watchPaths: ["local-storage", "indexed-db"],
+    watchPath: (_path: string, onDirty: () => void) => {
+      storageDirty.push(onDirty);
+      return { close() { watcherCloses++; } };
+    },
+  });
+  let login = 0;
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
-  (state.coordinator as any).checkpointDebounceMs = 1;
-  (state.coordinator as any).checkpointMinIntervalMs = 0;
-  options.launcher.browserStorageWatchPaths = () => ["cookies", "local-storage", "indexed-db"];
-  options.launcher.pageTargetFingerprint = async () => fingerprint;
-  options.watchPath = (_path: string, onDirty: () => void) => {
-    storageDirty.push(onDirty);
-    return { close() { watcherCloses++; } };
-  };
-  options.setIntervalFn = (fn: () => void) => {
-    pollTargets = fn;
-    return { unref() {} };
-  };
-  options.clearIntervalFn = () => {};
-  options.readSession = async () => {
+  options.readSession = async (_endpoint: string, seed: unknown) => {
     state.events.push("capture");
+    state.captureSeeds.push(seed);
     return JSON.stringify({
-      cookies: [{ name: "auth_token", value: sessionValue, domain: ".x.com", path: "/" }],
-      origins: [],
+      cookies: [],
+      origins: [{ origin: "https://web.telegram.org", localStorage: [{ name: "account1", value: `login-${++login}` }] }],
+      tabs: ["https://web.telegram.org/k/"],
     });
+  };
+  const checkpoint = () => state.queue.get(state.queue.list("account1")[0]!.id, "account1")!.payload.session;
+  const captures = () => state.events.filter((event) => event === "capture").length;
+  const waitForCaptures = async (count: number) => {
+    for (let attempt = 0; attempt < 200 && captures() < count; attempt++) await Bun.sleep(5);
   };
 
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
-  const initialId = state.queue.list("account1")[0]?.id;
-  state.events.length = 0;
-  (state.coordinator as any).startDirtyMonitor("profile1");
-  await Bun.sleep(0);
-
-  expect(storageDirty).toHaveLength(3);
+  expect(storageDirty).toHaveLength(2);
+  state.captureSeeds.length = 0;
   for (const dirty of storageDirty) dirty();
-  await Bun.sleep(15);
-  const storageId = state.queue.list("account1")[0]?.id;
-  expect(state.events).toEqual(["capture"]);
-  expect(storageId).not.toBe(initialId);
+  await Bun.sleep(10);
+  expect(captures()).toBe(0);
+  await waitForCaptures(1);
+  expect(captures()).toBe(1);
+  // Only open tabs are read; every other origin keeps its saved storage.
+  expect(state.captureSeeds).toEqual([{ origins: [], openTabsOnly: true }]);
+  expect(checkpoint().origins).toEqual([
+    { origin: "https://closed.example", localStorage: [{ name: "token", value: "saved" }] },
+    { origin: "https://web.telegram.org", localStorage: [{ name: "account1", value: "login-1" }] },
+  ]);
   expect(state.events).not.toContain("heartbeat");
   expect(state.events).not.toContain("cloud-close");
 
-  sessionValue = "target-change";
-  fingerprint = "targets:2";
-  pollTargets();
-  await Bun.sleep(15);
-  expect(state.events).toEqual(["capture", "capture"]);
-  expect(state.queue.list("account1")[0]?.id).not.toBe(storageId);
+  const burstAt = Date.now();
+  for (let burst = 0; burst < 5; burst++) {
+    storageDirty.at(-1)!();
+    await Bun.sleep(5);
+  }
+  await Bun.sleep(60);
+  expect(captures()).toBe(1);
+  await waitForCaptures(2);
+  expect(captures()).toBe(2);
+  expect(Date.now() - burstAt).toBeGreaterThanOrEqual(300);
+  await Bun.sleep(450);
+  expect(captures()).toBe(2);
+  expect(checkpoint().origins?.[1]).toEqual({ origin: "https://web.telegram.org", localStorage: [{ name: "account1", value: "login-2" }] });
 
   await state.coordinator.close("profile1");
   expect(watcherCloses).toBe(storageDirty.length);
-  const capturesAfterClose = state.events.filter((event) => event === "capture").length;
+  const capturesAfterClose = captures();
   storageDirty[0]!();
-  pollTargets();
-  await Bun.sleep(5);
-  expect(state.events.filter((event) => event === "capture")).toHaveLength(capturesAfterClose);
+  await Bun.sleep(60);
+  expect(captures()).toBe(capturesAfterClose);
   state.queue.close();
   state.store.close();
 });
@@ -1988,11 +1917,10 @@ test("Cloud dirty monitor retires capture-generated callbacks and rearms fresh s
   let finishFirst!: () => void;
   const firstCapture = new Promise<void>((resolve) => { finishFirst = resolve; });
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
+  (state.coordinator as any).storageCheckpoints = true;
   (state.coordinator as any).checkpointDebounceMs = 1;
   (state.coordinator as any).checkpointMinIntervalMs = 0;
   options.launcher.browserStorageWatchPaths = () => ["cookies"];
-  options.launcher.pageTargetFingerprint = async () => "targets";
   options.watchPath = (_path: string, onDirty: () => void) => {
     storageDirty.push(onDirty);
     return { close() {} };
@@ -2037,11 +1965,10 @@ test("capture-generated storage events do not create an unchanged-checkpoint loo
   const storageDirty: Array<() => void> = [];
   let captures = 0;
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
+  (state.coordinator as any).storageCheckpoints = true;
   (state.coordinator as any).checkpointDebounceMs = 1;
   (state.coordinator as any).checkpointMinIntervalMs = 0;
   options.launcher.browserStorageWatchPaths = () => ["cookies"];
-  options.launcher.pageTargetFingerprint = async () => "targets";
   options.watchPath = (_path: string, onDirty: () => void) => {
     storageDirty.push(onDirty);
     return { close() {} };
@@ -2075,11 +2002,10 @@ test("Cloud heartbeat retires its capture watcher generation before reading stor
   const storageDirty: Array<() => void> = [];
   let captures = 0;
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
+  (state.coordinator as any).storageCheckpoints = true;
   (state.coordinator as any).checkpointDebounceMs = 1;
   (state.coordinator as any).checkpointMinIntervalMs = 0;
   options.launcher.browserStorageWatchPaths = () => ["cookies"];
-  options.launcher.pageTargetFingerprint = async () => "targets";
   options.watchPath = (_path: string, onDirty: () => void) => {
     storageDirty.push(onDirty);
     return { close() {} };
@@ -2110,24 +2036,21 @@ test("Cloud heartbeat retires its capture watcher generation before reading stor
   state.store.close();
 });
 
-test("Cloud dirty monitor latches one target change while a capture is running", async () => {
+test("Cloud dirty monitor latches one live edit while a capture is running", async () => {
   const state = setup();
-  let onTarget!: (origin: string | null) => void;
+  const storageDirty: Array<() => void> = [];
   let finishFirst!: () => void;
   const firstCapture = new Promise<void>((resolve) => { finishFirst = resolve; });
   let captures = 0;
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
+  (state.coordinator as any).storageCheckpoints = true;
   (state.coordinator as any).checkpointDebounceMs = 1;
   (state.coordinator as any).checkpointMinIntervalMs = 0;
-  options.launcher.browserStorageWatchPaths = () => [];
-  options.launcher.pageTargetFingerprint = async () => "targets";
-  options.observeTargets = (_endpoint: string, target: (origin: string | null) => void) => {
-    onTarget = target;
+  options.launcher.browserStorageWatchPaths = () => ["cookies"];
+  options.watchPath = (_path: string, onDirty: () => void) => {
+    storageDirty.push(onDirty);
     return { close() {} };
   };
-  options.setIntervalFn = () => ({ unref() {} });
-  options.clearIntervalFn = () => {};
   options.readSession = async () => {
     captures++;
     if (captures === 1) await firstCapture;
@@ -2140,11 +2063,11 @@ test("Cloud dirty monitor latches one target change while a capture is running",
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   (state.coordinator as any).startDirtyMonitor("profile1");
   await Bun.sleep(0);
-  onTarget("https://first.example");
+  storageDirty[0]!();
   await Bun.sleep(5);
   expect(captures).toBe(1);
-  onTarget("https://second.example");
-  onTarget("https://second.example");
+  state.coordinator.noteProfileEdited("profile1");
+  state.coordinator.noteProfileEdited("profile1");
   finishFirst();
   for (let attempt = 0; attempt < 100 && captures < 2; attempt++) {
     await Bun.sleep(5);
@@ -2180,58 +2103,8 @@ test("Cloud checkpoint probes every origin from the durable open bundle", async 
   state.store.close();
 });
 
-test("Cloud target observation checkpoints destruction and repeated same-origin events", async () => {
-  let onTarget!: (origin: string | null) => void;
-  let observerCloses = 0;
-  const state = setup({
-    session: {
-      cookies: [],
-      origins: [{
-        origin: "https://closed.example",
-        localStorage: [{ name: "token", value: "prior-value" }],
-      }],
-    },
-    heartbeatMs: 60_000,
-    dirtyMonitorMs: 2_000,
-    checkpointDebounceMs: 0,
-    checkpointMinIntervalMs: 0,
-    setIntervalFn: () => ({}),
-    clearIntervalFn: () => {},
-    observeTargets(_endpoint, target) {
-      onTarget = target;
-      return { close() { observerCloses++; } };
-    },
-  });
-  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
-
-  const emitAndWait = async (origin: string | null, count: number) => {
-    onTarget(origin);
-    for (let attempt = 0; attempt < 20 && state.captureSeeds.length < count; attempt++) {
-      await Bun.sleep(5);
-    }
-    expect(state.captureSeeds).toHaveLength(count);
-  };
-
-  await emitAndWait(null, 1);
-  expect(state.captureSeeds.at(-1)).toEqual({ origins: ["https://closed.example"] });
-
-  await emitAndWait("https://closed.example", 2);
-  expect(state.captureSeeds.at(-1)).toEqual({ origins: ["https://closed.example"] });
-
-  await emitAndWait("https://new.example", 3);
-  expect(state.captureSeeds.at(-1)).toEqual({
-    origins: ["https://closed.example", "https://new.example"],
-  });
-
-  await emitAndWait("https://new.example", 4);
-  await state.coordinator.releaseAll(true);
-  expect(observerCloses).toBe(1);
-  state.queue.close();
-  state.store.close();
-});
-
-test("Cloud target checkpoints preserve ordered duplicate tabs through manual browser death", async () => {
-  let onTarget!: (origin: string | null) => void;
+test("Cloud storage checkpoints preserve ordered duplicate tabs through manual browser death", async () => {
+  const storageDirty: Array<() => void> = [];
   const state = setup({
     session: {
       ...payload().session,
@@ -2239,13 +2112,14 @@ test("Cloud target checkpoints preserve ordered duplicate tabs through manual br
       tabs: ["https://initial.example/"],
     },
     heartbeatMs: 60_000,
-    dirtyMonitorMs: 2_000,
+    storageCheckpoints: true,
     checkpointDebounceMs: 0,
     checkpointMinIntervalMs: 0,
     setIntervalFn: () => ({}),
     clearIntervalFn: () => {},
-    observeTargets(_endpoint, target) {
-      onTarget = target;
+    watchPaths: ["browser-storage"],
+    watchPath(_path, dirty) {
+      storageDirty.push(dirty);
       return { close() {} };
     },
   });
@@ -2274,15 +2148,15 @@ test("Cloud target checkpoints preserve ordered duplicate tabs through manual br
     expect(summary && state.queue.get(summary.id, "account1")?.payload.session.tabs).toEqual(expected);
   };
 
-  onTarget("https://x.com");
+  storageDirty.at(-1)!();
   await waitForTabs(tabs);
 
   tabs = ["https://same.example/b", "https://same.example/a", "https://same.example/b"];
-  onTarget("https://x.com");
+  storageDirty.at(-1)!();
   await waitForTabs(tabs);
 
   tabs = ["https://same.example/a", "https://same.example/a"];
-  onTarget(null);
+  storageDirty.at(-1)!();
   await waitForTabs(tabs);
   expect(captures).toBe(3);
 
@@ -2323,9 +2197,8 @@ test("Cloud target checkpoints preserve ordered duplicate tabs through manual br
 test("Cloud heartbeat remains a checkpoint fallback when storage watching is unavailable", async () => {
   const state = setup();
   const options = (state.coordinator as any).options;
-  (state.coordinator as any).dirtyMonitorMs = 10;
+  (state.coordinator as any).storageCheckpoints = true;
   options.launcher.browserStorageWatchPaths = () => ["missing-storage"];
-  options.launcher.pageTargetFingerprint = async () => "targets";
   options.watchPath = () => { throw new Error("unavailable"); };
   options.setIntervalFn = () => ({ unref() {} });
   options.clearIntervalFn = () => {};
@@ -3644,7 +3517,7 @@ test("Cloud authentication replaces checkpoint monitors after an account switch"
   const state = setup({
     accountId: () => accountId,
     heartbeatMs: 60_000,
-    dirtyMonitorMs: 2_000,
+    storageCheckpoints: true,
     checkpointDebounceMs: 0,
     checkpointMinIntervalMs: 0,
     watchPaths: ["browser-storage"],
@@ -3673,7 +3546,6 @@ test("Cloud authentication replaces checkpoint monitors after an account switch"
 
   expect(internals.dirtyMonitors.has("profile1")).toBe(false);
   expect(internals.timers.has("profile1")).toBe(false);
-  expect(activeTimers.has(firstMonitor.pollTimer)).toBe(false);
   expect(activeTimers.has(firstHeartbeat)).toBe(false);
   expect(watcherCloses).toBe(1);
 
@@ -3685,7 +3557,6 @@ test("Cloud authentication replaces checkpoint monitors after an account switch"
   expect(secondMonitor).toBeDefined();
   expect(secondMonitor).not.toBe(firstMonitor);
   expect(secondHeartbeat).not.toBe(firstHeartbeat);
-  expect(activeTimers.has(secondMonitor.pollTimer)).toBe(true);
   expect(activeTimers.has(secondHeartbeat)).toBe(true);
 
   const capturesBeforeDirtySignal = state.events.filter((event) => event === "capture").length;

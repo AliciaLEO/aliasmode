@@ -2104,11 +2104,6 @@ function createCloudCrossDeviceSyntheticRuntime(
         ? "alive"
         : "generation_changed";
     },
-    async pageTargetFingerprint(profileId, expected) {
-      const launch = store.getLaunch(profileId);
-      if (!launch || launch.debugPort !== expected.debugPort || launch.startedAt !== expected.startedAt) return null;
-      return JSON.stringify([{ id: `fixture-${device}`, url: "https://x.com/home" }]);
-    },
     browserStorageWatchPaths() {
       return [];
     },
@@ -2130,7 +2125,7 @@ function createCloudCrossDeviceSyntheticRuntime(
       appliedSessions.push(bundle);
     },
     heartbeatMs: 0,
-    dirtyMonitorMs: 0,
+    storageCheckpoints: false,
   });
 
   return {

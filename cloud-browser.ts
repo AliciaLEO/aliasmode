@@ -1,4 +1,4 @@
-import { watch } from "node:fs";
+import { mkdirSync, watch } from "node:fs";
 import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type {
   CloudProfileSummary,
@@ -33,7 +33,7 @@ import {
   bundleHasRestorableLogin,
   bundleTabUrls,
   bundleTelegramClient,
-  canonicalUserPageUrl,
+  keepUncapturedOrigins,
   parseCapturedSessionBundle,
   sessionBundleSignature,
   sessionCaptureSeed,
@@ -130,7 +130,7 @@ type CloudBrowserClient = Pick<
 type CloudBrowserLauncher = Pick<
   Launcher,
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
-  "pageTargetFingerprint" | "browserStorageWatchPaths" | "failedStartGeneration" |
+  "browserStorageWatchPaths" | "failedStartGeneration" |
   "matchesCloudSession" | "recordCloudSession"
 > & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks">>;
 
@@ -145,12 +145,11 @@ export interface CloudBrowserOptions {
   /** Restore the bundle and open startup pages over ONE CDP attach, then detach. */
   applySession: (endpoint: string, bundle: string, urls: readonly string[]) => Promise<void>;
   heartbeatMs?: number;
-  /** Target/storage dirty polling interval; disabled by default, and 0 keeps it disabled. */
-  dirtyMonitorMs?: number;
+  /** Checkpoint the open tabs soon after browser storage changes on disk. On by default. */
+  storageCheckpoints?: boolean;
   checkpointDebounceMs?: number;
   checkpointMinIntervalMs?: number;
   watchPath?: (path: string, onDirty: () => void) => { close(): void };
-  observeTargets?: (endpoint: string, onTarget: (origin: string | null) => void) => { close(): void };
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   log?: (message: string) => void;
@@ -163,8 +162,8 @@ const PROXY_BACKFILL_BATCH = 8;
 const PROXY_BACKFILL_RETRY_MS = 300_000;
 /** Parallel closes during a release, matching the dashboard lifecycle limit. */
 const RELEASE_CLOSE_LIMIT = 4;
-const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 1_200;
-const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 3_000;
+const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 2_000;
+const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 20_000;
 const CLOUD_PROFILE_OPEN_ERROR =
   "This Cloud profile is open in another session. Close it there, or try again shortly if that browser already closed.";
 const TERMINAL_CONFLICT_WARNING =
@@ -190,12 +189,9 @@ interface CloudDirtyMonitor {
   registrationId: string;
   debugPort: number;
   startedAt: number;
-  pollTimer?: unknown;
   debounceTimer?: ReturnType<typeof setTimeout>;
   watchers: Array<{ close(): void }>;
   watcherGeneration: number;
-  targetObserver?: { close(): void };
-  targetFingerprint?: string;
   dirty: boolean;
   captureInFlight: boolean;
   lastCaptureAt: number;
@@ -225,66 +221,6 @@ const TERMINAL_HEARTBEAT_ERRORS = new Set([
   "profile_not_found",
   "profile_trashed",
 ]);
-
-function canonicalTargetOrigin(raw: string): string | null {
-  const canonical = canonicalUserPageUrl(raw);
-  return canonical ? new URL(canonical).origin : null;
-}
-
-function targetFingerprintOrigins(fingerprint: string): string[] {
-  try {
-    const targets = JSON.parse(fingerprint);
-    if (!Array.isArray(targets)) return [];
-    return [...new Set(targets.flatMap((target) => {
-      const origin = typeof target?.url === "string" ? canonicalTargetOrigin(target.url) : null;
-      return origin ? [origin] : [];
-    }))];
-  } catch {
-    return [];
-  }
-}
-
-export function observeBrowserTargets(
-  endpoint: string,
-  onTarget: (origin: string | null) => void,
-): { close(): void } {
-  const socket = new WebSocket(endpoint);
-  const pageTargets = new Set<string>();
-  const onOpen = () => {
-    try {
-      socket.send(JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }));
-    } catch {}
-  };
-  const onMessage = (event: MessageEvent) => {
-    if (typeof event.data !== "string") return;
-    try {
-      const message = JSON.parse(event.data);
-      if (message?.method === "Target.targetDestroyed") {
-        const targetId = message?.params?.targetId;
-        if (typeof targetId === "string" && pageTargets.delete(targetId)) onTarget(null);
-        return;
-      }
-      if (message?.method !== "Target.targetCreated" && message?.method !== "Target.targetInfoChanged") return;
-      const info = message?.params?.targetInfo;
-      const targetId = info?.targetId;
-      if (info?.type !== "page") {
-        if (typeof targetId === "string" && pageTargets.delete(targetId)) onTarget(null);
-        return;
-      }
-      if (typeof targetId === "string") pageTargets.add(targetId);
-      onTarget(typeof info.url === "string" ? canonicalTargetOrigin(info.url) : null);
-    } catch {}
-  };
-  socket.addEventListener("open", onOpen);
-  socket.addEventListener("message", onMessage);
-  return {
-    close() {
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("message", onMessage);
-      try { socket.close(); } catch {}
-    },
-  };
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -384,7 +320,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private pendingRetryTimer: unknown;
   private pendingRetryInFlight: Promise<void> | null = null;
   private readonly heartbeatMs: number;
-  private readonly dirtyMonitorMs: number;
+  private readonly storageCheckpoints: boolean;
   private readonly checkpointDebounceMs: number;
   private readonly checkpointMinIntervalMs: number;
   private readonly log: (message: string) => void;
@@ -400,7 +336,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
   constructor(private readonly options: CloudBrowserOptions) {
     this.heartbeatMs = Math.max(0, options.heartbeatMs ?? 60_000);
-    this.dirtyMonitorMs = Math.max(0, options.dirtyMonitorMs ?? 0);
+    this.storageCheckpoints = options.storageCheckpoints ?? true;
     this.checkpointDebounceMs = Math.max(0, options.checkpointDebounceMs ?? DEFAULT_CHECKPOINT_DEBOUNCE_MS);
     this.checkpointMinIntervalMs = Math.max(0, options.checkpointMinIntervalMs ?? DEFAULT_CHECKPOINT_MIN_INTERVAL_MS);
     this.log = options.log ?? (() => {});
@@ -1389,15 +1325,24 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     }
   }
 
+  /**
+   * `openTabsOnly` reads only origins with an open tab, so no temporary page opens, and keeps the
+   * saved storage of every other origin from the current checkpoint.
+   */
   private async captureSession(
     open: PendingOpenSession,
     queue: PendingSyncQueue,
     endpoint: string,
+    openTabsOnly = false,
   ): Promise<string> {
     const state = this.checkpointState(open, queue);
+    const saved = openTabsOnly ? this.pendingCapturesForOpen(open, queue)
+      .find((capture) => !capture.readyToSubmit && capture.status !== "conflict")?.payload.session : undefined;
+    if (openTabsOnly && !saved) throw new Error("Cloud checkpoint is missing before an open-tab capture");
     const captureSeed: SessionCaptureSeed = {
-      origins: [...state.origins].sort(),
+      origins: openTabsOnly ? [] : [...state.origins].sort(),
       ...(state.telegramClient ? { telegramClient: state.telegramClient } : {}),
+      ...(openTabsOnly ? { openTabsOnly } : {}),
     };
     const monitor = this.dirtyMonitors.get(open.profileId);
     const suspended = monitor?.registrationId === open.registrationId ? monitor : undefined;
@@ -1413,6 +1358,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         throw error;
       }
       try {
+        if (saved) bundle = keepUncapturedOrigins(bundle, sessionCaptureSeed(JSON.stringify(saved)).saved);
         const captured = parseCapturedSessionBundle(bundle);
         if (captured.tabs === undefined) bundle = JSON.stringify({
           ...captured,
@@ -1489,7 +1435,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     return "saved";
   }
 
-  private async refreshCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue): Promise<void> {
+  private async refreshCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue, openTabsOnly = false): Promise<void> {
     const launch = this.options.store.getLaunch(open.profileId);
     if (!launch || !this.isExactRunningLaunch(open, launch)) return;
     try {
@@ -1503,7 +1449,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         current.cleanupMode ||
         !this.isExactRunningLaunch(current, verified)
       ) return;
-      const sessionBundle = await this.captureSession(current, queue, verified.ws);
+      const sessionBundle = await this.captureSession(current, queue, verified.ws, openTabsOnly);
       await this.options.launcher.verifyRunningIdentity(open.profileId);
       const captured = this.options.store.getLaunch(open.profileId);
       const latest = queue.getOpen(open.profileId, open.accountId);
@@ -2172,7 +2118,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   }
 
   private startDirtyMonitor(profileId: string): void {
-    if (this.dirtyMonitorMs === 0 || this.dirtyMonitors.has(profileId)) return;
+    if (!this.storageCheckpoints || this.dirtyMonitors.has(profileId)) return;
     let context: { queue: PendingSyncQueue; accountId: string };
     try {
       context = this.requireContext(false);
@@ -2183,7 +2129,6 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const launch = this.options.store.getLaunch(profileId);
     if (!open || open.phase !== "running" || open.cleanupMode || !launch
       || !this.isExactRunningLaunch(open, launch)) return;
-    const checkpoint = this.checkpointState(open, context.queue);
 
     const monitor: CloudDirtyMonitor = {
       registrationId: open.registrationId,
@@ -2196,50 +2141,16 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       lastCaptureAt: 0,
     };
     this.dirtyMonitors.set(profileId, monitor);
-    const onDirty = () => this.markCheckpointDirty(profileId, monitor);
-    const onTarget = (origin: string | null) => {
-      if (this.dirtyMonitors.get(profileId) !== monitor) return;
-      if (origin) checkpoint.origins.add(origin);
-      onDirty();
-    };
-    if (launch.engine !== "firefox") {
-      try {
-        monitor.targetObserver = (this.options.observeTargets ?? observeBrowserTargets)(launch.ws, onTarget);
-      } catch {
-        // Filesystem watching and target polling remain active when observation is unavailable.
-      }
-    }
     this.startStorageWatchers(profileId, monitor);
     if (monitor.watchers.length === 0) this.diagnosticEvents.record("dirty_monitor_unavailable");
-
-    const poll = () => {
-      void this.options.launcher.pageTargetFingerprint(profileId, {
-        debugPort: monitor.debugPort,
-        startedAt: monitor.startedAt,
-      }).then((fingerprint) => {
-        if (this.dirtyMonitors.get(profileId) !== monitor || fingerprint === null) return;
-        for (const origin of targetFingerprintOrigins(fingerprint)) checkpoint.origins.add(origin);
-        if (monitor.targetFingerprint === undefined) {
-          monitor.targetFingerprint = fingerprint;
-        } else if (monitor.targetFingerprint !== fingerprint) {
-          monitor.targetFingerprint = fingerprint;
-          onDirty();
-        }
-      }).catch(() => {});
-    };
-    poll();
-    const set = this.options.setIntervalFn ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
-    monitor.pollTimer = set(poll, this.dirtyMonitorMs);
-    const timer = monitor.pollTimer;
-    if (timer && typeof timer === "object" && "unref" in timer) {
-      (timer as { unref?: () => void }).unref?.();
-    }
   }
 
   private startStorageWatchers(profileId: string, monitor: CloudDirtyMonitor): void {
-    const watchPath = this.options.watchPath ?? ((path: string, dirty: () => void) =>
-      watch(path, { recursive: true }, () => dirty())
-    );
+    const watchPath = this.options.watchPath ?? ((path: string, dirty: () => void) => {
+      // A new profile creates these folders at its first write; watching must not miss that write.
+      mkdirSync(path, { recursive: true });
+      return watch(path, { recursive: true }, () => dirty());
+    });
     const generation = ++monitor.watcherGeneration;
     for (const path of this.options.launcher.browserStorageWatchPaths(profileId)) {
       try {
@@ -2248,7 +2159,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           this.markCheckpointDirty(profileId, monitor);
         }));
       } catch {
-        // Target polling remains active when a browser storage directory is unavailable.
+        // The heartbeat checkpoint remains when a browser storage directory is unavailable.
       }
     }
   }
@@ -2266,8 +2177,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
    * session would skip the next capture as "unchanged" and the edit would only
    * sync by luck. Drop the signature — payloads are re-encoded from the store
    * at capture time, so the next checkpoint or close carries the edit — and
-   * nudge the dirty monitor so that capture happens promptly (seconds), not at
-   * the next heartbeat.
+   * nudge the dirty monitor so that capture can happen before the next
+   * heartbeat.
    */
   noteProfileEdited(profileId: string): void {
     // Blank only the signature: the entry's capture seed must survive, and a
@@ -2303,7 +2214,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       const launch = this.options.store.getLaunch(profileId);
       if (!open || open.registrationId !== monitor.registrationId || open.cleanupMode || !launch
         || launch.debugPort !== monitor.debugPort || launch.startedAt !== monitor.startedAt) return;
-      await this.refreshCheckpoint(open, queue);
+      await this.refreshCheckpoint(open, queue, true);
     }).catch(() => {}).finally(() => {
       if (this.dirtyMonitors.get(profileId) !== monitor) return;
       monitor.lastCaptureAt = Date.now();
@@ -2316,12 +2227,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const monitor = this.dirtyMonitors.get(profileId);
     if (!monitor) return;
     this.dirtyMonitors.delete(profileId);
-    if (monitor.pollTimer !== undefined) {
-      const clear = this.options.clearIntervalFn ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>));
-      clear(monitor.pollTimer);
-    }
     if (monitor.debounceTimer) clearTimeout(monitor.debounceTimer);
-    try { monitor.targetObserver?.close(); } catch {}
     this.stopStorageWatchers(monitor);
   }
 

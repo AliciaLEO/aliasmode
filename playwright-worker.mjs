@@ -716,6 +716,8 @@ export async function captureSession(browser, payload, options = {}) {
     const unreadable = [];
     for (const origin of [...origins].sort()) {
       let storage = await captureLiveOrigin(context, origin, !!options.nativeStorage);
+      // The caller keeps its saved copy of this origin; no temporary page opens.
+      if (!storage && seed?.openTabsOnly) continue;
       if (!storage) {
         if (options.nativeStorage) {
           // Closed-origin storage cannot change until that origin loads again,

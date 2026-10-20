@@ -88,6 +88,8 @@ export interface CapturedSessionBundle extends SessionBundle {
 export interface SessionCaptureSeed {
   origins: string[];
   telegramClient?: TelegramWebClient;
+  /** Read only origins that have an open tab, with no temporary page. */
+  openTabsOnly?: boolean;
   /** Saved storage of the seed origins. An origin that the browser cannot open keeps it. Not sent to the worker. */
   saved?: OriginStorage[];
 }
@@ -587,6 +589,15 @@ export function keepUnreadableOrigins(bundle: string, saved: OriginStorage[] = [
   if (!Array.isArray(unreadableOrigins) || !Array.isArray(captured.origins)) throw new Error("invalid captured session bundle");
   const kept = saved.filter((origin) => unreadableOrigins.includes(origin.origin));
   const origins = [...captured.origins as OriginStorage[], ...kept].sort((a, b) => a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : 0);
+  return JSON.stringify({ ...captured, origins });
+}
+
+/** Add the saved storage of each origin that a capture did not read. */
+export function keepUncapturedOrigins(bundle: string, saved: OriginStorage[] = []): string {
+  const captured = parseCapturedSessionBundle(bundle);
+  const read = new Set(captured.origins.map((origin) => origin.origin));
+  const origins = [...captured.origins, ...saved.filter((origin) => !read.has(origin.origin))]
+    .sort((a, b) => a.origin < b.origin ? -1 : a.origin > b.origin ? 1 : 0);
   return JSON.stringify({ ...captured, origins });
 }
 

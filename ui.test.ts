@@ -3230,7 +3230,7 @@ for (const action of ["signin", "restore"] as const) {
       const cloudBrowser = new CloudBrowserCoordinator({
         cloud: cloudConnection.client, launcher, store: s, queue: () => pendingSync.queue(),
         accountId: () => cloudConnection.accountId(), deviceId: () => cloudConnection.deviceId(),
-        heartbeatMs: 0, dirtyMonitorMs: 0, log: () => {},
+        heartbeatMs: 0, storageCheckpoints: false, log: () => {},
         readSession: async () => { browserCalls.push("capture"); throw new Error("must not capture"); },
         applySession: async () => { browserCalls.push("restore"); throw new Error("must not restore"); },
       });

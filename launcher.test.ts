@@ -372,7 +372,7 @@ for (const proxied of [false, true]) {
         readSession: async () => { throw new Error("healthy survivor must not be captured"); },
         applySession: async () => { throw new Error("healthy survivor must not be restored"); },
         heartbeatMs: 0,
-        dirtyMonitorMs: 0,
+        storageCheckpoints: false,
       });
 
       await next.reconcileOrphans();
@@ -3820,34 +3820,6 @@ test("hasPageTargets distinguishes a background-only browser", async () => {
   expect(await launcher.hasPageTargets("k1d0cd11")).toBe(false);
   targets = [{ type: "page" }];
   expect(await launcher.hasPageTargets("k1d0cd11")).toBe(true);
-  store.close();
-});
-
-test("pageTargetFingerprint is generation-fenced and stable across target order", async () => {
-  const store = seeded();
-  store.recordLaunch({ profileId: "k1d0cd11", pid: 1, debugPort: 9333, ws: "ws://x", startedAt: 1 });
-  let targets = [
-    { id: "b", type: "page", url: "https://example.com/b" },
-    { id: "a", type: "page", url: "https://example.com/a" },
-    { id: "worker", type: "service_worker", url: "https://example.com/sw.js" },
-  ];
-  const launcher = new Launcher({
-    store,
-    binaryPath: "/fake",
-    fetch: async () => ({ ok: true, json: async () => targets }),
-  });
-
-  const first = await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 });
-  targets = [
-    targets[1]!,
-    targets[0]!,
-    { id: "blank", type: "page", url: "about:blank" },
-    { id: "capture", type: "page", url: "https://example.com/?__aliasmode_session_capture__=1" },
-  ];
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 })).toBe(first);
-  targets[0] = { ...targets[0]!, url: "https://example.com/changed" };
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 })).not.toBe(first);
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9444, startedAt: 2 })).toBeNull();
   store.close();
 });
 

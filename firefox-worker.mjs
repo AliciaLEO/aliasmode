@@ -324,7 +324,7 @@ async function run() {
     if (name === "session-capture") {
       const seed = payload.captureSeed;
       if (seed === undefined || (seed && typeof seed === "object" && !Array.isArray(seed) && Array.isArray(seed.origins))) {
-        const origins = new Set([...(seed?.origins ?? []), ...observedOrigins]);
+        const origins = new Set([...(seed?.origins ?? []), ...(seed?.openTabsOnly ? [] : observedOrigins)]);
         payload = {
           ...payload,
           captureSeed: {

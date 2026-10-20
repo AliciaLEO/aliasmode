@@ -1912,6 +1912,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
       let storageDetached = false;
       let browserDetached = false;
       let signedIn = false;
+      let openTabsOnly = false;
       const context = {
         pages: () => hiddenPage ? [anchor, hiddenPage] : [anchor],
         async route(_url, handler) { routeHandler = handler; },
@@ -1960,6 +1961,7 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
           if (method === "Target.getTargetInfo") return { targetInfo: { targetId: params.targetId, type: "other", url: "about:blank#__aliasmode_hidden_capture__" } };
           if (method === "Browser.getWindowForTarget") throw new Error("Protocol error (Browser.getWindowForTarget): Browser window not found");
           if (method === "Target.closeTarget") { hiddenPage = undefined; return { success: true }; }
+          if (openTabsOnly) throw new Error("an open-tab capture created a temporary page");
           if (method !== "Target.createTarget" || params.url !== "about:blank#__aliasmode_hidden_capture__"
             || params.browserContextId !== undefined || params.background !== true || params.hidden !== true
             || process.env.PW_CHROMIUM_ATTACH_TO_OTHER !== "1") {
@@ -1979,11 +1981,14 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
         },
         async detach() { browserDetached = true; },
       };
-      export const chromium = { async connectOverCDP(endpoint) { signedIn = endpoint === "ws://signed-in"; return {
+      export const chromium = { async connectOverCDP(endpoint) {
+        signedIn = endpoint === "ws://signed-in";
+        openTabsOnly = endpoint === "ws://open-tabs-only";
+        return {
         contexts: () => [context],
         async newBrowserCDPSession() { return browserCdp; },
         async close() {
-          if (hiddenPage || routeHandler || !storageDetached || !browserDetached
+          if (hiddenPage || routeHandler || (!openTabsOnly && (!storageDetached || !browserDetached))
             || process.env.PW_CHROMIUM_ATTACH_TO_OTHER !== undefined) {
             throw new Error("hidden storage target cleanup was incomplete");
           }
@@ -2027,6 +2032,12 @@ bunAsNodeTest("worker preserves Telegram direct-CDP allowlists through a hidden 
       origin: "https://web.telegram.org",
       localStorage: [{ name: "dc2_auth_key", value: '"key"' }],
     }]);
+    // A storage-triggered checkpoint skips an origin without an open tab; the caller keeps its saved copy.
+    const openTabs = JSON.parse(await runPlaywrightWorker<string>("session-capture", {
+      endpoint: "ws://open-tabs-only",
+      captureSeed: { origins: ["https://web.telegram.org"], openTabsOnly: true },
+    }, { runtimeRoot: root, timeoutMs: 5_000 }));
+    expect(openTabs.origins).toEqual([]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

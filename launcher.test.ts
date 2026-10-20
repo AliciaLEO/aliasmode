@@ -22,6 +22,10 @@ import {
   matchOwnedBrowserPids,
   matchProfileDirHolderPids,
   parseTasklistImageNames,
+  parseWindowsProcessEntry,
+  decodeWindowsCommandLine,
+  readWindowsProcessSnapshotNative,
+  readWindowsProcessSnapshotWmi,
   parseDarwinFirefoxPsSnapshot,
   parseDarwinKernelExecutablePath,
   parseDarwinKernelArgv,
@@ -1602,6 +1606,54 @@ test("Darwin Firefox kernel argv rejects split and sibling profiles, bad generat
   expect(parseDarwinKernelExecutablePath(executable, 4)).toBe("/bin");
   expect(parseDarwinKernelExecutablePath(executable, 3)).toBeNull();
 });
+
+test("native Windows process structures decode into exact identity fields", () => {
+  const entry = new Uint8Array(568);
+  const entryView = new DataView(entry.buffer);
+  entryView.setUint32(8, 4321, true);
+  entryView.setUint32(32, 1234, true);
+  entry.set(Buffer.from("chrome.exe\0", "utf16le"), 44);
+  expect(parseWindowsProcessEntry(entry)).toEqual({ pid: 4321, parentPid: 1234, processName: "chrome.exe" });
+
+  const commandLine = '"C:\\Cloak\\chrome.exe" --remote-debugging-port=9333 "--user-data-dir=C:\\Data\\profile one"';
+  const text = Buffer.from(commandLine, "utf16le");
+  const buffer = new Uint8Array(16 + text.byteLength);
+  const header = new DataView(buffer.buffer);
+  header.setUint16(0, text.byteLength, true);
+  header.setBigUint64(8, 0x10000n + 16n, true);
+  buffer.set(text, 16);
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe(commandLine);
+  expect(matchOwnedBrowserPids(
+    { profileId: "p1", debugPort: 9333, userDataDir: "C:\\Data\\profile one", binaryPath: "C:\\Cloak\\chrome.exe" },
+    { records: [{ pid: 4321, executablePath: "C:\\Cloak\\chrome.exe", commandLine }], incomplete: false },
+  )).toEqual([4321]);
+  // A string pointer outside the buffer is unreadable, not an empty command line.
+  expect(decodeWindowsCommandLine(buffer, 0x20000)).toBeNull();
+  // WMI ends a command line at the first NUL that a process wrote into it.
+  buffer.set(Buffer.from("\0", "utf16le"), 16 + 2 * commandLine.indexOf(" --remote"));
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe('"C:\\Cloak\\chrome.exe"');
+  header.setUint16(0, 0, true);
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe("");
+});
+
+test.skipIf(process.platform === "win32")("the native Windows scan throws off Windows so the WMI fallback runs", () => {
+  expect(() => readWindowsProcessSnapshotNative()).toThrow();
+});
+
+test.skipIf(process.platform !== "win32")("native Windows scan lists this process with the same fields as WMI", async () => {
+  const native = readWindowsProcessSnapshotNative();
+  expect(native.incomplete).toBe(false);
+  const self = native.records.find((record) => record.pid === process.pid);
+  expect(self?.executablePath).toBeTruthy();
+  expect(self?.commandLine).toBeTruthy();
+  expect(self?.parentPid).toBeGreaterThan(0);
+  const wmi = await readWindowsProcessSnapshotWmi();
+  const wmiSelf = wmi?.records.find((record) => record.pid === process.pid);
+  // WMI may report a different letter case for the same path; every matcher compares paths case-insensitively.
+  expect(wmiSelf?.executablePath?.toLowerCase()).toBe(self!.executablePath!.toLowerCase());
+  expect(wmiSelf?.commandLine).toBe(self!.commandLine);
+  expect(wmiSelf?.processName).toBe(self!.processName);
+}, 90_000);
 
 test("bounded process snapshot reader kills a hung scanner and returns unknown", async () => {
   let streamController!: ReadableStreamDefaultController<Uint8Array>;

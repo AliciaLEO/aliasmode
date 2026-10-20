@@ -25,7 +25,7 @@ import {
   statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dlopen } from "bun:ffi";
+import { dlopen, ptr } from "bun:ffi";
 import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
 import { lookupProxyExitLocation, type ExitLocation } from "./geoip.ts";
@@ -4221,46 +4221,156 @@ function readLinuxProcessRecord(pid: number): HostProcessRecord | null {
   }
 }
 
+// 64-bit PROCESSENTRY32W: th32ProcessID at 8, th32ParentProcessID at 32, szExeFile[260] at 44.
+const WINDOWS_PROCESS_ENTRY_SIZE = 568;
+const WINDOWS_INVALID_HANDLE = 0xFFFF_FFFF_FFFF_FFFFn;
+const WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const WINDOWS_PROCESS_COMMAND_LINE_INFORMATION = 60;
+// UNICODE_STRING header plus the longest possible command line (65534 bytes).
+const windowsCommandLineBuffer = new Uint8Array(16 + 65_536);
+const windowsImagePathBuffer = new Uint16Array(32_768);
+const windowsImagePathLength = new Uint32Array(1);
+const windowsProcessApi = process.platform === "win32" ? (() => {
+  try {
+    return {
+      kernel32: dlopen("kernel32.dll", {
+        CreateToolhelp32Snapshot: { args: ["u32", "u32"], returns: "u64" },
+        Process32FirstW: { args: ["u64", "ptr"], returns: "i32" },
+        Process32NextW: { args: ["u64", "ptr"], returns: "i32" },
+        OpenProcess: { args: ["u32", "i32", "u32"], returns: "u64" },
+        QueryFullProcessImageNameW: { args: ["u64", "u32", "ptr", "ptr"], returns: "i32" },
+        CloseHandle: { args: ["u64"], returns: "i32" },
+      }).symbols,
+      ntdll: dlopen("ntdll.dll", {
+        NtQueryInformationProcess: { args: ["u64", "u32", "ptr", "u32", "ptr"], returns: "i32" },
+      }).symbols,
+    };
+  } catch {
+    return null;
+  }
+})() : null;
+
+/** Read pid, parent pid and image name from one 64-bit PROCESSENTRY32W. */
+export function parseWindowsProcessEntry(entry: Uint8Array): { pid: number; parentPid: number; processName: string } {
+  const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
+  const name = Buffer.from(entry.buffer, entry.byteOffset + 44, 520).toString("utf16le");
+  const end = name.indexOf("\0");
+  return {
+    pid: view.getUint32(8, true),
+    parentPid: view.getUint32(32, true),
+    processName: end < 0 ? name : name.slice(0, end),
+  };
+}
+
+/**
+ * Decode the UNICODE_STRING that ProcessCommandLineInformation writes at the
+ * start of `buffer`. Like WMI, stop at the first NUL that some processes write.
+ */
+export function decodeWindowsCommandLine(buffer: Uint8Array, bufferAddress: number): string | null {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const length = view.getUint16(0, true);
+  if (length === 0) return "";
+  const offset = Number(view.getBigUint64(8, true)) - bufferAddress;
+  if (!Number.isSafeInteger(offset) || offset < 16 || offset + length > buffer.byteLength) return null;
+  const text = Buffer.from(buffer.buffer, buffer.byteOffset + offset, length).toString("utf16le");
+  const end = text.indexOf("\0");
+  return end < 0 ? text : text.slice(0, end);
+}
+
+/**
+ * Native Windows process snapshot with the WMI scan's fields. A process that
+ * cannot be opened keeps a null path and an empty command line, as in WMI.
+ * Throws only when the snapshot itself fails. No IPC, so it cannot hang like WMI.
+ */
+export function readWindowsProcessSnapshotNative(): HostProcessSnapshot {
+  if (!windowsProcessApi) throw new Error("Windows process API is unavailable");
+  const { kernel32, ntdll } = windowsProcessApi;
+  const snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0) as bigint; // TH32CS_SNAPPROCESS
+  if (snapshot === 0n || snapshot === WINDOWS_INVALID_HANDLE) throw new Error("CreateToolhelp32Snapshot failed");
+  const entry = new Uint8Array(WINDOWS_PROCESS_ENTRY_SIZE);
+  new DataView(entry.buffer).setUint32(0, WINDOWS_PROCESS_ENTRY_SIZE, true);
+  const records: HostProcessRecord[] = [];
+  try {
+    for (let more = kernel32.Process32FirstW(snapshot, entry); more; more = kernel32.Process32NextW(snapshot, entry)) {
+      const { pid, parentPid, processName } = parseWindowsProcessEntry(entry);
+      if (pid <= 0) continue;
+      let executablePath: string | null = null;
+      let commandLine = "";
+      const handle = kernel32.OpenProcess(WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) as bigint;
+      if (handle !== 0n) {
+        try {
+          windowsImagePathLength[0] = windowsImagePathBuffer.length;
+          if (kernel32.QueryFullProcessImageNameW(handle, 0, windowsImagePathBuffer, windowsImagePathLength)) {
+            executablePath = Buffer.from(windowsImagePathBuffer.buffer, 0, windowsImagePathLength[0]! * 2).toString("utf16le") || null;
+          }
+          const status = ntdll.NtQueryInformationProcess(
+            handle, WINDOWS_PROCESS_COMMAND_LINE_INFORMATION,
+            windowsCommandLineBuffer, windowsCommandLineBuffer.byteLength, null,
+          );
+          if (status === 0) commandLine = decodeWindowsCommandLine(windowsCommandLineBuffer, ptr(windowsCommandLineBuffer)) ?? "";
+        } finally {
+          kernel32.CloseHandle(handle);
+        }
+      }
+      records.push({ pid, parentPid, processName: processName || undefined, executablePath, commandLine });
+    }
+  } finally {
+    kernel32.CloseHandle(snapshot);
+  }
+  if (records.length === 0) throw new Error("Windows process snapshot was empty");
+  return { records, incomplete: false };
+}
+
+/** WMI fallback for the native scan, bounded by WINDOWS_PROCESS_SCAN_TIMEOUT_MS. */
+export async function readWindowsProcessSnapshotWmi(): Promise<HostProcessSnapshot | null> {
+  try {
+    const script = [
+      "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
+      "ConvertTo-Json -Compress",
+    ].join(" | ");
+    // The full path also works when PATH has no PowerShell folder.
+    const powershell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const child = Bun.spawn(
+      [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+      { stdout: "pipe", stderr: "ignore" },
+    );
+    const result = await readSnapshotChildBounded(
+      child as unknown as { stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): unknown },
+      WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
+    );
+    if (!result || result.exitCode !== 0) {
+      // A failed scan stops every saved profile with browser_launch/profile_directory. The log shows why.
+      console.log(`[aliasmode] Windows process scan failed: ${result ? `exit code ${result.exitCode}` : "timed out"}`);
+      return null;
+    }
+    const parsed = result.raw.trim() ? JSON.parse(result.raw) : [];
+    const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    const records: HostProcessRecord[] = [];
+    for (const row of rows) {
+      const pid = Number(row.ProcessId);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      records.push({
+        pid,
+        processName: typeof row?.Name === "string" && row.Name ? row.Name : undefined,
+        executablePath: typeof row?.ExecutablePath === "string" && row.ExecutablePath ? row.ExecutablePath : null,
+        commandLine: typeof row?.CommandLine === "string" ? row.CommandLine : "",
+      });
+    }
+    return { records, incomplete: false };
+  } catch (error) {
+    console.log(`[aliasmode] Windows process scan failed: ${(error as { code?: string })?.code ?? String(error)}`);
+    return null;
+  }
+}
+
 export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | null> {
   if (IS_WINDOWS) {
     try {
-      const script = [
-        "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
-        "ConvertTo-Json -Compress",
-      ].join(" | ");
-      // The full path also works when PATH has no PowerShell folder.
-      const powershell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-      const child = Bun.spawn(
-        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
-        { stdout: "pipe", stderr: "ignore" },
-      );
-      const result = await readSnapshotChildBounded(
-        child as unknown as { stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): unknown },
-        WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
-      );
-      if (!result || result.exitCode !== 0) {
-        // A failed scan stops every saved profile with browser_launch/profile_directory. The log shows why.
-        console.log(`[aliasmode] Windows process scan failed: ${result ? `exit code ${result.exitCode}` : "timed out"}`);
-        return null;
-      }
-      const parsed = result.raw.trim() ? JSON.parse(result.raw) : [];
-      const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
-      const records: HostProcessRecord[] = [];
-      for (const row of rows) {
-        const pid = Number(row.ProcessId);
-        if (!Number.isFinite(pid) || pid <= 0) continue;
-        records.push({
-          pid,
-          processName: typeof row?.Name === "string" && row.Name ? row.Name : undefined,
-          executablePath: typeof row?.ExecutablePath === "string" && row.ExecutablePath ? row.ExecutablePath : null,
-          commandLine: typeof row?.CommandLine === "string" ? row.CommandLine : "",
-        });
-      }
-      return { records, incomplete: false };
+      return readWindowsProcessSnapshotNative();
     } catch (error) {
-      console.log(`[aliasmode] Windows process scan failed: ${(error as { code?: string })?.code ?? String(error)}`);
-      return null;
+      console.log(`[aliasmode] Windows native process scan failed (${String(error)}); using WMI`);
     }
+    return await readWindowsProcessSnapshotWmi();
   }
 
   if (process.platform === "linux") {

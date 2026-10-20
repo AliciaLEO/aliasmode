@@ -233,6 +233,8 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   // Behind a proxy the engine shows the proxy's exit IP as WebRTC's public address, as a browser
   // at that exit would, in place of no address. The current exit replaces any stored one.
   if (profile.proxy && webRtcIp) config[isIP(webRtcIp) === 6 ? "webrtc:ipv6" : "webrtc:ipv4"] = webRtcIp;
+  // Without a proxy, the computer's IPv6 address is the same for every profile on it.
+  if (!profile.proxy) config["network:ipv4Only"] ??= true;
   fitDesktopPersona(config, os);
   fitFirefoxWindow(config);
   return config;

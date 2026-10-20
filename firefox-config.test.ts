@@ -93,6 +93,12 @@ test("a proxied Firefox launch shows the proxy exit IP as WebRTC's public addres
   expect(proxied.firefox!.config["webrtc:ipv4"]).toBe("198.51.100.1");
 });
 
+test("a Firefox launch without a proxy keeps the computer's IPv6 address from pages", () => {
+  const proxy = { type: "http" as const, host: "gate.example.net", port: "8080", user: "", pass: "" };
+  expect(firefoxLaunchConfig(profile(9))["network:ipv4Only"]).toBe(true);
+  expect(firefoxLaunchConfig({ ...profile(9), proxy })).not.toHaveProperty("network:ipv4Only");
+});
+
 test("a Firefox launch shows the window label in the native title and starts in the profile's language", () => {
   const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
   expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");

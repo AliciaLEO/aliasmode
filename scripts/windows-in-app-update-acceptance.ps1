@@ -1063,7 +1063,7 @@ try {
   $profile = Invoke-RestMethod "$($oldRecord.Origin)/ui/api/profiles" `
     -Method Post `
     -ContentType "application/json" `
-    -Body '{"name":"in-app-update-preservation-sentinel"}' `
+    -Body '{"name":"in-app-update-preservation-sentinel","engine":"chromium","chromiumRuntime":"cloakbrowser"}' `
     -TimeoutSec 30 `
     -NoProxy
   if ($profile.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$profile.id)) {

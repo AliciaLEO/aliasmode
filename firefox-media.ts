@@ -75,12 +75,18 @@ function voiceUri(os: OsKey, name: string, lang: string): string {
 }
 
 /**
- * Share of desktops with voices beyond the stock set: speech packs of a second language on
- * Windows, downloaded MacinTalk voices on macOS. The manifest's lower estimates left most
- * profiles on one computer with the same list; AliasMode Chromium's Windows voices use 62% too.
+ * Share of Windows desktops with speech packs of a second language beyond the stock set. The
+ * manifest's lower estimate left most profiles on one computer with the same list; AliasMode
+ * Chromium's Windows voices use 62% too.
  */
 const EXTRA_VOICE_SHARE = 0.62;
-const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"]);
+const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages"]);
+/**
+ * MacinTalk downloads (Alex, Bruce, Vicki) are not offered on every macOS version (macOS 26 keeps
+ * only Fred, Junior, Kathy and Ralph), so a stock list plus one of them is a list no Mac shows.
+ * macOS profiles keep a stock list.
+ */
+const SKIPPED_ADDITIONS = new Set(["macintalk-download"]);
 
 /**
  * The voices stock Firefox 156.0.1 lists on a stock install of each macOS version, captured on
@@ -143,7 +149,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
     takePack(packs[locale] ? locale : names.find((name) => name.split("-")[0]!.toLowerCase() === language) ?? fallback);
   }
   for (const addition of manifest.additions ?? []) {
-    if (addition.deferred) continue;
+    if (addition.deferred || SKIPPED_ADDITIONS.has(addition.id ?? "")) continue;
     if (addition.requiresLocale && !locale.toLowerCase().startsWith(addition.requiresLocale.toLowerCase())) continue;
     if (random() >= (EXTRA_VOICE_ADDITIONS.has(addition.id ?? "") ? Math.max(addition.prob ?? 0, EXTRA_VOICE_SHARE) : addition.prob ?? 0)) continue;
     const count = () => addition.sizes ? pick(random, addition.sizes, (size) => size.w).n : Number.POSITIVE_INFINITY;

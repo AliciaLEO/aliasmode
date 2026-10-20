@@ -272,16 +272,15 @@ test("a Firefox launch shows its own subset of the stock font list, the same on 
   expect(firefoxLaunchConfig(profile(5, { fonts: ["Arial", "Gabriola"] })).fonts).toEqual(["Arial", "Gabriola"]);
 });
 
-test("most Firefox profiles list voices beyond the stock set, each the same on every launch", () => {
-  for (const platform of ["Win32", "MacIntel"]) {
-    const lists = Array.from({ length: 200 }, (_, i) => firefoxLaunchConfig(profile(i + 1, { "navigator.platform": platform })).voices as Array<{ voiceUri: string }>);
-    // A Mac's extras are downloaded MacinTalk voices; the stock list depends on its macOS version.
-    const extra = platform === "MacIntel"
-      ? (list: Array<{ voiceUri: string }>) => list.some((voice) => /speech\.synthesis\.voice\.(Agnes|Alex|Bruce|Vicki)$/.test(voice.voiceUri))
-      : (list: Array<{ voiceUri: string }>) => list.length > Math.min(...lists.map((other) => other.length));
-    const share = lists.filter(extra).length / lists.length;
-    expect(share).toBeGreaterThan(0.5);
-    expect(share).toBeLessThan(0.75);
+test("most Windows Firefox profiles list voices beyond the stock set, macOS profiles a stock set, each the same on every launch", () => {
+  const lists = (platform: string) => Array.from({ length: 200 }, (_, i) => firefoxLaunchConfig(profile(i + 1, { "navigator.platform": platform })).voices as Array<{ voiceUri: string }>);
+  const windows = lists("Win32");
+  const share = windows.filter((list) => list.length > Math.min(...windows.map((other) => other.length))).length / windows.length;
+  expect(share).toBeGreaterThan(0.5);
+  expect(share).toBeLessThan(0.75);
+  // No downloaded MacinTalk voice: macOS 26 does not offer Bruce or Vicki.
+  for (const list of lists("MacIntel")) {
+    expect(list.some((voice) => /speech\.synthesis\.voice\.(Agnes|Alex|Bruce|Vicki)$/.test(voice.voiceUri))).toBe(false);
   }
   expect(firefoxLaunchConfig(profile(9)).voices).toEqual(firefoxLaunchConfig(profile(9)).voices!);
 });

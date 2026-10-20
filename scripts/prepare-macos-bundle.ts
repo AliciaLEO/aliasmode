@@ -1,4 +1,4 @@
-/** Stages the macOS arm64 bundle inputs: sidecar, AliasMode Firefox and the agent runtime. */
+/** Stages the macOS bundle inputs for this Mac's processor: sidecar, AliasMode Firefox and the agent runtime. */
 import { cpSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { sha256File } from "../browser-install.ts";
@@ -7,18 +7,19 @@ import { installSourceNode } from "../source-runtime.ts";
 import { ALIASMODE_VERSION } from "../version.ts";
 import { compileSidecar, stageAgentRuntime } from "./prepare-windows-bundle.ts";
 
-const BUN_TARGET = "bun-darwin-arm64";
-const RUST_TARGET = "aarch64-apple-darwin";
-
 async function run(command: string[]): Promise<void> {
   const child = Bun.spawn(command, { stdout: "inherit", stderr: "inherit" });
   if (await child.exited !== 0) throw new Error(`${command[0]} exited with code ${child.exitCode}`);
 }
 
 export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
-  if (process.platform !== "darwin" || process.arch !== "arm64") {
-    throw new Error("macOS bundle preparation requires Apple Silicon macOS");
+  if (process.platform !== "darwin" || (process.arch !== "arm64" && process.arch !== "x64")) {
+    throw new Error("macOS bundle preparation requires macOS");
   }
+  // Tauri builds for this Mac's processor. Every Mac that runs macOS 13, which Bun needs, has AVX2.
+  const [bunTarget, rustTarget] = process.arch === "arm64"
+    ? ["bun-darwin-arm64", "aarch64-apple-darwin"]
+    : ["bun-darwin-x64", "x86_64-apple-darwin"];
   const tauri = join(resolve(cwd), "src-tauri");
   const staging = join(tauri, "target", "desktop-staging");
   const firefoxRoot = join(tauri, "resources", "firefox");
@@ -28,7 +29,7 @@ export async function prepareMacosBundle(cwd = process.cwd()): Promise<void> {
     mkdirSync(path, { recursive: true });
   }
 
-  await compileSidecar(cwd, join(tauri, "binaries", `aliasmode-sidecar-${RUST_TARGET}`), BUN_TARGET);
+  await compileSidecar(cwd, join(tauri, "binaries", `aliasmode-sidecar-${rustTarget}`), bunTarget);
 
   const build = firefoxBuildForHost();
   const firefox = await installFirefox({ cwd: staging, writeEnv: false });

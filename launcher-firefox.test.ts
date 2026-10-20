@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { firefoxLaunchConfig, firefoxStartupPrefs } from "./firefox-config.ts";
+import { firefoxLaunchConfig, firefoxStartupPrefs, graphicsIdentity } from "./firefox-config.ts";
 import { FIREFOX_FONT_PACKS, firefoxFontPackPrefs, type FirefoxFontPack } from "./firefox-fonts.ts";
 import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
@@ -311,8 +311,8 @@ test("Firefox records and matches the managed Node owner after PATH changes", as
   }
 });
 
-test("Firefox supports Darwin arm64 and Linux x64 personas without changing saved config", async () => {
-  for (const [platform, arch] of [["darwin", "arm64"], ["linux", "x64"]] as const) {
+test("Firefox supports Darwin arm64, Darwin x64 and Linux x64 personas without changing saved config", async () => {
+  for (const [platform, arch] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]] as const) {
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     const opened = await f.launcher.start(f.profile.id);
@@ -328,8 +328,26 @@ test("Firefox supports Darwin arm64 and Linux x64 personas without changing save
   }
 });
 
+test("an Intel Mac asks its GPU vendor once for macOS profiles and shows a card of that vendor", async () => {
+  const f = fixture("darwin", "x64");
+  let asked = 0;
+  const launcher = new Launcher({ ...f.options, macGraphicsVendor: async () => { asked++; return "amd"; } });
+  await launcher.start(f.profile.id);
+  // The fixture's profile is a Windows one: no question, and the config is unchanged.
+  expect(asked).toBe(0);
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+  const mac = { ...f.profile.firefox!.config, "navigator.platform": "MacIntel", ...graphicsIdentity("macos", 1) };
+  f.store.upsertProfile({ ...f.profile, firefox: { ...f.profile.firefox!, config: mac } });
+  const profile = f.store.getProfile(f.profile.id)!;
+  await launcher.start(profile.id);
+  expect(asked).toBe(1);
+  expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, undefined, { vendor: "amd" }));
+  expect((f.config() as Record<string, unknown>)["webGl:vendor"]).toBe("ATI Technologies Inc.");
+  expect(await launcher.stop(profile.id)).toBe(true);
+});
+
 test("Firefox rejects unsupported host tuples without changing saved config", async () => {
-  for (const [platform, arch] of [["darwin", "x64"], ["linux", "arm64"], ["win32", "arm64"]] as const) {
+  for (const [platform, arch] of [["linux", "arm64"], ["win32", "arm64"]] as const) {
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     await expect(f.launcher.start(f.profile.id)).rejects.toBeInstanceOf(BrowserLaunchError);

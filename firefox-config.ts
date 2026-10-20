@@ -30,6 +30,14 @@ interface GraphicsIdentity {
   keys: Record<string, JsonValue>;
 }
 
+export type MacGraphicsVendor = "intel" | "amd";
+const INTEL_MAC_VENDORS: Record<MacGraphicsVendor, string> = { intel: "Intel Inc.", amd: "ATI Technologies Inc." };
+/**
+ * Logical processors of Intel Macs per card class: Intel graphics only (MacBook Air, 13-inch
+ * MacBook Pro, Mac mini) or an AMD card (15- and 16-inch MacBook Pro, 27-inch iMac).
+ */
+const INTEL_MAC_THREADS: Record<MacGraphicsVendor, number[]> = { intel: [4, 8], amd: [8, 12, 16] };
+
 /**
  * Real graphics identities per system from the engine's data set, weighted by how
  * common they are. Each has the vendor, the renderer and the matching WebGL limits.
@@ -37,26 +45,40 @@ interface GraphicsIdentity {
  * stock Firefox names every Apple Silicon GPU "Apple M1, or similar" (SanitizeRenderer.cpp),
  * and the set's Intel, AMD and Direct3D rows are no current Mac. Its 8192 texture limits are
  * the ones stock Firefox reports and enforces on every Mac (GLContext.cpp, bug 1544446).
+ * An Intel Mac shows its own Intel or AMD card instead (intelMac).
  */
-const graphicsIdentities = await (async (): Promise<Record<PersonaOs, GraphicsIdentity[]>> => {
+const graphicsIdentities = await (async (): Promise<Record<PersonaOs | "intelMac", GraphicsIdentity[]>> => {
   const database = Database.deserialize(new Uint8Array(await Bun.file(webglDataPath).arrayBuffer()));
   const rows = database
     .prepare("SELECT renderer, data, win, mac, lin FROM webgl_fingerprints ORDER BY vendor, renderer, data")
     .all() as Array<{ renderer: string; data: string; win: number; mac: number; lin: number }>;
   database.close();
-  const forSystem = (column: "win" | "mac" | "lin") => rows.flatMap((row) => {
+  const forSystem = (column: "win" | "mac" | "lin", accept = (_keys: Record<string, JsonValue>) => true) => rows.flatMap((row) => {
     const { webGl2Enabled, ...keys } = JSON.parse(row.data) as Record<string, JsonValue>;
-    return row[column] > 0 && webGl2Enabled === true && !/SwiftShader|Basic Render/i.test(row.renderer)
-      && (column !== "mac" || isAppleGraphics(keys))
+    return row[column] > 0 && webGl2Enabled === true && !/SwiftShader|Basic Render/i.test(row.renderer) && accept(keys)
       ? [{ weight: row[column], keys }]
       : [];
   });
-  return { windows: forSystem("win"), macos: forSystem("mac"), linux: forSystem("lin") };
+  return {
+    windows: forSystem("win"),
+    macos: forSystem("mac", isAppleGraphics),
+    linux: forSystem("lin"),
+    intelMac: forSystem("mac", (keys) => isIntelMacGraphics(keys)),
+  };
 })();
 
 /** Choose the graphics identity of a profile. The same seed always gives the same one. */
 export function graphicsIdentity(platformOs: PersonaOs, seed: number): Record<string, JsonValue> {
-  const options = graphicsIdentities[platformOs];
+  return pickGraphics(graphicsIdentities[platformOs], seed);
+}
+
+/** The card of a macOS profile on an Intel Mac: one of that Mac's GPU vendor when it is known. */
+function intelMacGraphicsIdentity(seed: number, vendor?: MacGraphicsVendor): Record<string, JsonValue> {
+  const options = graphicsIdentities.intelMac.filter((option) => isIntelMacGraphics(option.keys, vendor));
+  return pickGraphics(options.length ? options : graphicsIdentities.intelMac, seed);
+}
+
+function pickGraphics(options: GraphicsIdentity[], seed: number): Record<string, JsonValue> {
   const total = options.reduce((sum, option) => sum + option.weight, 0);
   let remaining = seedFraction(seed) * total;
   for (const option of options) {
@@ -72,17 +94,48 @@ function isAppleGraphics(config: Record<string, JsonValue>): boolean {
 
 const storesGraphics = (config: Record<string, JsonValue>) => config["webGl:vendor"] !== undefined || config["webGl:renderer"] !== undefined;
 
-/** Apple's identity for a macOS profile saved with another card (Intel, AMD or a Windows Direct3D one). */
-function replacedGraphics(profile: Profile, config: Record<string, JsonValue>): Record<string, JsonValue> | undefined {
-  return storesGraphics(config) && !isAppleGraphics(config) && firefoxPersonaOs(profile, config) === "macos"
-    ? graphicsIdentity("macos", profile.fingerprintSeed)
-    : undefined;
+/**
+ * The card for a macOS profile saved with another kind (a Windows Direct3D one, say): Apple's,
+ * and on an Intel Mac an Intel or AMD one of that Mac's vendor, because pages draw on the real GPU.
+ */
+function replacedGraphics(
+  profile: Profile, config: Record<string, JsonValue>, intelMac?: { vendor?: MacGraphicsVendor },
+): Record<string, JsonValue> | undefined {
+  if (!storesGraphics(config) || firefoxPersonaOs(profile, config) !== "macos") return undefined;
+  if (intelMac) {
+    return isIntelMacGraphics(config, intelMac.vendor) ? undefined : intelMacGraphicsIdentity(profile.fingerprintSeed, intelMac.vendor);
+  }
+  return isAppleGraphics(config) ? undefined : graphicsIdentity("macos", profile.fingerprintSeed);
 }
 
 /** The graphics card a launch of this profile shows, when the profile stores one (firefoxLaunchConfig). */
-export function firefoxGraphicsRenderer(profile: Profile): JsonValue | undefined {
+export function firefoxGraphicsRenderer(profile: Profile, intelMac?: { vendor?: MacGraphicsVendor }): JsonValue | undefined {
   const config = profile.firefox?.config ?? {};
-  return (replacedGraphics(profile, config) ?? config)["webGl:renderer"];
+  return (replacedGraphics(profile, config, intelMac) ?? config)["webGl:renderer"];
+}
+
+function isIntelMacGraphics(config: Record<string, JsonValue>, vendor?: MacGraphicsVendor): boolean {
+  const vendors = vendor ? [INTEL_MAC_VENDORS[vendor]] : Object.values(INTEL_MAC_VENDORS);
+  return vendors.includes(String(config["webGl:vendor"]));
+}
+
+/**
+ * The GPU vendor of an Intel Mac, from `system_profiler SPDisplaysDataType -json`. A Mac with
+ * both draws WebGL on its integrated Intel GPU unless a page asks for high performance.
+ */
+export function intelMacGraphicsVendor(report: string): MacGraphicsVendor | undefined {
+  let cards: unknown;
+  try {
+    cards = (JSON.parse(report) as { SPDisplaysDataType?: unknown }).SPDisplaysDataType;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(cards)) return undefined;
+  const names = cards.map((card) => ["spdisplays_vendor", "sppci_vendor", "sppci_model", "_name"]
+    .map((key) => String(card?.[key] ?? "")).join(" ").toLowerCase());
+  if (names.some((name) => name.includes("intel"))) return "intel";
+  if (names.some((name) => /amd|radeon|vendor_ati|\bati\b/.test(name))) return "amd";
+  return undefined;
 }
 
 export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
@@ -201,7 +254,9 @@ const DROPPED_LAUNCH_KEYS = [
  * exact shape. A value the profile stores itself is kept, unless no real desktop of its system
  * shows it (fitDesktopPersona, a macOS card that is not Apple's).
  */
-export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string): Record<string, JsonValue> {
+export function firefoxLaunchConfig(
+  profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string, intelMac?: { vendor?: MacGraphicsVendor },
+): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
   for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
   // The font pack of the profile's OS, when it is not this computer's OS (firefox-fonts.ts).
@@ -215,10 +270,17 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
   config["aliasmode:textSeed"] ??= seed("aliasmode:textSeed");
   const os = firefoxPersonaOs(profile, config);
-  const graphics = replacedGraphics(profile, config);
+  const graphics = replacedGraphics(profile, config, intelMac);
   if (graphics) {
     for (const key of Object.keys(config)) if (/^webGl2?:/.test(key)) delete config[key];
     Object.assign(config, graphics);
+  }
+  // A macOS profile on an Intel Mac reports a processor count of its card's class of Mac.
+  const threads = intelMac && os === "macos"
+    ? INTEL_MAC_THREADS[config["webGl:vendor"] === INTEL_MAC_VENDORS.amd ? "amd" : "intel"]
+    : undefined;
+  if (threads && storesGraphics(config) && !threads.includes(Number(config["navigator.hardwareConcurrency"]))) {
+    config["navigator.hardwareConcurrency"] = threads[Math.floor(seedFraction(seed("intelMac:threads")) * threads.length)]!;
   }
   // With the stock list every profile of one OS shows the same fonts.
   if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
@@ -325,8 +387,8 @@ function firefoxStartupLocale(profile: Profile): string {
 export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Platform, hostArch?: string): Record<string, JsonValue> {
   const os = firefoxPersonaOs(profile);
   const appleSilicon = hostPlatform === "darwin" && hostArch === "arm64";
-  // A profile without a stored card shows this computer's.
-  const renderer = firefoxGraphicsRenderer(profile);
+  // A profile without a stored card shows this computer's; on an Intel Mac a macOS one shows an Intel or AMD card.
+  const renderer = firefoxGraphicsRenderer(profile, hostPlatform === "darwin" && hostArch === "x64" ? {} : undefined);
   const appleGraphics = renderer === undefined ? appleSilicon : String(renderer).startsWith("Apple");
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),

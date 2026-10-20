@@ -7,6 +7,7 @@ import {
   aliasmodeChromiumExecutable,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
+  CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256,
   cloakBrowserExecutableSha256,
   defaultChromiumRuntime,
   ensureAliasmodeChromium,
@@ -164,9 +165,11 @@ test("exports name the Chrome version of every Chromium profile so a re-import k
   expect(serializeXlsxRows([firefox]).headers).not.toContain("chromium_runtime");
 });
 
-test("macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser binary is configured", () => {
-  expect(hostChromiumRuntime("darwin", {})).toBe("aliasmode");
-  expect(hostChromiumRuntime("darwin", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
+test("Apple Silicon macOS uses the 155 runtime for Chromium profiles unless a CloakBrowser binary is configured", () => {
+  expect(hostChromiumRuntime("darwin", {}, "arm64")).toBe("aliasmode");
+  expect(hostChromiumRuntime("darwin", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" }, "arm64")).toBeUndefined();
+  // Upstream has no Intel Mac build of Chromium 155.
+  expect(hostChromiumRuntime("darwin", {}, "x64")).toBeUndefined();
   expect(hostChromiumRuntime("win32", {})).toBeUndefined();
   expect(hostChromiumRuntime("linux", {})).toBeUndefined();
 });
@@ -176,6 +179,7 @@ test("new Chromium profiles use Chromium 155 wherever the computer can run it", 
   expect(defaultChromiumRuntime("linux", "x64", {})).toBe("aliasmode");
   expect(defaultChromiumRuntime("darwin", "arm64", {})).toBe("aliasmode");
   expect(defaultChromiumRuntime("darwin", "arm64", { CLOAKBROWSER_BINARY_PATH: "/opt/cloakbrowser" })).toBeUndefined();
+  expect(defaultChromiumRuntime("darwin", "x64", {})).toBeUndefined();
   expect(defaultChromiumRuntime("win32", "arm64", {})).toBeUndefined();
   expect(defaultChromiumRuntime("linux", "arm64", {})).toBeUndefined();
 });
@@ -188,29 +192,34 @@ test("the host display scale comes from the desktop app, and 1 stands in for a m
   }
 });
 
-test("installs the pinned CloakBrowser build for macOS from its tar archive root", async () => {
-  const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
-  const downloads: string[] = [];
-  const deps: AliasmodeChromiumDeps = {
-    download: async (url, output) => {
-      downloads.push(url);
-      writeFileSync(output, "505582aa1bd3971c577f70e0cbbe016431702bdb693529abfd943b5bd9120c1c");
-    },
-    extract: async (_archive, directory) => {
-      const bundle = join(directory, "Chromium.app", "Contents", "MacOS");
-      mkdirSync(bundle, { recursive: true });
-      writeFileSync(join(bundle, "Chromium"), CLOAKBROWSER_MACOS_EXECUTABLE_SHA256);
-    },
-    hashFile: async (path) => readFileSync(path, "utf8"),
-  };
-  const executable = await ensureCloakBrowser(root, "darwin", "arm64", deps);
-  expect(executable).toBe(join(root, "cloakbrowser-145.0.7632.109.2", "Chromium.app", "Contents", "MacOS", "Chromium"));
-  expect(downloads).toEqual([
-    "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v145.0.7632.109.2/cloakbrowser-darwin-arm64.tar.gz",
-  ]);
-  expect(await ensureCloakBrowser(root, "darwin", "arm64", deps)).toBe(executable);
-  expect(downloads).toHaveLength(1);
-  expect(readdirSync(root)).toEqual(["cloakbrowser-145.0.7632.109.2"]);
+test("installs the pinned CloakBrowser build for each Mac processor from its tar archive root", async () => {
+  for (const [arch, archiveSha256, executableSha256] of [
+    ["arm64", "505582aa1bd3971c577f70e0cbbe016431702bdb693529abfd943b5bd9120c1c", CLOAKBROWSER_MACOS_EXECUTABLE_SHA256],
+    ["x64", "a0a061b1945db55b3bbe95986a82b67803311c0fedabb3946e7ab0172273daac", CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256],
+  ] as const) {
+    const root = mkdtempSync(join(tmpdir(), "aliasmode-cloakbrowser-"));
+    const downloads: string[] = [];
+    const deps: AliasmodeChromiumDeps = {
+      download: async (url, output) => {
+        downloads.push(url);
+        writeFileSync(output, archiveSha256);
+      },
+      extract: async (_archive, directory) => {
+        const bundle = join(directory, "Chromium.app", "Contents", "MacOS");
+        mkdirSync(bundle, { recursive: true });
+        writeFileSync(join(bundle, "Chromium"), executableSha256);
+      },
+      hashFile: async (path) => readFileSync(path, "utf8"),
+    };
+    const executable = await ensureCloakBrowser(root, "darwin", arch, deps);
+    expect(executable).toBe(join(root, "cloakbrowser-145.0.7632.109.2", "Chromium.app", "Contents", "MacOS", "Chromium"));
+    expect(downloads).toEqual([
+      `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v145.0.7632.109.2/cloakbrowser-darwin-${arch}.tar.gz`,
+    ]);
+    expect(await ensureCloakBrowser(root, "darwin", arch, deps)).toBe(executable);
+    expect(downloads).toHaveLength(1);
+    expect(readdirSync(root)).toEqual(["cloakbrowser-145.0.7632.109.2"]);
+  }
 });
 
 test("installs the pinned CloakBrowser build for Linux from its tar archive root", async () => {

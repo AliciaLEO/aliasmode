@@ -75,9 +75,16 @@ test("managed Node uses an official pinned host download and rejects changed byt
     platform: "darwin", arch: "arm64",
     fetch: async (url) => { urls.push(url); return new Response("not the approved Node archive"); },
   })).rejects.toThrow("SHA-256");
-  expect(urls).toEqual(["https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz"]);
+  await expect(installSourceNode(path, {
+    platform: "darwin", arch: "x64",
+    fetch: async (url) => { urls.push(url); return new Response("not the approved Node archive"); },
+  })).rejects.toThrow("SHA-256");
+  expect(urls).toEqual([
+    "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz",
+    "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-x64.tar.gz",
+  ]);
   expect(readdirSync(path)).toEqual([]);
-  await expect(installSourceNode(path, { platform: "darwin", arch: "x64", fetch: async () => { throw new Error("must not download"); } }))
+  await expect(installSourceNode(path, { platform: "linux", arch: "arm64", fetch: async () => { throw new Error("must not download"); } }))
     .rejects.toThrow("unsupported");
 });
 

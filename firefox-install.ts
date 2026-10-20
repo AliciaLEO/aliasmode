@@ -27,6 +27,11 @@ export const FIREFOX_RUNTIME_BUILDS: readonly FirefoxRuntimeBuild[] = [
     executableSha256: "92a99a8b9f45dc21edc48b4cfd29aad485fff464668bc594fbee367de2ea2f2a",
   },
   {
+    platform: "darwin", arch: "x64", executablePath: "AliasMode.app/Contents/MacOS/aliasmode",
+    archiveSha256: "7c1492d0a9408311f5762c4782dd2c4d4e1d920b67226e452b1c982af2b950cb",
+    executableSha256: "79a894b9722cf7364b1a4c22b7156d97c423b41726c4273a6abcfd916d3c70e4",
+  },
+  {
     platform: "win32", arch: "x64", executablePath: "aliasmode.exe",
     archiveSha256: "83ccb1a266e0c65cb195f60ed9e647a15ba5781710c3aab6882d602dc8c49f27",
     executableSha256: "acea9ae405d02240a7a610a0048ba7c3fcaf21bd3c6dd6eb4eaf1d58fc87719a",
@@ -51,9 +56,11 @@ export function firefoxReleaseArchiveUrl(build: FirefoxRuntimeBuild): string {
     ? `aliasmode-${FIREFOX_RUNTIME_VERSION}-lin.x86_64.zip`
     : build.platform === "darwin" && build.arch === "arm64"
       ? `aliasmode-${FIREFOX_RUNTIME_VERSION}-mac.arm64.zip`
-      : build.platform === "win32" && build.arch === "x64"
-        ? `aliasmode-${FIREFOX_RUNTIME_VERSION}-win.x86_64.zip`
-        : "";
+      : build.platform === "darwin" && build.arch === "x64"
+        ? `aliasmode-${FIREFOX_RUNTIME_VERSION}-mac.x86_64.zip`
+        : build.platform === "win32" && build.arch === "x64"
+          ? `aliasmode-${FIREFOX_RUNTIME_VERSION}-win.x86_64.zip`
+          : "";
   if (!name) throw new Error(`No approved AliasMode Firefox release archive is available for ${build.platform} ${build.arch}`);
   return `${FIREFOX_RELEASE_BASE}/${name}`;
 }

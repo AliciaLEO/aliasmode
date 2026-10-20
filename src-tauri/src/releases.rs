@@ -20,10 +20,15 @@ const UPDATE_MANIFEST: &str = "latest-v2.json";
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_TARGET: &str = "windows-x86_64";
 // macOS and Linux read their own feeds: installed Windows clients accept only a one-platform manifest.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const UPDATE_MANIFEST: &str = "latest-macos.json";
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const UPDATE_TARGET: &str = "darwin-aarch64";
+// Installed Apple Silicon apps accept only a one-platform manifest, so Intel Macs read their own.
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const UPDATE_MANIFEST: &str = "latest-macos-x64.json";
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const UPDATE_TARGET: &str = "darwin-x86_64";
 #[cfg(target_os = "linux")]
 const UPDATE_MANIFEST: &str = "latest-linux.json";
 #[cfg(target_os = "linux")]
@@ -208,8 +213,10 @@ async fn fetch_releases() -> Result<Vec<GithubRelease>, String> {
 }
 
 fn update_artifact_name(version: &Version) -> String {
-    if cfg!(target_os = "macos") {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         format!("AliasMode_{version}_aarch64.app.tar.gz")
+    } else if cfg!(target_os = "macos") {
+        format!("AliasMode_{version}_x64.app.tar.gz")
     } else if cfg!(target_os = "linux") {
         format!("AliasMode_{version}_x86_64-linux.tar.gz")
     } else {

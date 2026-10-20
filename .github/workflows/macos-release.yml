@@ -1,7 +1,7 @@
 name: macOS release assets
 
-# Adds the macOS build to a GitHub Release that the Windows pipeline already published.
-# The Windows assets and their update feed are never changed.
+# Adds the macOS builds (Apple Silicon and Intel) to a GitHub Release that the Windows pipeline
+# already published. The Windows assets and their update feed are never changed.
 on:
   workflow_dispatch:
     inputs:
@@ -52,7 +52,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-macos-arm64
-          path: assets
+          path: aarch64
+      - uses: actions/download-artifact@v4
+        with:
+          name: aliasmode-macos-x64
+          path: x64
       - name: Verify the release and the built files
         shell: bash
         run: |
@@ -61,35 +65,47 @@ jobs:
           gh release view "$TAG" --json isDraft,assets > release.json
           jq -e '.isDraft == false' release.json
           # A published asset is never replaced.
-          jq -e '[.assets[].name | select(test("aarch64|macos"))] | length == 0' release.json
-          cd assets
-          ls -la
-          test "$(ls | sort | tr '\n' ' ')" = "AliasMode_${VERSION}_aarch64.app.tar.gz AliasMode_${VERSION}_aarch64.dmg SHA256SUMS-macos.txt "
-          sha256sum --check --strict SHA256SUMS-macos.txt
-      - name: Sign the update archive and write the macOS update feed
+          jq -e '[.assets[].name | select(test("aarch64|_x64\\.(dmg|app)|macos"))] | length == 0' release.json
+          for arch in aarch64 x64; do
+            ls -la "$arch"
+            test "$(ls "$arch" | sort | tr '\n' ' ')" = "AliasMode_${VERSION}_${arch}.app.tar.gz AliasMode_${VERSION}_${arch}.dmg SHA256SUMS-macos.txt "
+            (cd "$arch" && sha256sum --check --strict SHA256SUMS-macos.txt)
+          done
+          # One checksum file lists both Macs' files; the installer picks its own line.
+          mkdir assets
+          mv aarch64/AliasMode_* x64/AliasMode_* assets/
+          cat aarch64/SHA256SUMS-macos.txt x64/SHA256SUMS-macos.txt > assets/SHA256SUMS-macos.txt
+          (cd assets && sha256sum --check --strict SHA256SUMS-macos.txt)
+      - name: Sign the update archives and write the macOS update feeds
         shell: bash
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          archive="assets/AliasMode_${VERSION}_aarch64.app.tar.gz"
-          bunx tauri signer sign "$archive" > /dev/null
+          for arch in aarch64 x64; do bunx tauri signer sign "assets/AliasMode_${VERSION}_${arch}.app.tar.gz" > /dev/null; done
           unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
           pubkey="$(jq -er .plugins.updater.pubkey src-tauri/tauri.conf.json)"
           check=(cargo run --quiet --locked --manifest-path scripts/updater-signature-check/Cargo.toml --)
-          "${check[@]}" "$archive" "$archive.sig" "$pubkey"
-          # A changed archive must fail the same check.
-          cp "$archive" corrupt.tar.gz
-          printf 'x' | dd of=corrupt.tar.gz bs=1 seek=4096 conv=notrunc status=none
-          if "${check[@]}" corrupt.tar.gz "$archive.sig" "$pubkey"; then
-            echo "a changed archive passed the signature check"
-            exit 1
-          fi
-          rm corrupt.tar.gz
-          jq -n --arg version "$VERSION" --arg signature "$(cat "$archive.sig")" \
+          for arch in aarch64 x64; do
+            archive="assets/AliasMode_${VERSION}_${arch}.app.tar.gz"
+            "${check[@]}" "$archive" "$archive.sig" "$pubkey"
+            # A changed archive must fail the same check.
+            cp "$archive" corrupt.tar.gz
+            printf 'x' | dd of=corrupt.tar.gz bs=1 seek=4096 conv=notrunc status=none
+            if "${check[@]}" corrupt.tar.gz "$archive.sig" "$pubkey"; then
+              echo "a changed archive passed the signature check"
+              exit 1
+            fi
+            rm corrupt.tar.gz
+          done
+          # Installed apps accept only a one-platform feed, so each Mac type has its own.
+          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/AliasMode_${VERSION}_aarch64.app.tar.gz.sig")" \
             --arg url "https://github.com/$GH_REPO/releases/download/$TAG/AliasMode_${VERSION}_aarch64.app.tar.gz" \
             '{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}' > assets/latest-macos.json
+          jq -n --arg version "$VERSION" --arg signature "$(cat "assets/AliasMode_${VERSION}_x64.app.tar.gz.sig")" \
+            --arg url "https://github.com/$GH_REPO/releases/download/$TAG/AliasMode_${VERSION}_x64.app.tar.gz" \
+            '{version: $version, platforms: {"darwin-x86_64": {url: $url, signature: $signature}}}' > assets/latest-macos-x64.json
       - name: Upload the macOS assets
         shell: bash
         run: |
@@ -98,20 +114,25 @@ jobs:
             "assets/AliasMode_${VERSION}_aarch64.app.tar.gz" \
             "assets/AliasMode_${VERSION}_aarch64.app.tar.gz.sig" \
             "assets/AliasMode_${VERSION}_aarch64.dmg" \
+            "assets/AliasMode_${VERSION}_x64.app.tar.gz" \
+            "assets/AliasMode_${VERSION}_x64.app.tar.gz.sig" \
+            "assets/AliasMode_${VERSION}_x64.dmg" \
             "assets/SHA256SUMS-macos.txt"
-          # The feed goes last: an installed app must never read it before the archive exists.
-          gh release upload "$TAG" "assets/latest-macos.json"
+          # The feeds go last: an installed app must never read one before its archive exists.
+          gh release upload "$TAG" "assets/latest-macos.json" "assets/latest-macos-x64.json"
       - name: Verify the public downloads
         shell: bash
         run: |
           set -euo pipefail
           mkdir public
           cd public
-          for name in "AliasMode_${VERSION}_aarch64.app.tar.gz" "AliasMode_${VERSION}_aarch64.dmg" SHA256SUMS-macos.txt; do
+          for name in "AliasMode_${VERSION}_aarch64.app.tar.gz" "AliasMode_${VERSION}_aarch64.dmg" \
+            "AliasMode_${VERSION}_x64.app.tar.gz" "AliasMode_${VERSION}_x64.dmg" SHA256SUMS-macos.txt; do
             curl --fail --silent --show-error --location --retry 3 -o "$name" "https://github.com/$GH_REPO/releases/download/$TAG/$name"
           done
           cmp SHA256SUMS-macos.txt ../assets/SHA256SUMS-macos.txt
           sha256sum --check --strict SHA256SUMS-macos.txt
-          for name in "AliasMode_${VERSION}_aarch64.app.tar.gz.sig" latest-macos.json; do
+          for name in "AliasMode_${VERSION}_aarch64.app.tar.gz.sig" "AliasMode_${VERSION}_x64.app.tar.gz.sig" \
+            latest-macos.json latest-macos-x64.json; do
             curl --fail --silent --show-error --location --retry 3 "https://github.com/$GH_REPO/releases/download/$TAG/$name" | cmp - "../assets/$name"
           done

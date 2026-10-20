@@ -107,6 +107,13 @@ const CLOAKBROWSER_MACOS: PinnedRuntime = {
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
 };
+export const CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256 = "673538d1855e4dbe7ae0f0d7623cd19f766d40e08b9933c510a737f6463f12de";
+const CLOAKBROWSER_MACOS_X64: PinnedRuntime = {
+  ...CLOAKBROWSER_MACOS,
+  url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_MACOS_VERSION}/cloakbrowser-darwin-x64.tar.gz`,
+  archiveSha256: "a0a061b1945db55b3bbe95986a82b67803311c0fedabb3946e7ab0172273daac",
+  executableSha256: CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256,
+};
 
 // The Linux app downloads CloakBrowser's own Linux build on first use.
 export const CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 = "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8";
@@ -134,6 +141,7 @@ const CLOAKBROWSER_WINDOWS: PinnedRuntime = {
 /** The CloakBrowser build that the app downloads on this computer; none where CloakBrowser does not run. */
 function cloakBrowser(platform: NodeJS.Platform, arch: string): PinnedRuntime | undefined {
   if (platform === "darwin" && arch === "arm64") return CLOAKBROWSER_MACOS;
+  if (platform === "darwin" && arch === "x64") return CLOAKBROWSER_MACOS_X64;
   if (platform === "linux" && arch === "x64") return CLOAKBROWSER_LINUX;
   if (platform === "win32" && arch === "x64") return CLOAKBROWSER_WINDOWS;
   return undefined;
@@ -169,14 +177,14 @@ export function linuxChromiumSandboxBlocked(
   return !exists(LINUX_CHROMIUM_APPARMOR_PROFILE);
 }
 
-/** New Chromium profiles made on macOS use this runtime, unless a CloakBrowser binary is configured. */
-export function hostChromiumRuntime(platform = process.platform, env = process.env): "aliasmode" | undefined {
-  return platform === "darwin" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;
+/** New Chromium profiles made on an Apple Silicon Mac use this runtime, unless a CloakBrowser binary is configured. */
+export function hostChromiumRuntime(platform = process.platform, env = process.env, arch: string = process.arch): "aliasmode" | undefined {
+  return platform === "darwin" && arch === "arm64" && !env.CLOAKBROWSER_BINARY_PATH ? "aliasmode" : undefined;
 }
 
 /** New Chromium profiles that name no runtime use Chromium 155 wherever this computer can run it. */
 export function defaultChromiumRuntime(platform = process.platform, arch: string = process.arch, env = process.env): "aliasmode" | undefined {
-  if (platform === "darwin") return hostChromiumRuntime(platform, env);
+  if (platform === "darwin") return hostChromiumRuntime(platform, env, arch);
   return supportsChromium155Host(platform, arch) ? "aliasmode" : undefined;
 }
 

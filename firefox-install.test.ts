@@ -56,7 +56,7 @@ test("Firefox setup selects only matching host builds", () => {
 });
 
 test("Firefox setup includes approved builds for every supported host", () => {
-  for (const [platform, arch] of [["win32", "x64"], ["linux", "x64"], ["darwin", "arm64"]] as const) {
+  for (const [platform, arch] of [["win32", "x64"], ["linux", "x64"], ["darwin", "arm64"], ["darwin", "x64"]] as const) {
     const build = firefoxBuildForHost(platform, arch);
     expect(build).toMatchObject({ platform, arch });
     expect(build.archiveSha256).toMatch(/^[a-f0-9]{64}$/);
@@ -68,9 +68,10 @@ test("Firefox setup uses the exact approved public release archive for each host
   const expected = {
     "linux-x64": "aliasmode-156.0.1-beta.36-lin.x86_64.zip",
     "darwin-arm64": "aliasmode-156.0.1-beta.36-mac.arm64.zip",
+    "darwin-x64": "aliasmode-156.0.1-beta.36-mac.x86_64.zip",
     "win32-x64": "aliasmode-156.0.1-beta.36-win.x86_64.zip",
   };
-  for (const [platform, arch] of [["linux", "x64"], ["darwin", "arm64"], ["win32", "x64"]] as const) {
+  for (const [platform, arch] of [["linux", "x64"], ["darwin", "arm64"], ["darwin", "x64"], ["win32", "x64"]] as const) {
     const archive = expected[`${platform}-${arch}` as keyof typeof expected];
     expect(firefoxReleaseArchiveUrl(firefoxBuildForHost(platform, arch))).toBe(
       `https://github.com/aliasmode/aliasmode-firefox/releases/download/aliasmode-runtime-156.0.1-beta.36-r7/${archive}`,

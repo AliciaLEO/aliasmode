@@ -191,7 +191,7 @@ function scriptRunnerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJ
 }
 
 function supportsSourceScripts(): boolean {
-  return (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
+  return process.platform === "darwin" || (process.platform === "linux" && process.arch === "x64");
 }
 
 /** Start the Python runtime download in the background when one of these scripts is Python. */

@@ -22,11 +22,20 @@ concurrency:
 
 jobs:
   build:
-    name: macOS arm64 app and smoke test
-    runs-on: macos-15
-    timeout-minutes: 45
+    name: macOS ${{ matrix.arch }} app and smoke test
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # arch is the file name part of the release files, as Tauri names a .dmg.
+          - { arch: aarch64, runner: macos-15, artifact: aliasmode-macos-arm64, chrome: Chromium 155 beta, chrome_runtime: chromium-155 }
+          # Upstream has no Intel Mac build of Chromium 155, so Chrome profiles on an Intel Mac use CloakBrowser.
+          - { arch: x64, runner: macos-15-intel, artifact: aliasmode-macos-x64, chrome: CloakBrowser, chrome_runtime: cloakbrowser- }
     env:
-      BUNDLE: src-tauri/target/aarch64-apple-darwin/release/bundle
+      ARCH: ${{ matrix.arch }}
+      BUNDLE: src-tauri/target/release/bundle
     outputs:
       version: ${{ steps.release.outputs.version }}
     steps:
@@ -44,7 +53,25 @@ jobs:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
       - name: Build the app bundle
-        run: bun run desktop:build:macos
+        run: bun run desktop:prepare:macos && bunx tauri build --bundles app
+      # Tauri's .dmg script mounts its image, and on the Intel runner the detach always timed out
+      # ("timeout for DiskArbitration expired"). hdiutil makes the same image from a folder.
+      - name: Make the disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er .version src-tauri/tauri.conf.json)"
+          stage="$RUNNER_TEMP/dmg-stage"
+          mkdir -p "$stage" "$BUNDLE/dmg"
+          ditto "$BUNDLE/macos/AliasMode.app" "$stage/AliasMode.app"
+          ln -s /Applications "$stage/Applications"
+          dmg="$BUNDLE/dmg/AliasMode_${version}_${ARCH}.dmg"
+          for attempt in 1 2 3; do
+            hdiutil create -volname AliasMode -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep 30
+          done
+          hdiutil verify "$dmg"
       - name: Verify bundle layout and signatures
         shell: bash
         run: |
@@ -70,9 +97,9 @@ jobs:
           version="$(jq -er .version src-tauri/tauri.conf.json)"
           files="$RUNNER_TEMP/release/v$version"
           mkdir -p "$files"
-          cp "$BUNDLE/dmg/AliasMode_${version}_aarch64.dmg" "$files/"
-          tar -czf "$files/AliasMode_${version}_aarch64.app.tar.gz" -C "$BUNDLE/macos" AliasMode.app
-          (cd "$files" && shasum -a 256 "AliasMode_${version}_aarch64.app.tar.gz" "AliasMode_${version}_aarch64.dmg" > SHA256SUMS-macos.txt)
+          cp "$BUNDLE/dmg/AliasMode_${version}_${ARCH}.dmg" "$files/"
+          tar -czf "$files/AliasMode_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" AliasMode.app
+          (cd "$files" && shasum -a 256 "AliasMode_${version}_${ARCH}.app.tar.gz" "AliasMode_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
           cat "$files/SHA256SUMS-macos.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install with the terminal installer
@@ -84,7 +111,7 @@ jobs:
           bad="$RUNNER_TEMP/bad-release/v$version"
           mkdir -p "$bad"
           cp "$RUNNER_TEMP/release/v$version/SHA256SUMS-macos.txt" "$bad/"
-          head -c 1000000 "$RUNNER_TEMP/release/v$version/AliasMode_${version}_aarch64.app.tar.gz" > "$bad/AliasMode_${version}_aarch64.app.tar.gz"
+          head -c 1000000 "$RUNNER_TEMP/release/v$version/AliasMode_${version}_${ARCH}.app.tar.gz" > "$bad/AliasMode_${version}_${ARCH}.app.tar.gz"
           if ALIASMODE_RELEASE_BASE="file://$RUNNER_TEMP/bad-release" bash scripts/install-macos.sh --version "$version"; then
             echo "the installer accepted a damaged download"
             exit 1
@@ -166,8 +193,8 @@ jobs:
           close_browser
           ui click 'buttons.byName("New Profile")'
           sleep 2
-          # A new Chrome profile on a Mac uses Chromium 155, and the help text must say so.
-          ui find 'buttons.byName("Chrome: Chromium 155 beta")'
+          # A new Chrome profile uses Chromium 155 on Apple Silicon and CloakBrowser on Intel, and the help text must say so.
+          ui find 'buttons.byName("Chrome: ${{ matrix.chrome }}")'
           ui click 'uiElements.byName("Buy static residential proxies from NobleProxy'
           browser_shows "https://nobleproxy.com/t/aliasmode?src=profile-dialog"
           screencapture -x "$RUNNER_TEMP/evidence/link-new-profile.png"
@@ -214,11 +241,12 @@ jobs:
           jq -e '(.webglRenderer | contains("Direct3D11")) and (.webglVendor | startswith("Google Inc.")) and (.platform == "Win32")' <<<"$observed"
           "$helper" browser close --profile "$winfx" | jq -e '.ok'
 
-          # No runtime flag: on macOS a Chromium profile must default to the 155 runtime.
+          # No runtime flag: a Chromium profile defaults to Chromium 155 on Apple Silicon and to CloakBrowser on Intel.
           created="$("$helper" profiles create --name ci-chromium --temporary --engine chromium)"
           chromium="$(jq -er 'select(.ok) | .result.id' <<<"$created")"
           "$helper" browser open --profile "$chromium" --url https://example.com/ | jq -e '.ok and (.result.port | type == "number")'
           sleep 5
+          pgrep -f "runtimes/${{ matrix.chrome_runtime }}.*/Chromium.app/Contents/MacOS/Chromium" >/dev/null
           screencapture -x "$RUNNER_TEMP/evidence/chromium-profile.png"
           # Chromium 155 must accept the DuckDuckGo default search setup, which runs after launch.
           sleep 10
@@ -361,21 +389,30 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aliasmode-macos-evidence
+          name: aliasmode-macos-evidence-${{ matrix.arch }}
           path: ${{ runner.temp }}/evidence
           if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         with:
-          name: aliasmode-macos-arm64
+          name: ${{ matrix.artifact }}
           path: ${{ runner.temp }}/release/v${{ steps.release.outputs.version }}/
           if-no-files-found: error
 
   update:
-    name: macOS in-app update with a test key
-    runs-on: macos-15
-    timeout-minutes: 60
+    name: macOS ${{ matrix.arch }} in-app update with a test key
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: aarch64, runner: macos-15, feed: latest-macos.json, target: darwin-aarch64 }
+          - { arch: x64, runner: macos-15-intel, feed: latest-macos-x64.json, target: darwin-x86_64 }
     env:
-      BUNDLE: src-tauri/target/aarch64-apple-darwin/release/bundle
+      ARCH: ${{ matrix.arch }}
+      FEED: ${{ matrix.feed }}
+      UPDATE_TARGET: ${{ matrix.target }}
+      BUNDLE: src-tauri/target/release/bundle
     steps:
       - uses: actions/checkout@v4
         with:
@@ -399,7 +436,7 @@ jobs:
           bunx tauri signer generate --ci -p "" -w "$work/update.key" > /dev/null
           jq -n --arg pubkey "$(cat "$work/update.key.pub")" '{plugins: {updater: {pubkey: $pubkey}}}' > "$work/test-key.json"
           bun run desktop:prepare:macos
-          bunx tauri build --target aarch64-apple-darwin --bundles app --config "$work/test-key.json"
+          bunx tauri build --bundles app --config "$work/test-key.json"
           ditto "$BUNDLE/macos/AliasMode.app" /Applications/AliasMode.app
       - name: Build and sign the successor version
         shell: bash
@@ -417,13 +454,13 @@ jobs:
             CURRENT="$current" SUCCESSOR="$successor" perl -pi -e 's/\Q$ENV{CURRENT}\E/$ENV{SUCCESSOR}/' "$file"
           done
           bun run desktop:prepare:macos
-          bunx tauri build --target aarch64-apple-darwin --bundles app --config "$work/test-key.json"
-          archive="AliasMode_${successor}_aarch64.app.tar.gz"
+          bunx tauri build --bundles app --config "$work/test-key.json"
+          archive="AliasMode_${successor}_${ARCH}.app.tar.gz"
           tar -czf "$work/$archive" -C "$BUNDLE/macos" AliasMode.app
           TAURI_SIGNING_PRIVATE_KEY="$(cat "$work/update.key")" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" bunx tauri signer sign "$work/$archive" > /dev/null
           url="https://github.com/aliasmode/aliasmode/releases/download/v$successor/$archive"
-          jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" \
-            '{version: $version, platforms: {"darwin-aarch64": {url: $url, signature: $signature}}}' > "$work/latest-macos.json"
+          jq -n --arg version "$successor" --arg url "$url" --arg signature "$(cat "$work/$archive.sig")" --arg target "$UPDATE_TARGET" \
+            '{version: $version, platforms: {($target): {url: $url, signature: $signature}}}' > "$work/$FEED"
           {
             echo "CURRENT=$current"
             echo "SUCCESSOR=$successor"
@@ -440,13 +477,13 @@ jobs:
           printf 'subjectAltName=DNS:github.com,DNS:api.github.com\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n' > leaf.ext
           openssl x509 -req -in leaf.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 2 -extfile leaf.ext -out leaf.pem
           sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ca.pem
-          jq -n --arg version "$SUCCESSOR" --arg archive "$ARCHIVE" --arg work "$work" '{
+          jq -n --arg version "$SUCCESSOR" --arg archive "$ARCHIVE" --arg work "$work" --arg feed "$FEED" '{
             candidateVersion: $version,
-            manifestName: "latest-macos.json",
+            manifestName: $feed,
             installerName: $archive,
-            manifestUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/latest-macos.json",
+            manifestUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/\($feed)",
             installerUrl: "https://github.com/aliasmode/aliasmode/releases/download/v\($version)/\($archive)",
-            manifestPath: "\($work)/latest-macos.json",
+            manifestPath: "\($work)/\($feed)",
             installerPath: "\($work)/\($archive)",
             certificatePath: "\($work)/leaf.pem",
             privateKeyPath: "\($work)/leaf.key",
@@ -529,7 +566,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aliasmode-macos-update-evidence
+          name: aliasmode-macos-update-evidence-${{ matrix.arch }}
           path: ${{ runner.temp }}/update-evidence
           if-no-files-found: warn
 

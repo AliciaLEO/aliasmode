@@ -68,17 +68,17 @@ Open `http://127.0.0.1:50400`, select AliasMode Cloud, and sign in. Source mode 
 
 ### macOS desktop beta
 
-The macOS app supports Apple Silicon Macs with macOS 13 or newer. Install it from Terminal:
+The macOS app supports Apple Silicon and Intel Macs with macOS 13 or newer. Install it from Terminal:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/aliasmode/aliasmode/main/scripts/install-macos.sh | bash
 ```
 
-The script downloads the newest macOS build from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg`. The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
+The script downloads the newest macOS build for the Mac's processor from GitHub Releases, verifies its published SHA-256 and its code signature seal, and installs `AliasMode.app` into Applications. Each release also has a `.dmg` for each processor (`_aarch64` for Apple Silicon, `_x64` for Intel). The beta is not notarized by Apple, so an app that comes from the `.dmg` needs approval in **System Settings → Privacy & Security → Open Anyway**.
 
-New profiles made on macOS use AliasMode Firefox, and new Chromium profiles use the Chromium 155 beta. A CloakBrowser profile made on Windows opens on macOS with the macOS build of CloakBrowser (Chrome 145), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
+New profiles made on macOS use AliasMode Firefox. New Chromium profiles use the Chromium 155 beta on Apple Silicon and CloakBrowser on Intel, because Chromium 155 has no Intel Mac build. A CloakBrowser profile opens on macOS with the macOS build of CloakBrowser (Chrome 145), which the app downloads on first use. The app updates itself from the dashboard, with the same signed update check as the Windows app. Remote MCP hosting needs the Windows app.
 
-Packaging requires an Apple Silicon Mac, Bun, and the Rust toolchain:
+Packaging requires a Mac, Bun, and the Rust toolchain. It builds for the Mac's own processor:
 
 ```sh
 bun run desktop:build:macos
@@ -168,7 +168,7 @@ The versioned bootstrap script tries winget first. It falls back to an exact Git
 ### Platform matrix
 
 - **Windows:** native installer, local dashboard, local stdio MCP, and Remote MCP host.
-- **macOS:** native app for Apple Silicon (Terminal installer or `.dmg`), local dashboard, in-app updates, and local stdio MCP. The source run stays available.
+- **macOS:** native app for Apple Silicon and Intel (Terminal installer or `.dmg`), local dashboard, in-app updates, and local stdio MCP. The source run stays available.
 - **Linux:** native app for x64 (Terminal installer), local dashboard, in-app updates, local stdio MCP, and Remote MCP host.
 
 ### Public documentation contracts

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   completeProfileFingerprint, createFirefoxProfileConfig, firefoxGraphicsRenderer, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity,
+  intelMacGraphicsVendor,
 } from "./firefox-config.ts";
 import macVoiceLists from "./firefox-data/mac-voices.json";
 import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
@@ -125,6 +126,9 @@ test("WebGPU shows where stock Firefox 156 has it, with this computer's adapter 
   expect(webgpu(macos(intelCard), "linux", "x64")).toEqual([true, true]);
   expect(webgpu(macos(), "win32", "x64")).toEqual([false, true]);
   expect(webgpu(macos(), "darwin", "x64")).toEqual([false, true]);
+  // On an Intel Mac a macOS profile shows an Intel or AMD card, and stock Firefox there has no WebGPU.
+  expect(webgpu(macos(graphicsIdentity("macos", 1)), "darwin", "x64")).toEqual([false, true]);
+  expect(webgpu(macos(intelCard), "darwin", "x64")).toEqual([false, true]);
   // Windows always has navigator.gpu, and the app does not know the computer's card; Linux has none.
   for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"], [undefined, undefined]] as const) {
     expect(webgpu(profile(5), platform, arch)).toEqual([true, true]);
@@ -310,6 +314,53 @@ test("a macOS profile shows Apple graphics only, with the texture limits stock F
   expect(firefoxGraphicsRenderer(windows)).toBe(graphicsIdentity("windows", 7)["webGl:renderer"]!);
   expect(firefoxLaunchConfig(profile(8, { "navigator.platform": "MacIntel" }))).not.toHaveProperty("webGl:vendor");
   expect(firefoxGraphicsRenderer(profile(8, { "navigator.platform": "MacIntel" }))).toBeUndefined();
+});
+
+test("on an Intel Mac a macOS profile shows an Intel or AMD Mac card of that Mac's GPU vendor", () => {
+  const apple = graphicsIdentity("macos", 1);
+  const vendors = new Set<unknown>();
+  for (let seed = 1; seed <= 200; seed++) {
+    const stored = profile(seed, { "navigator.platform": "MacIntel", ...apple });
+    const saved = structuredClone(stored.firefox);
+    const any = firefoxLaunchConfig(stored, undefined, undefined, undefined, {});
+    vendors.add(any["webGl:vendor"]);
+    expect(String(any["webGl:renderer"])).toMatch(/^(Intel\(R\) HD Graphics|Radeon R9 200 Series)/);
+    expect(firefoxLaunchConfig(stored, undefined, undefined, undefined, { vendor: "intel" })["webGl:vendor"]).toBe("Intel Inc.");
+    expect(firefoxLaunchConfig(stored, undefined, undefined, undefined, { vendor: "amd" })).toMatchObject({
+      "webGl:vendor": "ATI Technologies Inc.", "webGl:parameters": { 3379: 8192 },
+    });
+    expect(stored.firefox).toEqual(saved);
+  }
+  expect(vendors).toEqual(new Set(["Intel Inc.", "ATI Technologies Inc."]));
+  // The processor count fits the card's class of Intel Mac; a fitting stored count stays.
+  for (let seed = 1; seed <= 50; seed++) {
+    for (const cores of [8, 14]) {
+      const stored = profile(seed, { "navigator.platform": "MacIntel", ...apple, "navigator.hardwareConcurrency": cores });
+      const intel = firefoxLaunchConfig(stored, undefined, undefined, undefined, { vendor: "intel" })["navigator.hardwareConcurrency"];
+      const amd = firefoxLaunchConfig(stored, undefined, undefined, undefined, { vendor: "amd" })["navigator.hardwareConcurrency"];
+      expect([4, 8]).toContain(intel as number);
+      expect([8, 12, 16]).toContain(amd as number);
+      if (cores === 8) expect([intel, amd]).toEqual([8, 8]);
+      expect(firefoxLaunchConfig(stored)["navigator.hardwareConcurrency"]).toBe(cores);
+    }
+  }
+  // A card of the Mac's vendor stays; a Windows profile keeps its own card.
+  const radeon = firefoxLaunchConfig(profile(3, { "navigator.platform": "MacIntel", ...apple }), undefined, undefined, undefined, { vendor: "amd" });
+  const kept = profile(4, { "navigator.platform": "MacIntel", ...Object.fromEntries(Object.entries(radeon).filter(([key]) => /^webGl2?:/.test(key))) });
+  expect(firefoxLaunchConfig(kept, undefined, undefined, undefined, { vendor: "amd" })).toMatchObject({ "webGl:renderer": radeon["webGl:renderer"] });
+  expect(firefoxGraphicsRenderer(profile(3, { "navigator.platform": "MacIntel", ...apple }), { vendor: "amd" })).toBe(radeon["webGl:renderer"]);
+  expect(firefoxLaunchConfig(profile(8, graphicsIdentity("windows", 7)), undefined, undefined, undefined, {})).toMatchObject(graphicsIdentity("windows", 7));
+});
+
+test("the Intel Mac GPU vendor comes from system_profiler, Intel first on a Mac with both", () => {
+  const report = (...cards: object[]) => JSON.stringify({ SPDisplaysDataType: cards });
+  expect(intelMacGraphicsVendor(report({ _name: "Intel Iris Plus Graphics", spdisplays_vendor: "sppci_vendor_intel" }))).toBe("intel");
+  expect(intelMacGraphicsVendor(report({ _name: "Radeon Pro 5500M", spdisplays_vendor: "sppci_vendor_amd" }))).toBe("amd");
+  expect(intelMacGraphicsVendor(report(
+    { _name: "AMD Radeon Pro 5500M", sppci_vendor: "AMD (0x1002)" }, { _name: "Intel UHD Graphics 630", sppci_vendor: "Intel" },
+  ))).toBe("intel");
+  expect(intelMacGraphicsVendor(report({ _name: "Display", sppci_model: "VMware SVGA II" }))).toBeUndefined();
+  expect(intelMacGraphicsVendor("not json")).toBeUndefined();
 });
 
 /** The usable area stock Firefox 156 reports with its baseline protection (GetSpoofedScreenAvailSize). */

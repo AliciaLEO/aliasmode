@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PYTHON_RUNTIME_PINS, PYTHON_RUNTIME_VERSION, PythonRuntime, type PinnedFile, type PythonRuntimeOptions } from "./python-runtime.ts";
+import { PYTHON_RUNTIME_PINS, PYTHON_RUNTIME_PINS_MACOS_X64, PYTHON_RUNTIME_VERSION, PythonRuntime, type PinnedFile, type PythonRuntimeOptions } from "./python-runtime.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -117,8 +117,7 @@ function leftovers(root: string): string[] {
 }
 
 test("every desktop system has pinned CPython and Playwright files", () => {
-  for (const platform of ["win32", "darwin", "linux"] as const) {
-    const pins = PYTHON_RUNTIME_PINS[platform]!;
+  for (const pins of [PYTHON_RUNTIME_PINS.win32!, PYTHON_RUNTIME_PINS.darwin!, PYTHON_RUNTIME_PINS_MACOS_X64, PYTHON_RUNTIME_PINS.linux!]) {
     expect(pins.wheels.length).toBe(4);
     for (const file of [pins.archive, ...pins.wheels]) {
       expect(file.url).toStartWith("https://");

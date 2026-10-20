@@ -48,7 +48,10 @@ import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runt
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { isDeepStrictEqual } from "node:util";
-import { completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs, syncFirefoxTimezone } from "./firefox-config.ts";
+import {
+  completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs, intelMacGraphicsVendor,
+  type MacGraphicsVendor, syncFirefoxTimezone,
+} from "./firefox-config.ts";
 import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
@@ -163,9 +166,18 @@ function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
 }
 
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
-  return (platform === "darwin" && arch === "arm64")
+  return (platform === "darwin" && (arch === "arm64" || arch === "x64"))
     || (platform === "linux" && arch === "x64")
     || (platform === "win32" && arch === "x64");
+}
+
+async function readMacGraphicsVendor(): Promise<MacGraphicsVendor | undefined> {
+  try {
+    const child = Bun.spawn(["/usr/sbin/system_profiler", "SPDisplaysDataType", "-json"], { stdout: "pipe", stderr: "ignore", timeout: 15_000 });
+    return intelMacGraphicsVendor(await new Response(child.stdout).text());
+  } catch {
+    return undefined;
+  }
 }
 
 function firefoxHelperBinaryPaths(binaryPath: string): string[] {
@@ -204,7 +216,7 @@ const PREFLIGHT_GUIDANCE = {
   persona_unsupported: "This profile's user agent has no recognized desktop platform. Check its saved browser identity.",
   firefox_configuration: "The saved Firefox configuration is missing or incompatible with this runtime. Use a matching AliasMode runtime and profile export.",
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
-  firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
+  firefox_host: "Firefox requires macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
   firefox_fonts_download: "The fonts for this profile's operating system could not be downloaded. Check your internet connection, then open the profile again.",
   cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
@@ -409,6 +421,8 @@ export interface LauncherOptions {
   ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
   /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
   chromiumSandboxBlocked?: () => boolean;
+  /** The GPU vendor of this Intel Mac. Read once from system_profiler by default. */
+  macGraphicsVendor?: () => Promise<MacGraphicsVendor | undefined>;
   /** Installs a Firefox font pack under the runtimes root. Returns the folder of its fonts. */
   ensureFirefoxFontPack?: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
@@ -742,6 +756,7 @@ export class Launcher {
   private runtimePrefetches = new Set<string>();
   private runtimesPruned = false;
   private chromiumSandboxBlockedFn: () => boolean;
+  private macGraphicsVendorFn: () => Promise<MacGraphicsVendor | undefined>;
   private ensureFirefoxFontPackFn: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Packs whose background download failed in this run; a launch still retries them. */
   private fontPackPrefetchFailed = new Set<string>();
@@ -855,6 +870,8 @@ export class Launcher {
     this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
       ?? ((root) => ensureCloakBrowser(root, this.hostPlatform, this.hostArch));
     this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
+    let macGraphicsVendor: Promise<MacGraphicsVendor | undefined> | undefined;
+    this.macGraphicsVendorFn = opts.macGraphicsVendor ?? (() => macGraphicsVendor ??= readMacGraphicsVendor());
     this.ensureFirefoxFontPackFn = opts.ensureFirefoxFontPack ?? ((root, pack) => ensureFirefoxFontPack(root, pack));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
@@ -2291,6 +2308,10 @@ export class Launcher {
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
     ].some((file) => existsSync(join(userDataDir, file))) && firefoxSessionRestoresPage(userDataDir) !== false;
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
+    // A macOS profile on an Intel Mac shows a card of that Mac's GPU vendor (firefoxLaunchConfig).
+    const intelMac = this.hostPlatform === "darwin" && this.hostArch === "x64" && firefoxPersonaOs(profile) === "macos"
+      ? { vendor: await this.macGraphicsVendorFn() }
+      : undefined;
     let reserved = false;
     try {
       if (needsProxyRelay(profile)) {
@@ -2317,7 +2338,7 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac), proxy, headless,
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),

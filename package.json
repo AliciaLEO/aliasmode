@@ -16,7 +16,7 @@
     "desktop:prepare": "bun scripts/prepare-windows-bundle.ts",
     "desktop:build:nsis": "bun run desktop:prepare && tauri build --bundles nsis --no-sign",
     "desktop:prepare:macos": "bun scripts/prepare-macos-bundle.ts",
-    "desktop:build:macos": "bun run desktop:prepare:macos && tauri build --target aarch64-apple-darwin --bundles app,dmg",
+    "desktop:build:macos": "bun run desktop:prepare:macos && tauri build --bundles app,dmg",
     "desktop:prepare:linux": "bun scripts/prepare-linux-bundle.ts",
     "desktop:build:linux": "bun run desktop:prepare:linux && tauri build --bundles deb",
     "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc",

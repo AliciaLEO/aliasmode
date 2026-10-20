@@ -96,6 +96,21 @@ export const PYTHON_RUNTIME_PINS: Partial<Record<NodeJS.Platform, PythonRuntimeP
   },
 };
 
+/** An Intel Mac gets the x86_64 builds of CPython and Playwright. */
+export const PYTHON_RUNTIME_PINS_MACOS_X64: PythonRuntimePins = {
+  archive: {
+    url: `${STANDALONE}/cpython-${PYTHON_VERSION}%2B20250918-x86_64-apple-darwin-install_only_stripped.tar.gz`,
+    size: 16415146, sha256: "e640143d4dde2edff1865c3e88e44b046478b790af4f8b3ac4d228e53952dda0",
+  },
+  wheels: [
+    {
+      url: `${PYPI}/f8/c9/9c6061d5703267f1baae6a4647bfd1862e386fbfdb97d889f6f6ae9e3f64/playwright-1.58.0-py3-none-macosx_10_13_x86_64.whl`,
+      size: 42251098, sha256: "96e3204aac292ee639edbfdef6298b4be2ea0a55a16b7068df91adac077cc606",
+    },
+    ...PYTHON_RUNTIME_PINS.darwin!.wheels.slice(1),
+  ],
+};
+
 /** Holds the pins' fingerprint; written inside the runtime folder before its atomic rename. */
 const STAMP = "aliasmode-runtime.sha256";
 
@@ -111,6 +126,7 @@ export interface PythonRuntimeStatus {
 
 export interface PythonRuntimeOptions extends ResumableDownloadDeps {
   platform?: NodeJS.Platform;
+  arch?: string;
   pins?: PythonRuntimePins;
   /** Unpacks the CPython archive into a folder and returns the runtime folder in it. */
   unpack?: (archive: string, directory: string) => Promise<string>;
@@ -176,8 +192,10 @@ export class PythonRuntime {
 
   constructor(readonly root: string, private readonly options: PythonRuntimeOptions = {}) {
     this.platform = options.platform ?? process.platform;
-    const pins = options.pins ?? PYTHON_RUNTIME_PINS[this.platform];
-    if (!pins) throw new Error("Python scripts require Windows x64, Apple Silicon macOS or Linux x64");
+    const pins = options.pins ?? (this.platform === "darwin" && (options.arch ?? process.arch) === "x64"
+      ? PYTHON_RUNTIME_PINS_MACOS_X64
+      : PYTHON_RUNTIME_PINS[this.platform]);
+    if (!pins) throw new Error("Python scripts require Windows x64, macOS or Linux x64");
     this.pins = pins;
     this.directory = join(root, `python-${PYTHON_RUNTIME_VERSION}`);
     this.executable = join(this.directory, ...interpreter(this.platform));

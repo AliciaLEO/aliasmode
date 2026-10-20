@@ -258,7 +258,7 @@
   "Save proxy changes before setting the timezone.": "Сохраните изменения прокси перед установкой часового пояса.",
   "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.": "Можно изменить экран, операционную систему и часовой пояс. Остальные значения браузер согласует сам.",
   "This action saves the timezone immediately. It applies the next time this profile opens.": "Это действие сразу сохраняет часовой пояс. Он применится при следующем открытии профиля.",
-  "Use current connection timezone": "Использовать часовой пояс текущего соединения",
+  "Use current connection timezone and language": "Использовать часовой пояс и язык текущего соединения",
   " · Not installed on this device": " · Не установлен на этом устройстве",
   "(comma-separated)": "(через запятую)",
   "(select type first · host:port:username:password)": "(сначала выберите тип · host:port:username:password)",
@@ -286,7 +286,7 @@
   "Imported mobile persona cannot open safely": "Импортированную мобильную персону нельзя безопасно открыть",
   "Leave blank to launch on a direct connection.": "Оставьте пустым, чтобы запускать без прокси, напрямую.",
   "Loading profile…": "Загрузка профиля…",
-  "Looking up timezone…": "Определение часового пояса…",
+  "Looking up timezone and language…": "Определение часового пояса и языка…",
   "Native Firefox profile · no CDP, PDF, or Chrome extensions.": "Собственный профиль Firefox · без CDP, PDF и расширений Chrome.",
   "New profile": "Новый профиль",
   "Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.": "Прежние версии AliasMode всё равно открывали его как настольный браузер: Android превращался в Windows, а iPhone/iPad — в macOS. Это выглядело рабочим, но не было согласованной эмуляцией мобильного устройства.",
@@ -313,7 +313,7 @@
   "Save changes": "Сохранить изменения",
   "Saving…": "Сохранение…",
   "Screen": "Экран",
-  "Set timezone from proxy": "Задать часовой пояс по прокси",
+  "Set timezone and language from proxy": "Задать часовой пояс и язык по прокси",
   "This browser is open. Changes save now and apply the next time it launches.": "Этот браузер открыт. Изменения сохранятся сейчас и применятся при следующем запуске.",
   "This browser is open. Changes save to this device now and sync to Cloud when it closes.": "Этот браузер открыт. Изменения сохранятся на этом устройстве сейчас и синхронизируются с Облаком после закрытия.",
   "Timezone": "Часовой пояс",
@@ -369,5 +369,7 @@
   "Folder actions": "Действия с папкой",
   "Actions for {folder}": "Действия: {folder}",
   "Expand or collapse {folder}": "Развернуть или свернуть {folder}",
-  "In {folder}": "В папке {folder}"
+  "In {folder}": "В папке {folder}",
+  "Language": "Язык",
+  "This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.": "Этот язык не совпадает со страной часового пояса. Нажмите «Задать часовой пояс и язык по прокси», чтобы привести их в соответствие."
 }

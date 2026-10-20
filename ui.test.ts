@@ -1436,7 +1436,7 @@ test("an explicit timezone action updates a Local proxy timezone", async () => {
     { timezoneFetch: timezoneFetch({ "1.2.3.4": "Europe/London" }, calls) },
   );
   expect(res!.status).toBe(200);
-  expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London" });
+  expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London", locale: "en-GB" });
   expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
   expect(s.getProfile("k1d0cd11")!.locale).toBe("en-GB");
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");

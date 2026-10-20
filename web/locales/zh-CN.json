@@ -258,7 +258,7 @@
   "Save proxy changes before setting the timezone.": "设置时区前请先保存代理更改。",
   "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.": "可以更改屏幕、操作系统和时区。其他值由浏览器自动帮你协调。",
   "This action saves the timezone immediately. It applies the next time this profile opens.": "此操作会立即保存时区，但下次打开此环境时才开始生效。",
-  "Use current connection timezone": "使用当前连接的时区",
+  "Use current connection timezone and language": "使用当前连接的时区和语言",
   " · Not installed on this device": " · 未在此设备上安装",
   "(comma-separated)": "（用逗号分隔）",
   "(select type first · host:port:username:password)": "（优先格式 · host:port:username:password）",
@@ -286,7 +286,7 @@
   "Imported mobile persona cannot open safely": "导入的移动端身份无法安全打开",
   "Leave blank to launch on a direct connection.": "留空则直连启动。",
   "Loading profile…": "正在加载环境…",
-  "Looking up timezone…": "正在查询时区…",
+  "Looking up timezone and language…": "正在查询时区和语言…",
   "Native Firefox profile · no CDP, PDF, or Chrome extensions.": "原生 Firefox 配置 · 无 CDP、PDF 或 Chrome 扩展。",
   "New profile": "新建环境",
   "Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.": "旧版 AliasMode 仍会以桌面浏览器打开：安卓变成 Windows；iPhone/iPad 变成 macOS。虽然能用，但不是连贯的移动端模拟。",
@@ -313,7 +313,7 @@
   "Save changes": "保存更改",
   "Saving…": "保存中…",
   "Screen": "屏幕",
-  "Set timezone from proxy": "从代理设置时区",
+  "Set timezone and language from proxy": "从代理设置时区和语言",
   "This browser is open. Changes save now and apply the next time it launches.": "浏览器正在运行。更改现在保存，下次启动时生效。",
   "This browser is open. Changes save to this device now and sync to Cloud when it closes.": "浏览器正在运行。更改现在保存到本机，关闭后同步到云端。",
   "Timezone": "时区",
@@ -527,5 +527,7 @@
   "Folder actions": "文件夹操作",
   "Actions for {folder}": "{folder} 的操作",
   "Expand or collapse {folder}": "展开或折叠 {folder}",
-  "In {folder}": "位于 {folder}"
+  "In {folder}": "位于 {folder}",
+  "Language": "语言",
+  "This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.": "此语言与时区所在国家不一致。请使用“从代理设置时区和语言”使二者一致。"
 }

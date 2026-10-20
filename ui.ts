@@ -444,6 +444,7 @@ function profileEditView(p: Profile) {
     customNo: p.customNo ?? "",
     platformOs: p.platformOs ?? "",
     timezone: p.timezone,
+    locale: p.locale ?? "",
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
     ...(conversion ? {
@@ -1956,7 +1957,7 @@ export async function handleUiRequest(
       current.locale = localeForCountry(location.country) ?? localeForTimezone(location.timezone);
       syncFirefoxTimezone(current);
       store.upsertProfile(current);
-      return Response.json({ ok: true, timezone: current.timezone });
+      return Response.json({ ok: true, timezone: current.timezone, locale: current.locale });
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 500 });
     }

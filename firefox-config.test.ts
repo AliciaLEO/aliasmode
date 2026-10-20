@@ -360,11 +360,21 @@ test("a macOS profile lists the voices stock Firefox shows there and marks one d
     expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
     expect(defaults("en-US", seed, "Win32")).toEqual([]);
     // OSXSpeechSynthesizerService.mm leaves out the Eloquence and novelty voices.
-    for (const voice of voices("en-US", seed)) {
+    const list = voices("en-US", seed);
+    for (const voice of list) {
       expect(voice.voiceUri).not.toContain("com.apple.eloquence");
       expect(["Albert", "Bad News", "Bells", "Trinoids", "Whisper", "Wobble", "Zarvox"]).not.toContain(voice.name);
     }
+    // In speechVoices order, as stock Firefox 156 on macOS 15 lists them: by language, then identifier.
+    const keys = list.map((voice) => `${voice.lang} ${voice.voiceUri}`);
+    expect(keys).toEqual([...keys].sort());
+    expect(list.slice(0, 5).map((voice) => `${voice.name} ${voice.lang}`))
+      .toEqual(["Majed ar-001", "Daria bg-BG", "Montse ca-ES", "Zuzana cs-CZ", "Sara da-DK"]);
   }
+  // A downloaded voice sits with its language, by identifier: Alex before Samantha in en-US.
+  const english = Array.from({ length: 50 }, (_, i) => voices("en-US", i + 1).filter((voice) => voice.lang === "en-US").map((voice) => voice.name))
+    .find((names) => names.includes("Alex"))!;
+  expect(english.indexOf("Alex")).toBeLessThan(english.indexOf("Samantha"));
   for (const [locale, voice] of [
     ["fr-CA", "Amélie fr-CA"], ["en-CA", "Samantha en-US"], ["es-AR", "Mónica es-ES"], ["de-AT", "Anna de-DE"],
     ["zh-Hant-TW", "Meijia zh-TW"], ["ar-SA", "Majed ar-001"], ["ja-JP", "Kyoko ja-JP"],

@@ -166,6 +166,10 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
     const lang = entry.slice(langAt + 1, typeAt);
     return { name, lang, voiceUri: voiceUri(key, name, lang), isDefault: false, isLocalService: entry.slice(typeAt + 1) === "local" };
   }).filter((voice) => os !== "macos" || !macHidesVoice(voice));
+  // Stock Firefox lists macOS voices in AVSpeechSynthesisVoice.speechVoices order: by language,
+  // then by identifier (a Siri "ttsbundle" voice before the compact one), not by name.
+  const order = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  if (os === "macos") voices.sort((a, b) => order(a.lang, b.lang) || order(a.voiceUri, b.voiceUri));
   const defaultVoice = os === "macos" ? macDefaultVoice(voices, locale) : undefined;
   if (defaultVoice !== undefined) voices[defaultVoice]!.isDefault = true;
   return voices;

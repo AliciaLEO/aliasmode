@@ -82,6 +82,17 @@ function voiceUri(os: OsKey, name: string, lang: string): string {
 const EXTRA_VOICE_SHARE = 0.62;
 const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"]);
 
+/**
+ * Voices stock Firefox leaves out on macOS (OSXSpeechSynthesizerService.mm): the Eloquence voices
+ * (com.apple.eloquence.*) and, on macOS 14 and later, the novelty voices.
+ */
+const MAC_NOVELTY_VOICES = new Set([
+  "Albert", "Bad News", "Bahh", "Bells", "Boing", "Bubbles", "Cellos", "Good News", "Jester", "Organ", "Superstar",
+  "Trinoids", "Whisper", "Wobble", "Zarvox",
+]);
+const macHidesVoice = (voice: { name: string; voiceUri: string }) =>
+  voice.voiceUri.startsWith("urn:moz-tts:osx:com.apple.eloquence.") || MAC_NOVELTY_VOICES.has(voice.name);
+
 /** The language's main region where macOS has voices for several (otherwise its only one). */
 const MAC_MAIN_REGION: Record<string, string> = { en: "US", es: "ES", fr: "FR", nl: "NL", pt: "BR", zh: "CN" };
 
@@ -154,7 +165,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
     const name = entry.slice(0, langAt);
     const lang = entry.slice(langAt + 1, typeAt);
     return { name, lang, voiceUri: voiceUri(key, name, lang), isDefault: false, isLocalService: entry.slice(typeAt + 1) === "local" };
-  });
+  }).filter((voice) => os !== "macos" || !macHidesVoice(voice));
   const defaultVoice = os === "macos" ? macDefaultVoice(voices, locale) : undefined;
   if (defaultVoice !== undefined) voices[defaultVoice]!.isDefault = true;
   return voices;

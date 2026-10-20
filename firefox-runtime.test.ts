@@ -44,7 +44,7 @@ test("Firefox owner passes native proxy preferences", () => {
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe", proxy })).not.toHaveProperty("firefoxUserPrefs.browser.startup.page");
   // Pages follow the computer's colour scheme and accessibility settings, never Playwright's light defaults.
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe" })).toMatchObject({
-    colorScheme: "no-override", reducedMotion: "no-override", forcedColors: "no-override", contrast: "no-override",
+    colorScheme: null, reducedMotion: null, forcedColors: null, contrast: null,
   });
   // A stored graphics identity keeps WebGL on, so the same card shows on every computer.
   expect(firefoxLaunchOptions({ executablePath: "firefox.exe", config: { "webGl:vendor": "Google Inc. (Intel)" } }).firefoxUserPrefs)

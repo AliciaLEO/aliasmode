@@ -175,11 +175,12 @@ export function firefoxLaunchOptions(input) {
     executablePath: input.executablePath,
     viewport: null,
     // Pages see the computer's colour scheme, motion, contrast and forced colours, as in stock
-    // Firefox. Playwright otherwise emulates light, no-preference and none in every page.
-    colorScheme: "no-override",
-    reducedMotion: "no-override",
-    forcedColors: "no-override",
-    contrast: "no-override",
+    // Firefox. Playwright otherwise emulates light, no-preference and none in every page; null
+    // ("no-override") leaves them to the system, as upstream Camoufox's STOCK_MEDIA_DEFAULTS do.
+    colorScheme: null,
+    reducedMotion: null,
+    forcedColors: null,
+    contrast: null,
     ...(input.proxy ? {
       proxy: input.proxy,
       firefoxUserPrefs: {

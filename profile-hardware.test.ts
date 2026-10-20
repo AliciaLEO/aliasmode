@@ -87,7 +87,11 @@ test("the profile edit view shows the stored graphics card and cores", async () 
   const cloak = cloakProfile();
   const firefox = buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false);
   const { hardware: _hardware, ...legacy } = cloakProfile();
-  for (const profile of [cloak, firefox, legacy]) store.upsertProfile(profile);
+  // A macOS profile saved with an Intel Mac's card, which its browser shows as Apple's.
+  const mac = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
+  mac.firefox!.config["webGl:vendor"] = "Intel Inc.";
+  mac.firefox!.config["webGl:renderer"] = "Intel(R) HD Graphics 400, or similar";
+  for (const profile of [cloak, firefox, legacy, mac]) store.upsertProfile(profile);
   const view = async (id: string) =>
     (await (await handleUiRequest(new Request(`http://x/ui/api/profiles/${id}`), {} as any, store))!.json()).profile;
 
@@ -96,6 +100,7 @@ test("the profile edit view shows the stored graphics card and cores", async () 
     gpu: firefox.firefox!.config["webGl:renderer"],
     cores: firefox.firefox!.config["navigator.hardwareConcurrency"],
   });
+  expect((await view(mac.id)).hardware.gpu).toBe("Apple M1, or similar");
   // Nothing is stored for a profile from before this field, so the dialog keeps "Automatic".
   expect((await view(legacy.id)).hardware).toBeUndefined();
   store.close();

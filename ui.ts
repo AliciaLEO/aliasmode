@@ -37,6 +37,7 @@ import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
+import { firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
 import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, decodeText } from "./parse.ts";
@@ -415,7 +416,8 @@ function appVersion(): Promise<string> {
  */
 /** The hardware a profile is set to report, for display. Engines choose what is absent. */
 function storedHardware(p: Profile): { gpu?: string; cores?: number } | undefined {
-  const gpu = p.firefox?.config["webGl:renderer"];
+  // The card the browser shows, which is Apple's for a macOS profile saved with another.
+  const gpu = p.firefox ? firefoxGraphicsRenderer(p) : undefined;
   const cores = p.hardware?.cores ?? p.firefox?.config["navigator.hardwareConcurrency"];
   const hardware = {
     ...(typeof gpu === "string" && gpu ? { gpu } : {}),

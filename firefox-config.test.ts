@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { completeProfileFingerprint, createFirefoxProfileConfig, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity } from "./firefox-config.ts";
+import {
+  completeProfileFingerprint, createFirefoxProfileConfig, firefoxGraphicsRenderer, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity,
+} from "./firefox-config.ts";
 import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
 import type { FirefoxProfileConfig, JsonValue, Profile } from "./types.ts";
 
@@ -94,21 +96,32 @@ test("a Firefox launch shows the window label in the native title and starts in 
   const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
   expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");
   expect(firefoxStartupPrefs(german)).toEqual({
-    "intl.locale.requested": "de-DE", "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
+    "intl.locale.requested": "de-DE", "dom.webgpu.enabled": true, "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
     "browser.newtabpage.enabled": true,
   });
   expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
 });
 
-test("only a macOS profile on an Apple Silicon Mac has WebGPU, as stock Firefox there; every other launch blocks it", () => {
-  const mac = { ...profile(5, { "navigator.platform": "MacIntel" }), platformOs: "macos" as const };
-  expect(firefoxStartupPrefs(mac, "darwin", "arm64")).not.toHaveProperty("gfx.blacklist.webgpu");
-  // An Intel Mac, a Windows or Linux computer, or a Windows profile on the Mac shows another card family.
-  for (const [persona, platform, arch] of [
-    [mac, "darwin", "x64"], [mac, "win32", "x64"], [mac, "linux", "x64"], [mac, undefined, undefined], [profile(5), "darwin", "arm64"],
-  ] as const) {
-    expect(firefoxStartupPrefs(persona, platform, arch)["gfx.blacklist.webgpu"]).toBe(4);
+test("WebGPU shows where stock Firefox 156 has it, with this computer's adapter only for a macOS profile on an Apple Silicon Mac", () => {
+  const macos = (config: Record<string, JsonValue> = {}) => ({ ...profile(5, { "navigator.platform": "MacIntel", ...config }), platformOs: "macos" as const });
+  const webgpu = (persona: Profile, platform?: NodeJS.Platform, arch?: string) => {
+    const prefs = firefoxStartupPrefs(persona, platform, arch);
+    return [prefs["dom.webgpu.enabled"], prefs["gfx.blacklist.webgpu"] === 4];
+  };
+  const intelCard = { "webGl:vendor": "Intel Inc.", "webGl:renderer": "Intel(R) HD Graphics 400, or similar" };
+  // On an Apple Silicon Mac a macOS profile claims that Mac's card family: its adapter is shown.
+  expect(webgpu(macos(), "darwin", "arm64")).toEqual([true, false]);
+  expect(webgpu(macos(intelCard), "darwin", "arm64")).toEqual([true, false]);
+  // Elsewhere an Apple profile has navigator.gpu without an adapter; without a stored card it shows the computer's.
+  expect(webgpu(macos(graphicsIdentity("macos", 1)), "win32", "x64")).toEqual([true, true]);
+  expect(webgpu(macos(intelCard), "linux", "x64")).toEqual([true, true]);
+  expect(webgpu(macos(), "win32", "x64")).toEqual([false, true]);
+  expect(webgpu(macos(), "darwin", "x64")).toEqual([false, true]);
+  // Windows always has navigator.gpu, and the app does not know the computer's card; Linux has none.
+  for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"], [undefined, undefined]] as const) {
+    expect(webgpu(profile(5), platform, arch)).toEqual([true, true]);
+    expect(webgpu(profile(5, { "navigator.platform": "Linux x86_64" }), platform, arch)).toEqual([false, true]);
   }
 });
 
@@ -204,7 +217,8 @@ test.each([
   expect([config["screen.width"], config["screen.height"]]).toEqual([width, height]);
   expect(config["screen.availWidth"]).toBeLessThanOrEqual(width);
   expect(config["screen.availHeight"]).toBeLessThanOrEqual(height);
-  expect(config["screen.availWidth"]! < width || config["screen.availHeight"]! < height).toBe(true);
+  // Stock Firefox's baseline protection shows the whole screen on Linux, less a taskbar or menu bar elsewhere.
+  expect(config["screen.availHeight"]! < height).toBe(os !== "linux");
   expect(config["window.outerWidth"]).toBeLessThanOrEqual(config["screen.availWidth"]!);
   expect(config["window.outerHeight"]).toBeLessThanOrEqual(config["screen.availHeight"]!);
   const left = config["screen.availLeft"] ?? 0;
@@ -278,58 +292,78 @@ test("a macOS profile shows Apple graphics only, with the texture limits stock F
     const stored = profile(8, { "navigator.platform": "MacIntel", ...card });
     const saved = structuredClone(stored.firefox);
     expect(firefoxLaunchConfig(stored)).toMatchObject(apple);
+    expect(firefoxGraphicsRenderer(stored)).toBe("Apple M1, or similar");
     expect(stored.firefox).toEqual(saved);
   }
   // A Windows profile keeps its card, and a profile without a stored card gets none.
-  expect(firefoxLaunchConfig(profile(8, graphicsIdentity("windows", 7)))).toMatchObject(graphicsIdentity("windows", 7));
+  const windows = profile(8, graphicsIdentity("windows", 7));
+  expect(firefoxLaunchConfig(windows)).toMatchObject(graphicsIdentity("windows", 7));
+  expect(firefoxGraphicsRenderer(windows)).toBe(graphicsIdentity("windows", 7)["webGl:renderer"]!);
   expect(firefoxLaunchConfig(profile(8, { "navigator.platform": "MacIntel" }))).not.toHaveProperty("webGl:vendor");
+  expect(firefoxGraphicsRenderer(profile(8, { "navigator.platform": "MacIntel" }))).toBeUndefined();
 });
 
+/** The usable area stock Firefox 156 reports with its baseline protection (GetSpoofedScreenAvailSize). */
+const baseline = { windows: [0, 48], macos: [25, 76], linux: [0, 0] } as const;
+
 test.each([
-  ["windows", 1920, 1080], ["windows", 1536, 864], ["macos", 1440, 900], ["macos", 1512, 982],
-] as const)("new %s profiles at %ix%i keep the usable area on their screen and report no touch points", (os, width, height) => {
-  // Each draw is a new generator sample; most Windows ones have an offset or touch points to fix.
+  ["windows", 1920, 1080], ["windows", 1536, 864], ["macos", 1440, 900], ["macos", 1512, 982], ["linux", 1366, 768],
+] as const)("new %s profiles at %ix%i show stock Firefox's usable area and no touch points", (os, width, height) => {
+  // Each draw is a new generator sample; most Windows ones put the area beside the screen or have touch points.
   for (let seed = 1; seed <= 25; seed++) {
     const config = createFirefoxProfileConfig(width, height, os, seed).config as Record<string, number>;
-    expect(config["navigator.maxTouchPoints"]).toBe(0);
-    // One Windows screen starts at 0,0 with the taskbar below; the macOS menu bar is above the usable area.
-    if (os === "windows") expect([config["screen.availLeft"], config["screen.availTop"]]).toEqual([0, 0]);
-    else expect(config["screen.availTop"]).toBeGreaterThanOrEqual(25);
-    expect(config["screen.availHeight"]).toBeLessThan(height);
-    expect(config["screen.availTop"]! + config["screen.availHeight"]!).toBeLessThanOrEqual(height);
-    expect(config["window.screenY"]).toBeGreaterThanOrEqual(config["screen.availTop"]!);
+    const [top, less] = baseline[os];
+    expect(config).toMatchObject({
+      "screen.availLeft": 0, "screen.availTop": top, "screen.availWidth": width, "screen.availHeight": height - less, "navigator.maxTouchPoints": 0,
+    });
+    // The window stays on its screen.
+    expect(config["window.screenX"]! + config["window.outerWidth"]!).toBeLessThanOrEqual(width);
+    expect(config["window.screenY"]).toBeGreaterThanOrEqual(top);
+    expect(config["window.screenY"]! + config["window.outerHeight"]!).toBeLessThanOrEqual(height);
   }
 });
 
-test("an existing profile opens with the screen corner and touch points of a real desktop, its stored values unchanged", () => {
+test("an existing profile opens with stock Firefox's usable area and no touch points, its stored values unchanged", () => {
   const windows = profile(3, {
-    "screen.width": 1920, "screen.height": 1080, "screen.availWidth": 1920, "screen.availHeight": 1032,
+    "screen.width": 1920, "screen.height": 1080, "screen.availWidth": 1920, "screen.availHeight": 1040,
     "screen.availLeft": 1920, "screen.availTop": 40, "navigator.maxTouchPoints": 2,
-    "window.outerWidth": 1248, "window.outerHeight": 972,
+    "window.outerWidth": 1248, "window.outerHeight": 1040,
   });
   const saved = structuredClone(windows.firefox);
   expect(firefoxLaunchConfig(windows)).toMatchObject({
-    "screen.availLeft": 0, "screen.availTop": 0, "screen.availHeight": 1032, "navigator.maxTouchPoints": 0,
+    "screen.availLeft": 0, "screen.availTop": 0, "screen.availWidth": 1920, "screen.availHeight": 1032, "navigator.maxTouchPoints": 0,
+    "window.outerHeight": 1032,
   });
   expect(windows.firefox).toEqual(saved);
-  // A macOS profile without a menu bar offset gets one, inside its screen; a stored offset stays.
+  // Whatever a macOS profile stored, it opens with the menu bar and dock stock Firefox reports.
   const mac = (config: Record<string, JsonValue>) => firefoxLaunchConfig(profile(4, {
     "navigator.platform": "MacIntel", "screen.width": 1440, "screen.height": 900, "screen.availWidth": 1440, ...config,
   }));
-  expect(mac({ "screen.availHeight": 744 })).toMatchObject({ "screen.availTop": 25, "screen.availHeight": 744, "navigator.maxTouchPoints": 0 });
-  expect(mac({ "screen.availWidth": 1380, "screen.availHeight": 900 })).toMatchObject({ "screen.availTop": 25, "screen.availHeight": 875 });
-  expect(mac({ "screen.availTop": 33, "screen.availHeight": 860 })).toMatchObject({ "screen.availTop": 33, "screen.availHeight": 860 });
-  expect(mac({ "screen.availHeight": 744 })).not.toHaveProperty("screen.availLeft");
+  const storedAreas: Array<Record<string, JsonValue>> = [
+    { "screen.availHeight": 744 }, { "screen.availWidth": 1380, "screen.availHeight": 900 }, { "screen.availTop": 33, "screen.availHeight": 860 },
+  ];
+  for (const stored of storedAreas) {
+    expect(mac(stored)).toMatchObject({ "screen.availLeft": 0, "screen.availTop": 25, "screen.availWidth": 1440, "screen.availHeight": 824 });
+  }
+  const linux = firefoxLaunchConfig(profile(5, { "navigator.platform": "Linux x86_64", "screen.width": 1366, "screen.height": 768, "screen.availHeight": 741 }));
+  expect(linux).toMatchObject({ "screen.availTop": 0, "screen.availHeight": 768 });
 });
 
-test("a macOS profile marks one default voice, the system voice of its locale or else of its language", () => {
-  const defaults = (locale: string, seed: number, platform = "MacIntel") => (firefoxLaunchConfig({ ...profile(seed, { "navigator.platform": platform }), locale })
-    .voices as Array<{ name: string; lang: string; isDefault: boolean }>).filter((voice) => voice.isDefault).map((voice) => `${voice.name} ${voice.lang}`);
+test("a macOS profile lists the voices stock Firefox shows there and marks one default, the system voice of its locale or else of its language", () => {
+  const voices = (locale: string, seed: number, platform = "MacIntel") => firefoxLaunchConfig({ ...profile(seed, { "navigator.platform": platform }), locale })
+    .voices as Array<{ name: string; lang: string; voiceUri: string; isDefault: boolean }>;
+  const defaults = (locale: string, seed: number, platform = "MacIntel") =>
+    voices(locale, seed, platform).filter((voice) => voice.isDefault).map((voice) => `${voice.name} ${voice.lang}`);
   for (let seed = 1; seed <= 100; seed++) {
     expect(defaults("en-US", seed)).toEqual(["Samantha en-US"]);
     expect(defaults("en-GB", seed)).toEqual(["Daniel en-GB"]);
     expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
     expect(defaults("en-US", seed, "Win32")).toEqual([]);
+    // OSXSpeechSynthesizerService.mm leaves out the Eloquence and novelty voices.
+    for (const voice of voices("en-US", seed)) {
+      expect(voice.voiceUri).not.toContain("com.apple.eloquence");
+      expect(["Albert", "Bad News", "Bells", "Trinoids", "Whisper", "Wobble", "Zarvox"]).not.toContain(voice.name);
+    }
   }
   for (const [locale, voice] of [
     ["fr-CA", "Amélie fr-CA"], ["en-CA", "Samantha en-US"], ["es-AR", "Mónica es-ES"], ["de-AT", "Anna de-DE"],

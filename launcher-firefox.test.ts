@@ -11,7 +11,6 @@ import type { Profile } from "./types.ts";
 
 const cleanup: Array<() => void> = [];
 const LABEL = "Firefox profile · #1";
-const SERIAL_OFF = 'user_pref("dom.webserial.enabled", false);\n';
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
 function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
@@ -422,15 +421,12 @@ test("Firefox enables native tab restore with session cookies in the owned profi
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   writeFileSync(
     join(root, "user.js"),
-    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 2);\nuser_pref("browser.startup.page", 1);\n' +
-      'user_pref("dom.webserial.enabled", true);\n',
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 2);\nuser_pref("browser.startup.page", 1);\n',
   );
   f.store.saveSessionBundle(f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: ["https://old.example/"] }));
   const opened = await f.launcher.start(f.profile.id);
-  // Web Serial stays off as in stock Firefox: the engine's policy would show navigator.serial.
   expect(f.startupPreferences()).toBe(
-    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n' +
-      SERIAL_OFF,
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n',
   );
   expect(opened.nativeSessionRestored).toBe(true);
   expect(f.navigated).toEqual([]);
@@ -475,7 +471,7 @@ test("Firefox reopens without native restore when the saved session would show n
     writeFileSync(join(root, file), mozLz4(session));
     writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: "previous", tabs: ["https://www.wikipedia.org/"] }));
     await f.launcher.start(f.profile.id);
-    expect(f.startupPreferences()).toBe(`user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n${SERIAL_OFF}`);
+    expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
     expect(f.navigated).toEqual([["https://www.wikipedia.org/"]]);
     expect(await f.launcher.stop(f.profile.id)).toBe(true);
   }
@@ -489,7 +485,7 @@ test("Firefox natively restores a saved session with a web page", async () => {
     windows: [{ tabs: [{ entries: [{ url: "about:blank" }, { url: "https://example.com/" }], index: 2 }] }],
   }));
   const opened = await f.launcher.start(f.profile.id);
-  expect(f.startupPreferences()).toBe(`user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n${SERIAL_OFF}`);
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n');
   expect(opened.nativeSessionRestored).toBe(true);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -503,8 +499,7 @@ test("Firefox disables native restore when the Cloud coordinator requests portab
   writeFileSync(join(root, "user.js"), 'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 3);\n');
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false, restoreLastSession: false });
   expect(f.startupPreferences()).toBe(
-    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n' +
-      SERIAL_OFF,
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n',
   );
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.navigated).toEqual([]);
@@ -518,7 +513,7 @@ test("Firefox disables native restore before applying a pending Cloud bundle", a
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   f.store.upsertProfiles([f.profile], new Map([[f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: [] })]]));
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false });
-  expect(f.startupPreferences()).toBe(`user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n${SERIAL_OFF}`);
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.store.getPendingSessionBundle(f.profile.id)).toBeNull();
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -621,14 +616,15 @@ test("a Firefox profile of another OS opens with that OS's font pack", async () 
   expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("aliasmode:fontsDir");
 });
 
-test("a macOS Firefox profile has WebGPU on an Apple Silicon Mac only, and a Windows profile there keeps the block", async () => {
-  for (const [platform, arch, persona, blocked] of [
-    ["darwin", "arm64", "macos", false], ["win32", "x64", "macos", true], ["darwin", "arm64", "windows", true],
+test("a Firefox launch has WebGPU where stock Firefox has it, with this computer's adapter only for a macOS profile on an Apple Silicon Mac", async () => {
+  for (const [platform, arch, persona, enabled, blocked] of [
+    ["darwin", "arm64", "macos", true, false], ["win32", "x64", "macos", false, true], ["darwin", "arm64", "windows", true, true],
   ] as const) {
     const f = fixture(platform, arch);
     const profile = persona === "macos" ? macosPersona(f) : f.profile;
     await f.launcher.start(profile.id);
     expect(f.prefs()).toMatchObject(firefoxStartupPrefs(profile, platform, arch));
+    expect(f.prefs()).toMatchObject({ "dom.webgpu.enabled": enabled });
     expect(Object.hasOwn(f.prefs() as object, "gfx.blacklist.webgpu")).toBe(blocked);
   }
 });

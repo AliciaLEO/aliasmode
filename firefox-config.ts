@@ -70,6 +70,21 @@ function isAppleGraphics(config: Record<string, JsonValue>): boolean {
   return config["webGl:vendor"] === "Apple" && String(config["webGl:renderer"]).startsWith("Apple");
 }
 
+const storesGraphics = (config: Record<string, JsonValue>) => config["webGl:vendor"] !== undefined || config["webGl:renderer"] !== undefined;
+
+/** Apple's identity for a macOS profile saved with another card (Intel, AMD or a Windows Direct3D one). */
+function replacedGraphics(profile: Profile, config: Record<string, JsonValue>): Record<string, JsonValue> | undefined {
+  return storesGraphics(config) && !isAppleGraphics(config) && firefoxPersonaOs(profile, config) === "macos"
+    ? graphicsIdentity("macos", profile.fingerprintSeed)
+    : undefined;
+}
+
+/** The graphics card a launch of this profile shows, when the profile stores one (firefoxLaunchConfig). */
+export function firefoxGraphicsRenderer(profile: Profile): JsonValue | undefined {
+  const config = profile.firefox?.config ?? {};
+  return (replacedGraphics(profile, config) ?? config)["webGl:renderer"];
+}
+
 export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
 const FIREFOX_UA_MAJOR_VERSION = "156";
 
@@ -98,20 +113,9 @@ export function createFirefoxProfileConfig(
     fingerprint = generateFingerprint(windowSize, options);
   }
   const config = fromBrowserforge(fingerprint, FIREFOX_UA_MAJOR_VERSION);
-  // The generator can also drop a screen it cannot match: keep its taskbar on the chosen size.
-  for (const [axis, size] of [["width", screenWidth], ["height", screenHeight]] as const) {
-    const avail = axis === "width" ? "screen.availWidth" : "screen.availHeight";
-    const generated = config[`screen.${axis}`];
-    if (typeof generated === "number" && typeof config[avail] === "number") {
-      config[avail] = Math.max(1, size - Math.max(0, generated - config[avail]));
-    }
-    config[`screen.${axis}`] = size;
-  }
-  // Every desktop keeps a taskbar, dock or panel visible, so a screen without one is a headless
-  // tell (CreepJS "noTaskbar"). Give it upstream's size (fix_screen_no_taskbar).
-  if (config["screen.availWidth"] === screenWidth && config["screen.availHeight"] === screenHeight) {
-    config["screen.availHeight"] = screenHeight - (platformOs === "windows" ? 40 : platformOs === "macos" ? MACOS_MENU_BAR : 27);
-  }
+  // The generator can also drop a screen it cannot match: the chosen size is the screen.
+  config["screen.width"] = screenWidth;
+  config["screen.height"] = screenHeight;
   fitDesktopPersona(config, platformOs);
   fitFirefoxWindow(config);
   if (typeof config.timezone !== "string" || !config.timezone.trim()) {
@@ -125,24 +129,28 @@ export function createFirefoxProfileConfig(
   });
 }
 
-const MACOS_MENU_BAR = 25;
+/** The usable area's top and the height it leaves out, per system (see fitDesktopPersona). */
+const BASELINE_AVAIL: Record<PersonaOs, { top: number; less: number }> = {
+  windows: { top: 0, less: 48 }, macos: { top: 25, less: 76 }, linux: { top: 0, less: 0 },
+};
 
 /**
- * Values no desktop of the persona's system shows. Most generated Windows samples put the usable
- * area beside their one screen (availLeft 1920 with screen.left 0); its taskbar stays in
- * availHeight. Some give one or two touch points without touch events. On macOS the menu bar is
- * above the usable area.
+ * The usable screen area stock Firefox 156 reports with its default baseline fingerprinting
+ * protection (ScreenAvailToResolution, nsRFPService::GetSpoofedScreenAvailSize): the full width
+ * from 0, and the height less 48 on Windows, less 76 from top 25 on macOS, and all of it on Linux.
+ * The generator's own values put the area beside its screen on most Windows samples (availLeft
+ * 1920 with screen.left 0). Touch points are 0, a desktop without a touch screen; the baseline
+ * shows only 0, 1 or 5 (MaxTouchPointsCollapse), and the generator gave some 1 or 2 without
+ * touch events.
  */
 function fitDesktopPersona(config: Record<string, JsonValue>, os: PersonaOs): void {
-  if (os === "windows") {
-    config["screen.availLeft"] = 0;
-    config["screen.availTop"] = 0;
-  }
-  if (os === "macos" && typeof config["screen.availTop"] !== "number") {
-    config["screen.availTop"] = MACOS_MENU_BAR;
-    if (typeof config["screen.height"] === "number" && typeof config["screen.availHeight"] === "number") {
-      config["screen.availHeight"] = Math.min(config["screen.availHeight"], config["screen.height"] - MACOS_MENU_BAR);
-    }
+  const width = config["screen.width"];
+  const height = config["screen.height"];
+  if (typeof width === "number" && typeof height === "number") {
+    const { top, less } = BASELINE_AVAIL[os];
+    Object.assign(config, {
+      "screen.availLeft": 0, "screen.availTop": top, "screen.availWidth": width, "screen.availHeight": Math.max(1, height - less),
+    });
   }
   config["navigator.maxTouchPoints"] = 0;
 }
@@ -207,10 +215,10 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
   config["aliasmode:textSeed"] ??= seed("aliasmode:textSeed");
   const os = firefoxPersonaOs(profile, config);
-  // A macOS profile saved with another card (Intel, AMD or a Windows Direct3D one) shows Apple's.
-  if (os === "macos" && (config["webGl:vendor"] !== undefined || config["webGl:renderer"] !== undefined) && !isAppleGraphics(config)) {
+  const graphics = replacedGraphics(profile, config);
+  if (graphics) {
     for (const key of Object.keys(config)) if (/^webGl2?:/.test(key)) delete config[key];
-    Object.assign(config, graphicsIdentity("macos", profile.fingerprintSeed));
+    Object.assign(config, graphics);
   }
   // With the stock list every profile of one OS shows the same fonts.
   if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
@@ -297,12 +305,13 @@ function firefoxStartupLocale(profile: Profile): string {
 
 /**
  * Preferences the engine applies at startup (CAMOU_PREFS_n). Without intl.locale.requested the
- * 156 engine keeps an English interface and Intl locale whatever the profile's language. The
- * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. A
- * macOS profile on an Apple Silicon Mac claims that Mac's own card family (Apple graphics), so
- * it has WebGPU as stock Firefox 156 has there. The app does not know a Windows computer's card,
- * so other profiles keep the block. The app restores sessions itself, so Firefox's "Open
- * previous tabs?" bar stays off. When the
+ * 156 engine keeps an English interface and Intl locale whatever the profile's language.
+ * navigator.gpu shows where stock Firefox 156 has it: Windows and Apple graphics on macOS
+ * (dom.webgpu.enabled; upstream Camoufox's set_webgpu). The WebGPU block keeps the computer's
+ * real graphics card from showing through requestAdapter(), except for a macOS profile on an
+ * Apple Silicon Mac: it claims that Mac's own card family. The app does not know a Windows
+ * computer's card, so Windows profiles keep the block. The app restores sessions itself, so
+ * Firefox's "Open previous tabs?" bar stays off. When the
  * profile's font list hides the font the system picks for a character (CJK text with a Windows
  * font list on Linux), Firefox searches the listed fonts instead; asynchronous fallback skips
  * the ones whose character maps are still loading, so text measured in the first seconds after
@@ -312,10 +321,15 @@ function firefoxStartupLocale(profile: Profile): string {
  * a site can see.
  */
 export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Platform, hostArch?: string): Record<string, JsonValue> {
-  const hostGraphics = hostPlatform === "darwin" && hostArch === "arm64" && firefoxPersonaOs(profile) === "macos";
+  const os = firefoxPersonaOs(profile);
+  const appleSilicon = hostPlatform === "darwin" && hostArch === "arm64";
+  // A profile without a stored card shows this computer's.
+  const renderer = firefoxGraphicsRenderer(profile);
+  const appleGraphics = renderer === undefined ? appleSilicon : String(renderer).startsWith("Apple");
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
-    ...(hostGraphics ? {} : { "gfx.blacklist.webgpu": 4 }),
+    "dom.webgpu.enabled": os === "windows" || (os === "macos" && appleGraphics),
+    ...(os === "macos" && appleSilicon ? {} : { "gfx.blacklist.webgpu": 4 }),
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
     "browser.newtabpage.enabled": true,

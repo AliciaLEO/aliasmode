@@ -82,7 +82,28 @@ function voiceUri(os: OsKey, name: string, lang: string): string {
 const EXTRA_VOICE_SHARE = 0.62;
 const EXTRA_VOICE_ADDITIONS = new Set(["extra-languages", "macintalk-download"]);
 
-/** The speech voices of a desktop with this system and display language. No voice is the default, as in stock Firefox. */
+/** The language's main region where macOS has voices for several (otherwise its only one). */
+const MAC_MAIN_REGION: Record<string, string> = { en: "US", es: "ES", fr: "FR", nl: "NL", pt: "BR", zh: "CN" };
+
+/**
+ * The voice stock Firefox marks as the default on macOS: the one macOS gives for the display
+ * language (OSXSpeechSynthesizerService.mm, voiceWithLanguage:currentLanguageCode), the system
+ * voice of that locale or else of its language. A language macOS has no voice for has none.
+ */
+function macDefaultVoice(voices: Array<{ lang: string; voiceUri: string }>, locale: string): number | undefined {
+  const tag = new Intl.Locale(locale);
+  const system = voices.flatMap((voice, index) => voice.voiceUri.startsWith("urn:moz-tts:osx:com.apple.voice.compact.")
+    && new Intl.Locale(voice.lang).language === tag.language ? [index] : []);
+  const region = (index: number) => new Intl.Locale(voices[index]!.lang).region;
+  return system.find((index) => region(index) === tag.region)
+    ?? system.find((index) => region(index) === MAC_MAIN_REGION[tag.language])
+    ?? system[0];
+}
+
+/**
+ * The speech voices of a desktop with this system and display language. Stock Firefox marks one
+ * default on macOS; on Windows (SAPI) and Linux (speech-dispatcher) it marks none.
+ */
 export function firefoxVoices(os: PersonaOs, locale: string, seed: number): JsonValue[] {
   const random = draws(seed);
   const key = OS_KEYS[os];
@@ -126,7 +147,7 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
       for (const group of sample(random, eligible, count(), (name) => packs[name]!.weight || 0.01)) takePack(group);
     }
   }
-  return [...entries, ...legacy].map((entry) => {
+  const voices = [...entries, ...legacy].map((entry) => {
     // "Name:lang:type"; a name may itself contain a colon.
     const typeAt = entry.lastIndexOf(":");
     const langAt = entry.lastIndexOf(":", typeAt - 1);
@@ -134,6 +155,9 @@ export function firefoxVoices(os: PersonaOs, locale: string, seed: number): Json
     const lang = entry.slice(langAt + 1, typeAt);
     return { name, lang, voiceUri: voiceUri(key, name, lang), isDefault: false, isLocalService: entry.slice(typeAt + 1) === "local" };
   });
+  const defaultVoice = os === "macos" ? macDefaultVoice(voices, locale) : undefined;
+  if (defaultVoice !== undefined) voices[defaultVoice]!.isDefault = true;
+  return voices;
 }
 
 // Share of machines with no microphone (a tower with a line-out only) and with a built-in camera.

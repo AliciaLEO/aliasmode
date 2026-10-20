@@ -33,7 +33,10 @@ interface GraphicsIdentity {
 /**
  * Real graphics identities per system from the engine's data set, weighted by how
  * common they are. Each has the vendor, the renderer and the matching WebGL limits.
- * Software renderers are left out: they are no device identity.
+ * Software renderers are left out: they are no device identity. On macOS only Apple's:
+ * stock Firefox names every Apple Silicon GPU "Apple M1, or similar" (SanitizeRenderer.cpp),
+ * and the set's Intel, AMD and Direct3D rows are no current Mac. Its 8192 texture limits are
+ * the ones stock Firefox reports and enforces on every Mac (GLContext.cpp, bug 1544446).
  */
 const graphicsIdentities = await (async (): Promise<Record<PersonaOs, GraphicsIdentity[]>> => {
   const database = Database.deserialize(new Uint8Array(await Bun.file(webglDataPath).arrayBuffer()));
@@ -44,6 +47,7 @@ const graphicsIdentities = await (async (): Promise<Record<PersonaOs, GraphicsId
   const forSystem = (column: "win" | "mac" | "lin") => rows.flatMap((row) => {
     const { webGl2Enabled, ...keys } = JSON.parse(row.data) as Record<string, JsonValue>;
     return row[column] > 0 && webGl2Enabled === true && !/SwiftShader|Basic Render/i.test(row.renderer)
+      && (column !== "mac" || isAppleGraphics(keys))
       ? [{ weight: row[column], keys }]
       : [];
   });
@@ -60,6 +64,10 @@ export function graphicsIdentity(platformOs: PersonaOs, seed: number): Record<st
     if (remaining < 0) return structuredClone(option.keys);
   }
   return structuredClone(options.at(-1)!.keys);
+}
+
+function isAppleGraphics(config: Record<string, JsonValue>): boolean {
+  return config["webGl:vendor"] === "Apple" && String(config["webGl:renderer"]).startsWith("Apple");
 }
 
 export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
@@ -102,8 +110,9 @@ export function createFirefoxProfileConfig(
   // Every desktop keeps a taskbar, dock or panel visible, so a screen without one is a headless
   // tell (CreepJS "noTaskbar"). Give it upstream's size (fix_screen_no_taskbar).
   if (config["screen.availWidth"] === screenWidth && config["screen.availHeight"] === screenHeight) {
-    config["screen.availHeight"] = screenHeight - (platformOs === "windows" ? 40 : platformOs === "macos" ? 25 : 27);
+    config["screen.availHeight"] = screenHeight - (platformOs === "windows" ? 40 : platformOs === "macos" ? MACOS_MENU_BAR : 27);
   }
+  fitDesktopPersona(config, platformOs);
   fitFirefoxWindow(config);
   if (typeof config.timezone !== "string" || !config.timezone.trim()) {
     config.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -114,6 +123,28 @@ export function createFirefoxProfileConfig(
     runtimeVersion: FIREFOX_RUNTIME_VERSION,
     config,
   });
+}
+
+const MACOS_MENU_BAR = 25;
+
+/**
+ * Values no desktop of the persona's system shows. Most generated Windows samples put the usable
+ * area beside their one screen (availLeft 1920 with screen.left 0); its taskbar stays in
+ * availHeight. Some give one or two touch points without touch events. On macOS the menu bar is
+ * above the usable area.
+ */
+function fitDesktopPersona(config: Record<string, JsonValue>, os: PersonaOs): void {
+  if (os === "windows") {
+    config["screen.availLeft"] = 0;
+    config["screen.availTop"] = 0;
+  }
+  if (os === "macos" && typeof config["screen.availTop"] !== "number") {
+    config["screen.availTop"] = MACOS_MENU_BAR;
+    if (typeof config["screen.height"] === "number" && typeof config["screen.availHeight"] === "number") {
+      config["screen.availHeight"] = Math.min(config["screen.availHeight"], config["screen.height"] - MACOS_MENU_BAR);
+    }
+  }
+  config["navigator.maxTouchPoints"] = 0;
 }
 
 /**
@@ -159,7 +190,8 @@ const DROPPED_LAUNCH_KEYS = [
 /**
  * The config one launch sends to the engine. Seeds, voices, media devices, the window label and
  * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
- * exact shape. A value the profile stores itself is kept.
+ * exact shape. A value the profile stores itself is kept, unless no real desktop of its system
+ * shows it (fitDesktopPersona, a macOS card that is not Apple's).
  */
 export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
@@ -175,6 +207,11 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
   config["aliasmode:textSeed"] ??= seed("aliasmode:textSeed");
   const os = firefoxPersonaOs(profile, config);
+  // A macOS profile saved with another card (Intel, AMD or a Windows Direct3D one) shows Apple's.
+  if (os === "macos" && (config["webGl:vendor"] !== undefined || config["webGl:renderer"] !== undefined) && !isAppleGraphics(config)) {
+    for (const key of Object.keys(config)) if (/^webGl2?:/.test(key)) delete config[key];
+    Object.assign(config, graphicsIdentity("macos", profile.fingerprintSeed));
+  }
   // With the stock list every profile of one OS shows the same fonts.
   if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
   // Without its own list the engine shows this computer's voices.
@@ -188,6 +225,7 @@ export function firefoxLaunchConfig(profile: Profile, windowLabel?: string, font
   // Behind a proxy the engine shows the proxy's exit IP as WebRTC's public address, as a browser
   // at that exit would, in place of no address. The current exit replaces any stored one.
   if (profile.proxy && webRtcIp) config[isIP(webRtcIp) === 6 ? "webrtc:ipv6" : "webrtc:ipv4"] = webRtcIp;
+  fitDesktopPersona(config, os);
   fitFirefoxWindow(config);
   return config;
 }
@@ -260,8 +298,11 @@ function firefoxStartupLocale(profile: Profile): string {
 /**
  * Preferences the engine applies at startup (CAMOU_PREFS_n). Without intl.locale.requested the
  * 156 engine keeps an English interface and Intl locale whatever the profile's language. The
- * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. The
- * app restores sessions itself, so Firefox's "Open previous tabs?" bar stays off. When the
+ * WebGPU block keeps the computer's real graphics card from showing through navigator.gpu. A
+ * macOS profile on an Apple Silicon Mac claims that Mac's own card family (Apple graphics), so
+ * it has WebGPU as stock Firefox 156 has there. The app does not know a Windows computer's card,
+ * so other profiles keep the block. The app restores sessions itself, so Firefox's "Open
+ * previous tabs?" bar stays off. When the
  * profile's font list hides the font the system picks for a character (CJK text with a Windows
  * font list on Linux), Firefox searches the listed fonts instead; asynchronous fallback skips
  * the ones whose character maps are still loading, so text measured in the first seconds after
@@ -270,10 +311,11 @@ function firefoxStartupLocale(profile: Profile): string {
  * search box that uses the default search engine) is local, makes no requests and adds nothing
  * a site can see.
  */
-export function firefoxStartupPrefs(profile: Profile): Record<string, JsonValue> {
+export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Platform, hostArch?: string): Record<string, JsonValue> {
+  const hostGraphics = hostPlatform === "darwin" && hostArch === "arm64" && firefoxPersonaOs(profile) === "macos";
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
-    "gfx.blacklist.webgpu": 4,
+    ...(hostGraphics ? {} : { "gfx.blacklist.webgpu": 4 }),
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
     "browser.newtabpage.enabled": true,

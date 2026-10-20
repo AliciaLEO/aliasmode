@@ -206,3 +206,17 @@ diff --git a/lib/server/chromium/crBrowser.js b/lib/server/chromium/crBrowser.js
      }).catch((e) => {
        if (e.message.includes("Failed to override timezone"))
          throw new Error(`Invalid timezone ID: ${this._options.timezoneId}`);
+diff --git a/lib/server/chromium/chromium.js b/lib/server/chromium/chromium.js
+--- a/lib/server/chromium/chromium.js
++++ b/lib/server/chromium/chromium.js
+@@ -98,7 +98,9 @@
+       const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
+       chromeTransport = await import_transport.WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
+       const browserProcess = { close: doClose, kill: doClose };
+-      const persistent = { noDefaultViewport: true };
++      // Attaching to the user's browser never changes the colour scheme, motion, forced colours or
++      // contrast its open pages see: Playwright's defaults would emulate light, no-preference and none.
++      const persistent = { noDefaultViewport: true, colorScheme: "no-override", reducedMotion: "no-override", forcedColors: "no-override", contrast: "no-override" };
+       const browserOptions = {
+         slowMo: options.slowMo,
+         name: "chromium",

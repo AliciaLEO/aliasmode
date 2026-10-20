@@ -147,16 +147,18 @@ describe("Playwright CDP compatibility patch", () => {
     }]);
   });
 
-  test("AliasMode's helpers attach to an open tab without emulating focus in it", async () => {
+  test("attaching to an open tab never emulates its colour scheme, and AliasMode's helpers not its focus", async () => {
     // A browser with one open tab, as AliasMode's helpers find it after a launch.
     const tabMethods: string[] = [];
+    const emulatedMedia: unknown[] = [];
     const server = Bun.serve({
       port: 0,
       fetch: (request, srv) => srv.upgrade(request) ? undefined : new Response("no", { status: 400 }),
       websocket: {
         message(ws, raw) {
-          const { id, method, sessionId } = JSON.parse(String(raw));
+          const { id, method, sessionId, params } = JSON.parse(String(raw));
           if (sessionId) tabMethods.push(method);
+          if (method === "Emulation.setEmulatedMedia") emulatedMedia.push(params);
           const result = method === "Browser.getVersion"
             ? { product: "Chrome/155.0.0.0", userAgent: "Chrome/155.0.0.0" }
             : method === "Page.getFrameTree"
@@ -192,6 +194,11 @@ describe("Playwright CDP compatibility patch", () => {
       expect(helper).not.toContain("Emulation.setFocusEmulationEnabled");
       // Other Playwright users, such as the agent runner, keep Playwright's default.
       expect(await attach(undefined)).toContain("Emulation.setFocusEmulationEnabled");
+      // No attach changes the colour scheme, motion, forced colours or contrast the open tab sees.
+      expect(emulatedMedia).toHaveLength(2);
+      for (const sent of emulatedMedia) {
+        expect(sent).toEqual({ media: "", features: ["prefers-color-scheme", "prefers-reduced-motion", "forced-colors", "prefers-contrast"].map((name) => ({ name, value: "" })) });
+      }
     } finally {
       server.stop(true);
     }

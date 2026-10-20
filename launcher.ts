@@ -96,14 +96,17 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
   const path = join(userDataDir, "user.js");
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const preserved = existing
-    .replace(/^user_pref\("browser\.(?:startup\.page|sessionstore\.privacy_level)",\s*\d+\);\s*$/gm, "")
+    .replace(/^user_pref\("(?:browser\.startup\.page|browser\.sessionstore\.privacy_level|dom\.webserial\.enabled)",\s*\w+\);\s*$/gm, "")
     .trimEnd();
   // The engine default (2) never saves session cookies, so a restored session came back
   // without them. Stock Firefox (0) keeps them, as Chromium does with --restore-last-session.
+  // The engine's policy DefaultSerialGuardSetting shows navigator.serial, which stock Firefox
+  // 156 does not have. The policy overrides a startup preference (CAMOU_PREFS), not a user one.
   writeFileSync(
     path,
     `${preserved}${preserved ? "\n" : ""}user_pref("browser.sessionstore.privacy_level", 0);\n` +
-      `user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`,
+      `user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n` +
+      `user_pref("dom.webserial.enabled", false);\n`,
   );
 }
 
@@ -2318,7 +2321,10 @@ export class Launcher {
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
         userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp), proxy, headless,
-        prefs: { ...firefoxStartupPrefs(profile), ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}) },
+        prefs: {
+          ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
+          ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
+        },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {

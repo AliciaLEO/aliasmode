@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { completeProfileFingerprint, createFirefoxProfileConfig, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow } from "./firefox-config.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity } from "./firefox-config.ts";
 import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
 import type { FirefoxProfileConfig, JsonValue, Profile } from "./types.ts";
 
@@ -69,7 +69,9 @@ test.each([
   expectEngineTypes(config);
   const voices = config.voices as Array<{ voiceUri: string; isDefault: boolean }>;
   expect(voices.some((voice) => uri.test(voice.voiceUri))).toBe(true);
-  expect(voices.every((voice) => !voice.isDefault)).toBe(true);
+  // Stock Firefox marks the system voice of the display language as the default on macOS only.
+  expect(voices.filter((voice) => voice.isDefault).map((voice) => voice.voiceUri))
+    .toEqual(platform === "MacIntel" ? ["urn:moz-tts:osx:com.apple.voice.compact.en-US.Samantha"] : []);
   if (platform === "Linux x86_64") expect(config["mediaDevices:microphoneLabels"]).toContainEqual(expect.stringMatching(/^Monitor of /));
 });
 
@@ -97,6 +99,17 @@ test("a Firefox launch shows the window label in the native title and starts in 
     "browser.newtabpage.enabled": true,
   });
   expect(firefoxStartupPrefs(profile(5))["intl.locale.requested"]).toBe("en-US");
+});
+
+test("only a macOS profile on an Apple Silicon Mac has WebGPU, as stock Firefox there; every other launch blocks it", () => {
+  const mac = { ...profile(5, { "navigator.platform": "MacIntel" }), platformOs: "macos" as const };
+  expect(firefoxStartupPrefs(mac, "darwin", "arm64")).not.toHaveProperty("gfx.blacklist.webgpu");
+  // An Intel Mac, a Windows or Linux computer, or a Windows profile on the Mac shows another card family.
+  for (const [persona, platform, arch] of [
+    [mac, "darwin", "x64"], [mac, "win32", "x64"], [mac, "linux", "x64"], [mac, undefined, undefined], [profile(5), "darwin", "arm64"],
+  ] as const) {
+    expect(firefoxStartupPrefs(persona, platform, arch)["gfx.blacklist.webgpu"]).toBe(4);
+  }
 });
 
 test("a Firefox launch names the font pack folder of this computer only, never a saved one", () => {
@@ -142,7 +155,7 @@ test("an existing Firefox window never exceeds its available screen", () => {
     "window.outerWidth": 1920, "window.outerHeight": 1080,
   }));
   expect(tall).toMatchObject({
-    "screen.width": 1920, "screen.height": 1080, "screen.availHeight": 1032, "screen.availLeft": 1920,
+    "screen.width": 1920, "screen.height": 1080, "screen.availHeight": 1032, "screen.availLeft": 0,
     "window.outerWidth": 1920, "window.outerHeight": 1032,
   });
   // The 156 engine shows pages the real window position, so the stored one is not sent.
@@ -247,4 +260,83 @@ test("most Firefox profiles list voices beyond the stock set, each the same on e
     expect(share).toBeLessThan(0.75);
   }
   expect(firefoxLaunchConfig(profile(9)).voices).toEqual(firefoxLaunchConfig(profile(9)).voices!);
+});
+
+test("a macOS profile shows Apple graphics only, with the texture limits stock Firefox reports on a Mac", () => {
+  for (let seed = 1; seed <= 500; seed++) {
+    const keys = graphicsIdentity("macos", seed);
+    expect(keys).toMatchObject({ "webGl:vendor": "Apple", "webGl:renderer": "Apple M1, or similar" });
+    // GLContext.cpp limits textures and renderbuffers to 8192 on every Mac; the viewport stays 16384.
+    for (const block of ["webGl:parameters", "webGl2:parameters"]) {
+      expect(keys[block]).toMatchObject({ 3379: 8192, 34024: 8192, 34076: 8192, 3386: [16384, 16384] });
+    }
+  }
+  // A macOS profile stored with an Intel Mac's or a Windows Direct3D card opens with Apple's; the stored one stays.
+  const apple = graphicsIdentity("macos", 1);
+  const intel = { "webGl:vendor": "Intel Inc.", "webGl:renderer": "Intel(R) HD Graphics 400, or similar", "webGl:parameters": { 3379: 16384 } };
+  for (const card of [graphicsIdentity("windows", 7), intel]) {
+    const stored = profile(8, { "navigator.platform": "MacIntel", ...card });
+    const saved = structuredClone(stored.firefox);
+    expect(firefoxLaunchConfig(stored)).toMatchObject(apple);
+    expect(stored.firefox).toEqual(saved);
+  }
+  // A Windows profile keeps its card, and a profile without a stored card gets none.
+  expect(firefoxLaunchConfig(profile(8, graphicsIdentity("windows", 7)))).toMatchObject(graphicsIdentity("windows", 7));
+  expect(firefoxLaunchConfig(profile(8, { "navigator.platform": "MacIntel" }))).not.toHaveProperty("webGl:vendor");
+});
+
+test.each([
+  ["windows", 1920, 1080], ["windows", 1536, 864], ["macos", 1440, 900], ["macos", 1512, 982],
+] as const)("new %s profiles at %ix%i keep the usable area on their screen and report no touch points", (os, width, height) => {
+  // Each draw is a new generator sample; most Windows ones have an offset or touch points to fix.
+  for (let seed = 1; seed <= 25; seed++) {
+    const config = createFirefoxProfileConfig(width, height, os, seed).config as Record<string, number>;
+    expect(config["navigator.maxTouchPoints"]).toBe(0);
+    // One Windows screen starts at 0,0 with the taskbar below; the macOS menu bar is above the usable area.
+    if (os === "windows") expect([config["screen.availLeft"], config["screen.availTop"]]).toEqual([0, 0]);
+    else expect(config["screen.availTop"]).toBeGreaterThanOrEqual(25);
+    expect(config["screen.availHeight"]).toBeLessThan(height);
+    expect(config["screen.availTop"]! + config["screen.availHeight"]!).toBeLessThanOrEqual(height);
+    expect(config["window.screenY"]).toBeGreaterThanOrEqual(config["screen.availTop"]!);
+  }
+});
+
+test("an existing profile opens with the screen corner and touch points of a real desktop, its stored values unchanged", () => {
+  const windows = profile(3, {
+    "screen.width": 1920, "screen.height": 1080, "screen.availWidth": 1920, "screen.availHeight": 1032,
+    "screen.availLeft": 1920, "screen.availTop": 40, "navigator.maxTouchPoints": 2,
+    "window.outerWidth": 1248, "window.outerHeight": 972,
+  });
+  const saved = structuredClone(windows.firefox);
+  expect(firefoxLaunchConfig(windows)).toMatchObject({
+    "screen.availLeft": 0, "screen.availTop": 0, "screen.availHeight": 1032, "navigator.maxTouchPoints": 0,
+  });
+  expect(windows.firefox).toEqual(saved);
+  // A macOS profile without a menu bar offset gets one, inside its screen; a stored offset stays.
+  const mac = (config: Record<string, JsonValue>) => firefoxLaunchConfig(profile(4, {
+    "navigator.platform": "MacIntel", "screen.width": 1440, "screen.height": 900, "screen.availWidth": 1440, ...config,
+  }));
+  expect(mac({ "screen.availHeight": 744 })).toMatchObject({ "screen.availTop": 25, "screen.availHeight": 744, "navigator.maxTouchPoints": 0 });
+  expect(mac({ "screen.availWidth": 1380, "screen.availHeight": 900 })).toMatchObject({ "screen.availTop": 25, "screen.availHeight": 875 });
+  expect(mac({ "screen.availTop": 33, "screen.availHeight": 860 })).toMatchObject({ "screen.availTop": 33, "screen.availHeight": 860 });
+  expect(mac({ "screen.availHeight": 744 })).not.toHaveProperty("screen.availLeft");
+});
+
+test("a macOS profile marks one default voice, the system voice of its locale or else of its language", () => {
+  const defaults = (locale: string, seed: number, platform = "MacIntel") => (firefoxLaunchConfig({ ...profile(seed, { "navigator.platform": platform }), locale })
+    .voices as Array<{ name: string; lang: string; isDefault: boolean }>).filter((voice) => voice.isDefault).map((voice) => `${voice.name} ${voice.lang}`);
+  for (let seed = 1; seed <= 100; seed++) {
+    expect(defaults("en-US", seed)).toEqual(["Samantha en-US"]);
+    expect(defaults("en-GB", seed)).toEqual(["Daniel en-GB"]);
+    expect(defaults("de-DE", seed)).toEqual(["Anna de-DE"]);
+    expect(defaults("en-US", seed, "Win32")).toEqual([]);
+  }
+  for (const [locale, voice] of [
+    ["fr-CA", "Amélie fr-CA"], ["en-CA", "Samantha en-US"], ["es-AR", "Mónica es-ES"], ["de-AT", "Anna de-DE"],
+    ["zh-Hant-TW", "Meijia zh-TW"], ["ar-SA", "Majed ar-001"], ["ja-JP", "Kyoko ja-JP"],
+  ] as const) {
+    expect(defaults(locale, 1)).toEqual([voice]);
+  }
+  // macOS has no Lithuanian voice, so it gives none for that language.
+  expect(defaults("lt-LT", 1)).toEqual([]);
 });

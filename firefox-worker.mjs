@@ -174,6 +174,12 @@ export function firefoxLaunchOptions(input) {
   return {
     executablePath: input.executablePath,
     viewport: null,
+    // Pages see the computer's colour scheme, motion, contrast and forced colours, as in stock
+    // Firefox. Playwright otherwise emulates light, no-preference and none in every page.
+    colorScheme: "no-override",
+    reducedMotion: "no-override",
+    forcedColors: "no-override",
+    contrast: "no-override",
     ...(input.proxy ? {
       proxy: input.proxy,
       firefoxUserPrefs: {

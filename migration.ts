@@ -13,7 +13,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { readHostProcessSnapshot, readSnapshotChildBounded, type HostProcessSnapshot } from "./launcher.ts";
+import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
+import { readHostProcessSnapshot, type HostProcessSnapshot } from "./launcher.ts";
 import { isSafeProfileId } from "./profile-id.ts";
 import { statePaths, type StatePaths } from "./paths.ts";
 
@@ -264,11 +265,9 @@ function copySqliteSet(source: string, destination: string): void {
 
 function dpapiKeys(localStates: string[]): string[] {
   return localStates.map((path) => {
-    let encoded: unknown;
-    try { encoded = JSON.parse(readFileSync(path, "utf8"))?.os_crypt?.encrypted_key; } catch {}
-    const bytes = typeof encoded === "string" ? Buffer.from(encoded, "base64") : Buffer.alloc(0);
-    if (bytes.length <= 5 || bytes.subarray(0, 5).toString() !== "DPAPI") throw new Error(`Missing or malformed DPAPI key in ${path}`);
-    return bytes.subarray(5).toString("base64");
+    const key = localStateDpapiKey(path);
+    if (!key) throw new Error(`Missing or malformed DPAPI key in ${path}`);
+    return key;
   });
 }
 
@@ -276,12 +275,8 @@ async function validateWindowsDpapi(localStates: string[]): Promise<void> {
   if (process.platform !== "win32") throw new Error("Windows DPAPI validation is unavailable");
   const keys = dpapiKeys(localStates);
   if (!keys.length) return;
-  const script = "$k=ConvertFrom-Json ([Console]::In.ReadToEnd());foreach($v in $k){$b=[Convert]::FromBase64String($v);[Security.Cryptography.ProtectedData]::Unprotect($b,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)|Out-Null}";
-  const child = Bun.spawn(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], {
-    stdin: new Blob([JSON.stringify(keys)]), stdout: "pipe", stderr: "ignore",
-  });
-  const result = await readSnapshotChildBounded(child as never, 60_000);
-  if (!result || result.exitCode !== 0) {
+  const readable = await dpapiKeysReadable(keys);
+  if (!readable || readable.includes(false)) {
     throw new Error("Browser secrets cannot be decrypted by this Windows account; import requires the same machine and account");
   }
 }

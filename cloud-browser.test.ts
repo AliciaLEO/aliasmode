@@ -1008,6 +1008,27 @@ for (const reason of ["missing files", "newer Cloud session", "explicit URL"] as
   });
 }
 
+for (const readable of [true, false]) {
+  test(`Cloud native restore ${readable ? "reuses a readable" : "skips another Windows account's"} cookie key`, async () => {
+    const state = setup({ nativeSessionAvailable: true });
+    const logs: string[] = [];
+    const options = { ...(state.coordinator as any).options, log: (message: string) => logs.push(message) };
+    options.launcher.nativeSessionReadable = async () => readable;
+    const original = payload();
+    options.launcher.recordCloudSession("profile1", sessionBundleSignature(JSON.stringify(original.session)));
+    let restored: unknown;
+    options.applySession = async (_endpoint: string, bundle: string) => { restored = JSON.parse(bundle); };
+    const coordinator = new CloudBrowserCoordinator(options);
+    expect((await coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    expect(state.startOptionsSeen[0].restoreLastSession).toBe(readable);
+    expect(restored).toEqual(readable ? undefined : original.session);
+    expect(logs.some((message) => message.includes("another Windows account"))).toBe(!readable);
+    await coordinator.close("profile1");
+    state.queue.close();
+    state.store.close();
+  });
+}
+
 test("Cloud failed portable restore cannot leave a trusted native-session stamp", async () => {
   const state = setup({ restoreFailure: new Error("restore failed") });
   const options = (state.coordinator as any).options;

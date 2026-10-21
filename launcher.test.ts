@@ -844,6 +844,32 @@ test("stale cleanup prevents a deleted native session from being reported restor
   store.close();
 });
 
+test("native session is unreadable only when DPAPI rejects its cookie key, once per key", async () => {
+  const store = seeded();
+  const checked: string[][] = [];
+  let answer: boolean[] | null = [false];
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+    dpapiKeysReadable: async (keys) => { checked.push(keys); return answer; },
+  });
+  const dir = launcher.userDataDir("k1d0cd11");
+  mkdirSync(dir, { recursive: true });
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true); // no Local State
+  const blob = Buffer.concat([Buffer.from("DPAPI"), Buffer.from("other account")]);
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: blob.toString("base64") } }));
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(false);
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(false);
+  expect(checked).toEqual([[Buffer.from("other account").toString("base64")]]);
+
+  // An unanswered check keeps native reuse and is not cached.
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.concat([Buffer.from("DPAPI"), Buffer.from("new key")]).toString("base64") } }));
+  answer = null;
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true);
+  answer = [true];
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true);
+  expect(checked.length).toBe(3);
+  store.close();
+});
+
 test("cloud session authority marker is durable and invalidatable", () => {
   const store = seeded();
   const f = fleet();

@@ -40,6 +40,7 @@ export { isMobileUserAgent } from "./fingerprint.ts";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
+import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
@@ -464,6 +465,8 @@ export interface LauncherOptions {
   enforceHostCompatibility?: boolean;
   /** Injectable host tuple for compatibility-policy tests. */
   hostPlatform?: NodeJS.Platform;
+  /** Injectable Windows DPAPI check for cookie-key tests. Defaults to PowerShell. */
+  dpapiKeysReadable?: (keys: string[]) => Promise<boolean[] | null>;
   hostArch?: string;
   /** Scale of the host's primary display, such as 1.25 at 125%. Defaults to hostDisplayScale(). */
   hostScale?: number;
@@ -745,6 +748,9 @@ const RESETTABLE_SESSION_STORES = [
 export class Launcher {
   private store: ProfileStore;
   private autofill?: AutofillBridge;
+  private dpapiKeysReadable: (keys: string[]) => Promise<boolean[] | null>;
+  /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
+  private readonly cookieKeyReadable = new Map<string, boolean>();
   private binaryPath: string;
   private expectedBinarySha256: string;
   private firefoxBinaryPath: string;
@@ -848,6 +854,7 @@ export class Launcher {
 
   constructor(opts: LauncherOptions) {
     this.store = opts.store;
+    this.dpapiKeysReadable = opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000));
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
     this.unsafeDisableIdentityGates = opts.unsafeDisableIdentityGates ?? false;
@@ -2711,6 +2718,24 @@ export class Launcher {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * False only when Windows proves this account cannot decrypt the profile's
+   * cookie key (written under another Windows account), so its native session
+   * would open logged out. Unknown or non-Chromium state keeps native reuse.
+   */
+  public async nativeSessionReadable(profileId: string): Promise<boolean> {
+    const base = this.containedUserDataDir(profileId, "nativeSessionReadable");
+    if (!base) return true;
+    const key = localStateDpapiKey(join(base, "Local State"));
+    if (!key) return true;
+    const cached = this.cookieKeyReadable.get(key);
+    if (cached !== undefined) return cached;
+    const readable = (await this.dpapiKeysReadable([key]))?.[0];
+    if (readable === undefined) return true;
+    this.cookieKeyReadable.set(key, readable);
+    return readable;
   }
 
   /** Record the Cloud session authorized to reuse this profile's native state. */

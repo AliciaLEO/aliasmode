@@ -132,7 +132,7 @@ type CloudBrowserLauncher = Pick<
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
   "browserStorageWatchPaths" | "failedStartGeneration" |
   "matchesCloudSession" | "recordCloudSession"
-> & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks">>;
+> & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks" | "nativeSessionReadable">>;
 
 export interface CloudBrowserOptions {
   cloud: CloudBrowserClient;
@@ -690,8 +690,13 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       logStage("browser_launch");
       const { chromeArgs, startupUrls } = splitLaunchUrls(launchArgs);
       const signature = sessionBundleSignature(sessionBundle);
-      const restoreNativeSession = startupUrls.length === 0 &&
+      let restoreNativeSession = startupUrls.length === 0 &&
         this.options.launcher.matchesCloudSession(profileId, signature);
+      // Native cookies written under another Windows account are unreadable here.
+      if (restoreNativeSession && (await this.options.launcher.nativeSessionReadable?.(profileId)) === false) {
+        restoreNativeSession = false;
+        this.log(`${profileId}: local cookie key belongs to another Windows account; restoring from the Cloud copy`);
+      }
       // An interrupted restore must not leave partially replaced disk state trusted.
       this.options.launcher.recordCloudSession(profileId, null);
       const startBrowser = async () => {

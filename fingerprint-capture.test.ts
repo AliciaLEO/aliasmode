@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProfileStore } from "./store.ts";
@@ -15,54 +15,50 @@ function profile(overrides: Partial<Profile> = {}): Profile {
   };
 }
 
-test("capture entrypoint runs the Node worker and persists exportable observations", async () => {
+test("capture entrypoint runs the Node worker in its own tab only and persists exportable observations", async () => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-fingerprint-worker-"));
   const store = new ProfileStore(":memory:");
-  const events = join(root, "events.log");
+  const events: string[] = [];
+  // A browser over plain CDP: one restored user tab is open, and the capture must never attach to it.
+  const server = Bun.serve<{ failure: boolean }, never>({
+    port: 0,
+    fetch: (request, srv) => srv.upgrade(request, { data: { failure: new URL(request.url).pathname.endsWith("/failure") } }) ? undefined : new Response("", { status: 400 }),
+    websocket: {
+      open() { events.push("connect"); },
+      close() { events.push("detach"); },
+      message(ws, raw) {
+        const { id, method, params, sessionId } = JSON.parse(String(raw));
+        const reply = (result: object = {}) => void ws.send(JSON.stringify({ id, result, ...(sessionId ? { sessionId } : {}) }));
+        const event = (name: string, eventParams: object) => void ws.send(JSON.stringify({ method: name, params: eventParams, sessionId: "capture-session" }));
+        events.push(method);
+        if (method === "Target.createTarget") return reply({ targetId: "capture-tab" });
+        if (method === "Target.attachToTarget") {
+          if (params.targetId !== "capture-tab") throw new Error("attached to a user tab");
+          return reply({ sessionId: "capture-session" });
+        }
+        if (method === "Page.navigate") {
+          reply({ frameId: "main", loaderId: "1" });
+          event("Fetch.requestPaused", { requestId: "favicon", request: { url: "https://example.com/favicon.ico" } });
+          return event("Fetch.requestPaused", { requestId: "document", request: { url: params.url } });
+        }
+        if (method === "Fetch.fulfillRequest") {
+          reply();
+          return event("Page.domContentEventFired", { timestamp: 1 });
+        }
+        if (method === "Runtime.evaluate") {
+          if (!params.expression.includes("canvasHash") || !params.expression.endsWith(")()")) throw new Error("missing probe invocation");
+          if (ws.data.failure) return reply({ result: { type: "object" }, exceptionDetails: { text: "probe failed" } });
+          return reply({ result: { type: "object", value: { userAgent: "Mozilla/5.0 (Windows NT 10.0) Chrome/146.0.0.0", platform: "Win32", canvasHash: "captured" } } });
+        }
+        return reply();
+      },
+    },
+  });
   try {
     await mkdir(join(root, "node_modules", "playwright-core"), { recursive: true });
     await writeFile(join(root, "worker.mjs"), await Bun.file(join(import.meta.dir, "playwright-worker.mjs")).text());
-    await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"), `
-      import { appendFile } from "node:fs/promises";
-      const log = event => appendFile(${JSON.stringify(events)}, event + "\\n");
-      export const chromium = { async connectOverCDP(endpoint) {
-        if (globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] !== false) throw new Error("focus emulation would reach open tabs");
-        await log("connect");
-        let closed = false;
-        let handler;
-        let currentUrl = "about:blank";
-        const page = {
-          async route(pattern, callback) { handler = callback; await log("route"); },
-          async unroute() { handler = undefined; await log("unroute"); },
-          url: () => currentUrl,
-          async evaluate(source) {
-            if (!currentUrl.startsWith("https://fingerprint.aliasmode.invalid/")) throw new Error("probe must have a secure origin");
-            if (!source.includes("canvasHash") || !source.includes("navigator") || !source.endsWith(")()")) throw new Error("missing probe invocation");
-            await new Promise(resolve => setTimeout(resolve, 20));
-            if (closed) throw new Error("page closed before evaluation finished");
-            if (endpoint.endsWith("/failure")) throw new Error("probe failed");
-            await log("evaluated");
-            return { userAgent: "Mozilla/5.0 (Windows NT 10.0) Chrome/146.0.0.0", platform: "Win32", canvasHash: "captured" };
-          },
-          async goto(url) {
-            if (!handler) throw new Error("network navigation attempted");
-            let fulfilled = false;
-            await handler({ request: () => ({ url: () => url }), async fulfill() { fulfilled = true; }, async abort() {} });
-            if (!fulfilled) throw new Error("document was not fulfilled locally");
-            currentUrl = url;
-            await log("local-document");
-          },
-          async close() { closed = true; await log("close-page"); },
-        };
-        return {
-          contexts: () => [{
-            pages() { throw new Error("capture must not use user tabs"); },
-            async newPage() { await log("new-page"); return page; },
-          }],
-          async close() { await log("detach"); },
-        };
-      } };
-    `);
+    await writeFile(join(root, "node_modules", "playwright-core", "index.mjs"),
+      `export const chromium = { async connectOverCDP() { throw new Error("Playwright attaches to every tab"); } };\n`);
     const options = {
       runtimeRoot: root,
       timeoutMs: 5_000,
@@ -76,21 +72,25 @@ test("capture entrypoint runs the Node worker and persists exportable observatio
       save: (id, observed, verdict) => store.saveObservedFingerprint(id, observed, verdict),
       log: message => logs.push(message),
     });
-    expect(await run("ws://browser/success")).toBe(true);
+    expect(await run(`ws://127.0.0.1:${server.port}/devtools/browser/success`)).toBe(true);
     const saved = store.getProfile(p.id)!;
     expect(saved.fpObserved?.canvas).toBe("captured");
     expect(saved.fpObserved?.capturedAt).toBeTruthy();
     const exported = parseExport(serializeAdsTxt([saved])).profiles[0]!;
     expect(exported.ua).toContain("Chrome/146");
     expect(exported.fpExpected?.canvas).toBe("captured");
-    expect(await run("ws://browser/failure")).toBe(false);
+    expect(await run(`ws://127.0.0.1:${server.port}/devtools/browser/failure`)).toBe(false);
     expect(store.getProfile(p.id)!.fpObserved).toEqual(saved.fpObserved);
     expect(logs).toHaveLength(1);
-    expect((await readFile(events, "utf8")).trim().split("\n")).toEqual([
-      "connect", "new-page", "route", "local-document", "evaluated", "unroute", "close-page", "detach",
-      "connect", "new-page", "route", "local-document", "unroute", "close-page", "detach",
-    ]);
+    const capture = [
+      "connect", "Target.createTarget", "Target.attachToTarget", "Fetch.enable", "Page.enable", "Page.navigate",
+      "Fetch.failRequest", "Fetch.fulfillRequest", "Runtime.evaluate", "Target.closeTarget", "detach",
+    ];
+    for (let i = 0; i < 50 && events.length < capture.length * 2; i++) await Bun.sleep(20);
+    // Nothing attaches to other tabs on its own (Target.setAutoAttach) or enables a page runtime.
+    expect(events).toEqual([...capture, ...capture]);
   } finally {
+    server.stop(true);
     store.close();
     await rm(root, { recursive: true, force: true });
   }

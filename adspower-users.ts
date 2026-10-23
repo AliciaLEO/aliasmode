@@ -50,7 +50,11 @@ export interface ProfileRoster {
   listGroups?(): Promise<string[]>;
   createGroup?(name: string): Promise<void>;
   createProfile?(profile: Profile): Promise<{ id: string }>;
+  updateProfile?(id: string, edits: ProfileEdits): Promise<void>;
 }
+
+/** Fields `user/update` may change: the browser name and saved account credentials. */
+export type ProfileEdits = Partial<Pick<Profile, "name" | "username" | "password" | "email" | "emailPassword" | "twofa">>;
 
 function normalizeGroup(g: unknown): string {
   const s = String(g ?? "").trim();
@@ -103,16 +107,20 @@ function hasCredentialUpdate(body: any): boolean {
     .some((field) => typeof body?.[field] === "string");
 }
 
+function editsFromUpdateBody(body: any): ProfileEdits {
+  const edits: ProfileEdits = { name: body.name };
+  if (typeof body?.username === "string") edits.username = body.username;
+  if (typeof body?.password === "string") edits.password = body.password;
+  if (typeof body?.email === "string") edits.email = body.email;
+  if (typeof body?.email_password === "string") edits.emailPassword = body.email_password;
+  else if (typeof body?.emailPassword === "string") edits.emailPassword = body.emailPassword;
+  if (typeof body?.fakey === "string") edits.twofa = body.fakey;
+  else if (typeof body?.twofa === "string") edits.twofa = body.twofa;
+  return edits;
+}
+
 function profileFromUpdateBody(profile: Profile, body: any): Profile {
-  const updated = { ...profile, name: body.name };
-  if (typeof body?.username === "string") updated.username = body.username;
-  if (typeof body?.password === "string") updated.password = body.password;
-  if (typeof body?.email === "string") updated.email = body.email;
-  if (typeof body?.email_password === "string") updated.emailPassword = body.email_password;
-  else if (typeof body?.emailPassword === "string") updated.emailPassword = body.emailPassword;
-  if (typeof body?.fakey === "string") updated.twofa = body.fakey;
-  else if (typeof body?.twofa === "string") updated.twofa = body.twofa;
-  return updated;
+  return { ...profile, ...editsFromUpdateBody(body) };
 }
 
 /**
@@ -292,6 +300,14 @@ export async function handleUserApi(
     const id = typeof body?.user_id === "string" ? body.user_id : "";
     if (!id) return fail("missing user_id");
     if (!isValidProfileName(body?.name)) return fail("name must be a non-empty string");
+    if (roster?.updateProfile) {
+      try {
+        await roster.updateProfile(id, editsFromUpdateBody(body));
+        return ok({});
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }
     if (remote) {
       try {
         if (!hasCredentialUpdate(body)) {

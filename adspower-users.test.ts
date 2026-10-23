@@ -262,6 +262,27 @@ test("user/update leaves omitted credentials unchanged", async () => {
   });
 });
 
+test("user/update sends only supplied fields to a Cloud roster", async () => {
+  const { store, launcher } = setup();
+  const updates: unknown[] = [];
+  const roster = {
+    listProfiles: async () => [],
+    updateProfile: async (id: string, edits: unknown) => { updates.push({ id, edits }); },
+  };
+  const body = await (await handleUserApi(
+    post("/api/v1/user/update", { user_id: "k1d0cd11", name: "renamed", username: "renamed", fakey: "SEED" }),
+    launcher,
+    store,
+    null,
+    undefined,
+    roster,
+  ))!.json();
+
+  expect(body.code).toBe(0);
+  expect(updates).toEqual([{ id: "k1d0cd11", edits: { name: "renamed", username: "renamed", twofa: "SEED" } }]);
+  expect(store.getProfile("k1d0cd11")!.name).toBe("acct");
+});
+
 test("user/update on an unknown id fails AdsPower-style", async () => {
   const { store, launcher } = setup();
   const body = await (await handleUserApi(post("/api/v1/user/update", { user_id: "nope", name: "x" }), launcher, store))!.json();

@@ -33,6 +33,7 @@ import { PythonRuntime } from "./python-runtime.ts";
 import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 
 import { handleUserApi, type ProfileRoster } from "./adspower-users.ts";
+import { CloudProfileEditor } from "./cloud-profile-editor.ts";
 import { defaultProfileEngine } from "./create.ts";
 import {
   AGENT_CONTROL_MAX_MESSAGE_BYTES,
@@ -162,11 +163,12 @@ function automationHealthResponse(
   return handleAutomationHealthSnapshot(req, remote);
 }
 
-/** AdsPower list/create routes backed by Cloud folders and profiles. */
+/** AdsPower list/create/update routes backed by Cloud folders and profiles. */
 function isCloudProfileRoute(req: Request): boolean {
   const pathname = new URL(req.url).pathname;
   return (req.method === "GET" && (pathname === "/api/v1/group/list" || pathname === "/api/v1/user/list")) ||
-    (req.method === "POST" && (pathname === "/api/v1/group/create" || pathname === "/api/v1/user/create"));
+    (req.method === "POST" && (pathname === "/api/v1/group/create" || pathname === "/api/v1/user/create" ||
+      pathname === "/api/v1/user/update"));
 }
 
 async function handleAutomationRequest(
@@ -190,6 +192,22 @@ async function handleAutomationRequest(
           if (!(await listGroups()).includes(name)) await opts.cloudConnection!.client.createFolder(name);
         },
         createProfile: (profile) => cloudBrowser.create(profile),
+        // Same paths as the Edit dialog: a profile open on this device is edited
+        // live and its session sync carries the change; a closed one is saved to Cloud.
+        updateProfile: async (id, edits) => {
+          if (cloudBrowser.canEditLive?.(id) === true) {
+            const live = store.getProfile(id);
+            if (!live) throw new Error(`no such profile: ${id}`);
+            if (!(await cloudBrowser.commitLiveEdit?.({ ...live, ...edits }))) {
+              throw new Error("the browser just closed; retry the update");
+            }
+            return;
+          }
+          if (!opts.cloudConnection) throw new Error("Cloud connection is unavailable");
+          const editor = new CloudProfileEditor(opts.cloudConnection.client, store);
+          const { expectedVersion } = await editor.get(id);
+          await editor.save(id, expectedVersion, edits);
+        },
       };
       const users = await handleUserApi(req, launcher, store, null, undefined, roster);
       if (users) return users;

@@ -3,7 +3,8 @@ import type { PortableProfile } from "./contracts/cloud-v1.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
 import { parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone } from "./parse.ts";
-import { syncFirefoxTimezone } from "./firefox-config.ts";
+import { completeProfileFingerprint, syncFirefoxTimezone } from "./firefox-config.ts";
+import { normalizeProfileLocale } from "./profile-locale.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { proxyLegacyString } from "./proxy.ts";
@@ -30,6 +31,7 @@ export interface CloudProfileEditView {
   resolution: string;
   platformOs: string;
   timezone: string;
+  locale: string;
   extensions: string[];
   tags: string;
   cookieCount: number;
@@ -75,6 +77,7 @@ function editView(profile: Profile, expectedVersion: number): CloudProfileEditVi
     resolution: `${profile.screenWidth}*${profile.screenHeight}`,
     platformOs: profile.platformOs ?? "",
     timezone: profile.timezone,
+    locale: profile.locale ?? "",
     extensions: profile.extensions ?? [],
     tags: (profile.tags ?? []).join(", "),
     cookieCount: profile.cookies.length,
@@ -119,6 +122,7 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
     }
     profile.platformOs = platformOs;
   }
+  if ("locale" in set) profile.locale = normalizeProfileLocale(set.locale) ?? profile.locale;
   if ("timezone" in set) {
     profile.timezone = parseStrictTimezone(set.timezone);
     syncFirefoxTimezone(profile);
@@ -209,11 +213,12 @@ export class CloudProfileEditor {
       if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
     }
     const proxyChanged = applyEdits(profile, set);
-    if (proxyChanged && profile.proxy && profile.engine !== "firefox" && !("timezone" in set)) {
-      await attachTimezones([profile], this.timezoneFetch).catch(() => {});
+    if (proxyChanged && profile.proxy && !("timezone" in set)) {
+      await attachTimezones([profile], this.timezoneFetch, !("locale" in set)).catch(() => {});
+      syncFirefoxTimezone(profile);
     }
 
-    const encoded = encodePortableProfile(profile, JSON.stringify(authoritative.payload.session));
+    const encoded = encodePortableProfile(completeProfileFingerprint(profile), JSON.stringify(authoritative.payload.session));
     const encodedProfile = {
       ...authoritative.payload.profile,
       ...encoded.profile,

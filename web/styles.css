@@ -363,6 +363,16 @@ button:disabled { cursor: default; }
 .platform-pill .glyph.pm-tiktok { background: #0b0b0b; }
 .platform-pill .glyph.pm-linkedin { background: #0a66c2; }
 .platform-pill .glyph.pm-reddit { background: #ff4500; }
+.platform-pill .glyph.pm-youtube { background: #ff0000; }
+.platform-pill .glyph.pm-threads { background: #0b0b0b; }
+.platform-pill .glyph.pm-pinterest { background: #bd081c; }
+.platform-pill .glyph.pm-snapchat { background: #fffc00; color: #0b0b0b; }
+.platform-pill .glyph.pm-discord { background: #5865f2; }
+.platform-pill .glyph.pm-twitch { background: #9146ff; }
+.platform-pill .glyph.pm-gmail { background: #ea4335; }
+.platform-pill .glyph.pm-amazon { background: #232f3e; }
+.platform-pill .glyph.pm-ebay { background: #e53238; }
+.platform-pill .glyph.pm-etsy { background: #f16521; }
 .platform-pill .glyph.pm-other { background: var(--faint); }
 
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #cbd5e1; }
@@ -518,7 +528,9 @@ button:disabled { cursor: default; }
 .newrow .importbtn { width: 100%; height: 36px; padding: 0; }
 
 /* Primary navigation. */
-.sidenav { display: flex; flex-direction: column; gap: 2px; padding: 0 2px; }
+.sidenav { display: flex; flex-direction: column; gap: 2px; padding: 0 2px; min-height: 0; overflow-y: auto; }
+/* Rail tooltips extend past the navigation box. */
+.sidebar.collapsed .sidenav { overflow: visible; }
 .navitem {
   display: flex; align-items: center; gap: 10px; width: 100%;
   padding: 8px 10px; border: 0; border-radius: var(--r-md);
@@ -542,8 +554,22 @@ a.navitem { box-sizing: border-box; text-decoration: none; cursor: pointer; }
   font-size: 11px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
 }
 .navitem.active .cnt { color: var(--accent-ink); background: var(--raised); }
+/* Buy-proxies cart beside the Proxies item. A sibling of the button, since a
+   link cannot nest inside one. */
+.navrow { position: relative; }
+.navbuy {
+  position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+  display: grid; place-items: center; width: 26px; height: 26px;
+  color: var(--accent); border-radius: var(--r-sm);
+  transition: background .12s ease, color .12s ease;
+}
+.navbuy:hover { color: var(--on-fill); background: var(--accent-fill); }
+.navbuy:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.sidebar.collapsed .navbuy { display: none; }
 
 .sidesection { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; margin-top: 16px; padding: 0 2px; }
+/* Keep two folder rows usable; navigation gives up height first. */
+.sidesection:has(.folders) { min-height: 140px; }
 .sidehead {
   display: flex; align-items: center; gap: 6px; width: 100%;
   padding: 5px 10px; border: 0; background: none;
@@ -574,7 +600,16 @@ a.navitem { box-sizing: border-box; text-decoration: none; cursor: pointer; }
   font-size: 11px; font-weight: 600; text-align: center; font-variant-numeric: tabular-nums;
 }
 .folder.active .cnt { color: var(--accent-ink); background: var(--raised); }
-.folder .gactions { display: none; gap: 1px; }
+.folder .gactions { display: inline-flex; gap: 1px; }
+.folder-select, .folder-toggle { padding: 0; border: 0; background: none; text-align: left; }
+.folder-toggle { flex: 0 0 auto; }
+.folder .gactions .folder-menu { position: fixed; min-width: 190px; }
+.folder .gactions .folder-menu button { width: 100%; height: auto; padding: 8px 9px; justify-content: flex-start; }
+.folder-breadcrumb { display: flex; flex-wrap: wrap; align-items: center; padding: 8px 14px 0; color: var(--muted); }
+.grant-control { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.grant-control small { color: var(--muted); }
+.newgroup:has(small) { flex-wrap: wrap; }
+.newgroup > small { width: 100%; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .folder:hover .gactions { display: inline-flex; }
 .folder:hover .cnt { display: none; }
 .folder .gactions button {
@@ -981,16 +1016,30 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .proxy-check-result.failed { color: var(--danger-ink); background: var(--danger-soft); border-color: var(--danger-line); }
 .proxy-check-result.unavailable { color: var(--muted); background: var(--surface-sunken); border-color: var(--line); }
 .proxy-referral {
-  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
-  padding: 10px 11px; background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: var(--r-md);
+  display: flex; align-items: center; gap: 11px;
+  padding: 10px 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-md); text-decoration: none;
+  transition: background .12s ease, border-color .12s ease;
 }
-.proxy-referral strong { flex: 1 1 270px; min-width: 0; color: var(--ink); font-size: 12.5px; }
-.proxy-referral a {
-  flex: 0 0 auto; padding: 6px 10px; color: var(--on-fill); background: var(--accent-fill); border: 1px solid var(--accent-fill);
-  border-radius: var(--r-sm); font-size: 12px; font-weight: 650; text-decoration: none; white-space: nowrap;
+.proxy-referral:hover { background: var(--accent-soft); border-color: var(--accent-line); }
+.proxy-referral:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.proxy-referral-icon {
+  display: grid; place-items: center; flex: 0 0 32px; height: 32px;
+  color: var(--accent); background: var(--accent-soft); border-radius: var(--r-sm);
 }
-.proxy-referral a:hover { background: var(--accent-fill-hover); border-color: var(--accent-fill-hover); }
-.proxy-referral a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.proxy-referral:hover .proxy-referral-icon { background: var(--raised); }
+.proxy-referral-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; }
+.proxy-referral-text strong { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12.5px; font-weight: 650; }
+.proxy-referral-text small { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.proxy-referral-tag {
+  padding: 1px 7px; color: var(--accent-ink); background: var(--accent-soft); border: 1px solid var(--accent-line);
+  border-radius: var(--r-pill); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap;
+}
+.proxy-referral-go { color: var(--muted); font-size: 14px; }
+/* Offer shown above the profile list after an import, with a dismiss button. */
+.import-offer { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; padding: 0 14px 12px; }
+.import-offer .proxy-referral { flex: 1; min-width: 0; }
+.proxy-referral:hover .proxy-referral-go { color: var(--accent); }
 
 /* Remote MCP settings card (Cloud mode). Fields/buttons reuse .fld and .btn;
    only the status pill and connect guide need their own rules. */
@@ -1450,6 +1499,15 @@ td.col-tags .chip + .chip { margin-left: 4px; }
    (with Action pinned right), and the column chooser is the only thing that
    decides what is on screen. Below 760px the app forces the sidebar into the
    icon rail (RAIL_MEDIA in app.tsx) rather than hiding navigation. */
+/* Short windows and display scaling need folder space more than decoration. */
+@media (max-height: 720px) {
+  .sidebar { padding-top: 10px; padding-bottom: 10px; }
+  .sidebar .brandrow, .sidebar .newrow { padding-bottom: 8px; }
+  .sidebar .navitem { padding-top: 6px; padding-bottom: 6px; }
+  .sidesection { margin-top: 8px; }
+  .sidebar .sidefoot { margin-top: 6px; padding-top: 6px; }
+  .sidecredit { display: none; }
+}
 @media (max-width: 920px) {
   :root { --sidebar-w: 200px; }
   .workspace { margin: 10px auto; width: calc(100% - 20px); }
@@ -1583,9 +1641,10 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 :root[data-theme="dark"] .btn.primary .icon,
 :root[data-theme="dark"] .btn.solid-danger .icon { color: currentColor; }
 
-/* Two brand marks are near-black and would vanish against a dark row. */
+/* Three brand marks are near-black and would vanish against a dark row. */
 :root[data-theme="dark"] .platform-pill .glyph.pm-x,
-:root[data-theme="dark"] .platform-pill .glyph.pm-tiktok {
+:root[data-theme="dark"] .platform-pill .glyph.pm-tiktok,
+:root[data-theme="dark"] .platform-pill .glyph.pm-threads {
   background: #f4f4f5; color: #0b0b0b;
 }
 

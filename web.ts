@@ -6,6 +6,7 @@
  * server.ts / ui.ts) never trigger React bundling.
  */
 
+import { join } from "node:path";
 import index from "./web/index.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
@@ -27,9 +28,13 @@ import {
   type BrowserLifecycleContext,
 } from "./server.ts";
 import { handleUiRequest, type UiHealthMetadata } from "./ui.ts";
-import { ScriptLibrary, ScriptSupervisor } from "./scripts.ts";
+import { ScriptLibrary, ScriptSupervisor, prefetchPythonFor } from "./scripts.ts";
+import { PythonRuntime } from "./python-runtime.ts";
+import { resolvePlaywrightRuntime } from "./playwright-runtime.ts";
 
 import { handleUserApi, type ProfileRoster } from "./adspower-users.ts";
+import { CloudProfileEditor } from "./cloud-profile-editor.ts";
+import { defaultProfileEngine } from "./create.ts";
 import {
   AGENT_CONTROL_MAX_MESSAGE_BYTES,
   AGENT_CONTROL_PATH,
@@ -89,7 +94,10 @@ function renderProfileCard(store: ProfileStore, id: string): Response {
   const p = store.getProfile(id);
   if (!p) return new Response("unknown profile", { status: 404, headers: { "content-type": "text/plain" } });
   const engine = typeof p === "object" && "engine" in p && p.engine === "firefox" ? "firefox" : "chromium";
-  const browser = engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser";
+  // Named as in the dashboard: Chromium 155 is AliasMode Chromium where it is the default engine.
+  const browser = engine === "firefox" ? "AliasMode Firefox"
+    : !p.chromiumRuntime ? "CloakBrowser"
+    : defaultProfileEngine() === "chromium" ? "AliasMode Chromium" : "Chromium 155 beta";
   const capabilities = engine === "firefox"
     ? "Native Firefox profile · no CDP, PDF, or Chrome extensions"
     : "CDP, PDF, and Chrome extensions";
@@ -155,11 +163,12 @@ function automationHealthResponse(
   return handleAutomationHealthSnapshot(req, remote);
 }
 
-/** AdsPower list/create routes backed by Cloud folders and profiles. */
+/** AdsPower list/create/update routes backed by Cloud folders and profiles. */
 function isCloudProfileRoute(req: Request): boolean {
   const pathname = new URL(req.url).pathname;
   return (req.method === "GET" && (pathname === "/api/v1/group/list" || pathname === "/api/v1/user/list")) ||
-    (req.method === "POST" && (pathname === "/api/v1/group/create" || pathname === "/api/v1/user/create"));
+    (req.method === "POST" && (pathname === "/api/v1/group/create" || pathname === "/api/v1/user/create" ||
+      pathname === "/api/v1/user/update"));
 }
 
 async function handleAutomationRequest(
@@ -183,6 +192,22 @@ async function handleAutomationRequest(
           if (!(await listGroups()).includes(name)) await opts.cloudConnection!.client.createFolder(name);
         },
         createProfile: (profile) => cloudBrowser.create(profile),
+        // Same paths as the Edit dialog: a profile open on this device is edited
+        // live and its session sync carries the change; a closed one is saved to Cloud.
+        updateProfile: async (id, edits) => {
+          if (cloudBrowser.canEditLive?.(id) === true) {
+            const live = store.getProfile(id);
+            if (!live) throw new Error(`no such profile: ${id}`);
+            if (!(await cloudBrowser.commitLiveEdit?.({ ...live, ...edits }))) {
+              throw new Error("the browser just closed; retry the update");
+            }
+            return;
+          }
+          if (!opts.cloudConnection) throw new Error("Cloud connection is unavailable");
+          const editor = new CloudProfileEditor(opts.cloudConnection.client, store);
+          const { expectedVersion } = await editor.get(id);
+          await editor.save(id, expectedVersion, edits);
+        },
       };
       const users = await handleUserApi(req, launcher, store, null, undefined, roster);
       if (users) return users;
@@ -260,13 +285,22 @@ export function serveDashboard(opts: DashboardServerOptions) {
       })
     : undefined;
   const library = agentNonce && opts.paths ? new ScriptLibrary(opts.paths.root, runtimeMode === "cloud", opts.cloudConnection, opts.defaultCloudUrl) : undefined;
+  // The desktop app downloads Python for Python scripts; a source checkout uses python3.
+  const python = library && resolvePlaywrightRuntime().kind === "packaged"
+    ? new PythonRuntime(join(opts.paths!.root, "runtimes"), { log })
+    : undefined;
   const scripts = library && agentNonce ? {
-    library, nonce: agentNonce,
+    library, nonce: agentNonce, python,
     runner: new ScriptSupervisor({
-      root: opts.paths!.root, library, launcher, store, admission,
+      root: opts.paths!.root, library, launcher, store, admission, python,
       remote: opts.remote, cloudBrowser: opts.cloudBrowser, cloudConnection: opts.cloudConnection, log,
     }),
   } : undefined;
+  if (library && python) {
+    python.prune();
+    // A user who already has a Python script gets the runtime before the first run.
+    void library.list().then((items) => prefetchPythonFor(python, items), () => {});
+  }
   const server = Bun.serve<AgentSocketData>({
     port,
     hostname,

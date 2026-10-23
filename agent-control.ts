@@ -1,5 +1,7 @@
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { callFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
+import { attachTimezones } from "./geoip.ts";
 import type { CloudConnectionRuntime } from "./cloud-connection.ts";
 import { CloudApiError } from "./cloud-client.ts";
 import {
@@ -387,10 +389,15 @@ export class AgentControlSession {
     const input = object(params.input ?? {});
     const temporary = params.temporary === true;
     let id: string;
+    if (this.deps.remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
     if (this.deps.remote) {
       id = (await this.deps.remote.createProfile(input as NewProfileInput)).id;
     } else {
       const profile = buildNewProfile(input as NewProfileInput, (candidate) => !!this.deps.store.getProfile(candidate));
+      if (profile.proxy) {
+        await attachTimezones([profile], undefined, true).catch(() => {});
+        syncFirefoxTimezone(profile);
+      }
       if (this.deps.cloudBrowser) {
         id = (await this.deps.cloudBrowser.create(profile)).id;
       } else {

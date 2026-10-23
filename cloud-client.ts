@@ -25,6 +25,7 @@ import {
   type ImportProfilesRequest,
   type ImportProfilesResponse,
   type SetFolderGrantResponse,
+  type SetProfileGrantResponse,
   type SetFolderExtensionDefaultsRequest,
   type SetFolderExtensionDefaultsResponse,
   type ListFoldersResponse,
@@ -95,6 +96,19 @@ export interface CloudClientOptions {
   requestTimeoutMs?: number;
 }
 
+async function readResponseText(response: Response, progress: () => void): Promise<string> {
+  if (!response.body) return response.text();
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) return text + decoder.decode();
+    progress();
+    text += decoder.decode(value, { stream: true });
+  }
+}
+
 interface CallResponseOptions<T> {
   anonymous?: boolean;
   notModified?: () => T;
@@ -106,6 +120,7 @@ export class CloudClient {
   private readonly fetchFn: CloudFetch;
   private readonly requestTimeoutMs: number;
   private profileRoster?: { etag: string; response: ListProfilesResponse };
+  private rosterInFlight?: Promise<ListProfilesResponse>;
 
   constructor(private readonly options: CloudClientOptions) {
     this.baseUrl = normalizeSecureServiceUrl(options.baseUrl, "AliasMode Cloud");
@@ -136,18 +151,24 @@ export class CloudClient {
     if (upstreamSignal?.aborted) abortFromUpstream();
     else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
 
+    // The limit covers silence, not total transfer time: a large roster on a
+    // slow link keeps arriving and must not fail only because it needs longer.
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
+    let rejectTimeout!: (error: CloudRequestError) => void;
+    const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
+    const restartTimeout = () => {
+      if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         const error = new CloudRequestError(
           `AliasMode Cloud request ${path} timed out after ${this.requestTimeoutMs}ms`,
           { kind: "timeout", retryable: true },
         );
         controller.abort(error);
-        reject(error);
+        rejectTimeout(error);
       }, this.requestTimeoutMs);
       if (timer && typeof timer === "object" && "unref" in timer) timer.unref();
-    });
+    };
+    restartTimeout();
 
     try {
       const request = Promise.resolve().then(async () => {
@@ -165,6 +186,7 @@ export class CloudClient {
             { cause: error },
           );
         }
+        restartTimeout();
         if (response.status === 304) {
           if (!responseOptions.notModified) {
             throw new Error(`AliasMode Cloud ${path} returned an unexpected not-modified response`);
@@ -173,7 +195,7 @@ export class CloudClient {
         }
         let text: string;
         try {
-          text = await response.text();
+          text = await readResponseText(response, restartTimeout);
         } catch (error) {
           throw new CloudRequestError(
             `AliasMode Cloud response ${path} could not be read`,
@@ -269,8 +291,24 @@ export class CloudClient {
     return this.call("/workspace/folders");
   }
 
-  createFolder(name: string): Promise<{ ok: true; folder: CloudFolder }> {
-    return this.call("/workspace/folders", { method: "POST", body: JSON.stringify({ name }) });
+  createFolder(name: string, parentName?: string | null): Promise<{ ok: true; folder: CloudFolder }> {
+    return this.call("/workspace/folders", { method: "POST", body: JSON.stringify({ name, parentName }) });
+  }
+
+  moveFolder(name: string, parentName: string | null): Promise<{ ok: true; folder: CloudFolder }> {
+    return this.call(`/workspace/folders/${encodeURIComponent(name)}/move`, {
+      method: "POST", body: JSON.stringify({ parentName }),
+    });
+  }
+
+  setProfileGrant(profileId: string, accountId: string, permission: FolderPermission): Promise<SetProfileGrantResponse> {
+    return this.call(`/profiles/${encodeURIComponent(profileId)}/grants/${encodeURIComponent(accountId)}`, {
+      method: "PUT", body: JSON.stringify({ permission }),
+    });
+  }
+
+  removeProfileGrant(profileId: string, accountId: string): Promise<{ ok: true }> {
+    return this.call(`/profiles/${encodeURIComponent(profileId)}/grants/${encodeURIComponent(accountId)}`, { method: "DELETE" });
   }
 
   renameFolder(name: string, nextName: string): Promise<{ ok: true; folder: CloudFolder }> {
@@ -308,7 +346,7 @@ export class CloudClient {
       `/workspace/folders/${encodeURIComponent(name)}/extensions`,
       { method: "PUT", body: JSON.stringify(request) },
     );
-    this.profileRoster = undefined;
+    this.forgetRoster();
     return response;
   }
 
@@ -373,9 +411,12 @@ export class CloudClient {
   }
 
   listProfiles(): Promise<ListProfilesResponse> {
+    // Callers share one download: on a slow link a large roster takes longer
+    // than the dashboard poll, and parallel copies split the bandwidth.
+    if (this.rosterInFlight) return this.rosterInFlight;
     const headers = new Headers();
     if (this.profileRoster) headers.set("if-none-match", this.profileRoster.etag);
-    return this.call("/profiles", { headers }, {
+    const request = this.call<ListProfilesResponse>("/profiles", { headers }, {
       notModified: () => {
         if (!this.profileRoster) throw new Error("AliasMode Cloud profile roster cache is empty");
         return this.profileRoster.response;
@@ -384,7 +425,17 @@ export class CloudClient {
         const etag = response.headers.get("etag");
         this.profileRoster = etag ? { etag, response: body } : undefined;
       },
+    }).finally(() => {
+      if (this.rosterInFlight === request) this.rosterInFlight = undefined;
     });
+    this.rosterInFlight = request;
+    return request;
+  }
+
+  /** After a write, the next roster must be a new fetch, not the cached or in-flight one. */
+  private forgetRoster(): void {
+    this.profileRoster = undefined;
+    this.rosterInFlight = undefined;
   }
 
   listProfileProxies(signal?: AbortSignal): Promise<ListProfileProxiesResponse> {
@@ -439,7 +490,7 @@ export class CloudClient {
       method: "POST",
       body: JSON.stringify(request),
     });
-    this.profileRoster = undefined;
+    this.forgetRoster();
     return response;
   }
 
@@ -448,7 +499,7 @@ export class CloudClient {
       method: "POST",
       body: JSON.stringify(request),
     });
-    if (!request.dryRun) this.profileRoster = undefined;
+    if (!request.dryRun) this.forgetRoster();
     return response;
   }
 

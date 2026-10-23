@@ -1,29 +1,57 @@
-﻿import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import enUS from "./locales/en-US.json";
-import zhCN from "./locales/zh-CN.json";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { fetchShellLanguage, saveShellLanguage } from "./api.ts";
+import { catalogs } from "./locales/registry.ts";
+// ── Adding a new language ─────────────────────────────────────────────
+// Drop `<bcp47>.json` into `web/locales/` (copy `en-US.json` as a template;
+// keep the same keys — English is the automatic fallback for missing keys),
+// then run `bun run i18n:locales` to regenerate the registry. That's it.
+// (Static imports are required: the desktop app compiles to a binary, so the
+// bundler must see every locale at build time — runtime glob/discovery is
+// not available in this stack. The registry is auto-generated, so translators
+// never touch TypeScript.)
 
-export type Language = "en-US" | "zh-CN";
+export type Language = string;
 
 const LANGUAGE_KEY = "aliasmode.shell.language";
+const FALLBACK_LANGUAGE = "en-US";
 
-const catalogs: Record<Language, Record<string, string>> = {
-  "en-US": enUS as Record<string, string>,
-  "zh-CN": zhCN as Record<string, string>,
-};
+function isKnownLanguage(value: unknown): value is string {
+  return typeof value === "string" && Object.hasOwn(catalogs, value);
+}
 
-export function readLanguage(): Language {
+/** Pick the first bundled locale that matches the system's preferred languages:
+ *  exact tag first ("zh-CN"), then the primary language ("zh", "zh-Hans-CN" → "zh-CN"). */
+export function detectLanguage(preferred: readonly string[], known: readonly string[]): string | null {
+  for (const tag of preferred) {
+    const exact = known.find((lang) => lang.toLowerCase() === tag.toLowerCase());
+    if (exact) return exact;
+  }
+  for (const tag of preferred) {
+    const primary = tag.split("-")[0]!.toLowerCase();
+    const match = known.find((lang) => lang.split("-")[0]!.toLowerCase() === primary);
+    if (match) return match;
+  }
+  return null;
+}
+
+export function readLanguage(): string {
   try {
     const saved = localStorage.getItem(LANGUAGE_KEY);
-    if (saved === "zh-CN" || saved === "en-US") return saved;
+    if (isKnownLanguage(saved)) return saved;
   } catch {}
-  return "en-US";
+  try {
+    const detected = detectLanguage(navigator.languages ?? [navigator.language], Object.keys(catalogs));
+    if (detected) return detected;
+  } catch {}
+  return FALLBACK_LANGUAGE;
 }
 
 type TranslationValues = Record<string, string | number>;
 type TranslationContextValue = {
-  language: Language;
-  setLanguage: (language: Language) => void;
+  language: string;
+  setLanguage: (language: string) => void;
+  /** Translate `source`. Missing keys fall back to the English catalog, then
+   *  to the key itself. Supports `{name}` / `{{name}}` placeholders. */
   t: (source: string, values?: TranslationValues) => string;
 };
 
@@ -36,18 +64,32 @@ function format(source: string, values?: TranslationValues): string {
   );
 }
 
+/** Pure translation lookup: current language → English fallback → key itself.
+ *  Exported for unit tests. */
+export function translate(
+  tables: Record<string, Record<string, string>>,
+  language: string,
+  source: string,
+  values?: TranslationValues,
+): string {
+  const catalog = tables[language] ?? tables[FALLBACK_LANGUAGE]!;
+  const translated = catalog[source] ?? tables[FALLBACK_LANGUAGE]![source] ?? source;
+  return format(translated, values);
+}
+
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [language, setLanguageState] = useState<Language>(readLanguage);
+  const [language, setLanguageState] = useState<string>(readLanguage);
   // The desktop shell serves the UI from a random loopback port each launch,
   // and localStorage is origin-scoped, so a saved language never survives a
-  // restart in localStorage alone. Hydrate from the server-persisted value.
+  // restart in localStorage alone. Hydrate from the server-persisted value;
+  // null means the user never chose, so the system-language default stands.
   const hydratedRef = useRef(false);
   useEffect(() => {
     if (hydratedRef.current) return;
     hydratedRef.current = true;
     fetchShellLanguage()
       .then((saved) => {
-        if (saved !== readLanguage()) {
+        if (isKnownLanguage(saved) && saved !== readLanguage()) {
           setLanguageState(saved);
           try {
             localStorage.setItem(LANGUAGE_KEY, saved);
@@ -58,7 +100,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       .catch(() => {});
   }, []);
 
-  const setLanguage = (lang: Language) => {
+  const setLanguage = (lang: string) => {
+    if (!isKnownLanguage(lang)) return;
     setLanguageState(lang);
     try {
       localStorage.setItem(LANGUAGE_KEY, lang);
@@ -78,11 +121,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const value = useMemo<TranslationContextValue>(() => ({
     language,
     setLanguage,
-    t: (source, values) => {
-      const catalog = catalogs[language] || catalogs["en-US"];
-      const translated = catalog[source] ?? source;
-      return format(translated, values);
-    },
+    t: (source, values) => translate(catalogs, language, source, values),
   }), [language]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
@@ -90,25 +129,17 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
 export function useTranslation(): TranslationContextValue {
   const value = useContext(I18nContext);
-  if (!value) {
-    // Fall back to English when rendered outside a provider (e.g. in tests).
-    return {
-      language: "en-US",
-      setLanguage: () => {},
-      t: (source: string, values?: TranslationValues) => format(source, values),
-    };
-  }
+  if (!value) throw new Error("useTranslation must be used inside I18nProvider");
   return value;
 }
 
-export function availableLanguages(): Language[] {
-  return ["en-US", "zh-CN"];
+/** BCP47 codes of every bundled locale, for the language setting UI. */
+export function availableLanguages(): string[] {
+  return Object.keys(catalogs);
 }
 
+/** The language's own native name (e.g. "Русский"), for the language picker.
+ *  Read from that locale's own catalog so it never needs code changes. */
 export function languageNativeName(lang: string): string {
-  switch (lang) {
-    case "zh-CN": return "简体中文";
-    case "en-US": return "English";
-    default: return lang;
-  }
+  return catalogs[lang]?.["language.nativeName"] ?? lang;
 }

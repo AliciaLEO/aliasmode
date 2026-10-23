@@ -15,9 +15,11 @@ function requireString(value, name) {
 export function normalizeFixtureConfig(input) {
   const candidateVersion = requireString(input?.candidateVersion, "candidate version");
   const candidateTag = `v${candidateVersion}`;
-  const installerName = `AliasMode_${candidateVersion}_x64-setup.exe`;
+  // The macOS update acceptance passes its own feed and archive names.
+  const installerName = input?.installerName ?? `AliasMode_${candidateVersion}_x64-setup.exe`;
+  const manifestName = input?.manifestName ?? "latest-v2.json";
   const releaseBase = `/aliasmode/aliasmode/releases/download/${candidateTag}`;
-  const manifestRoute = `${releaseBase}/latest-v2.json`;
+  const manifestRoute = `${releaseBase}/${manifestName}`;
   const installerRoute = `${releaseBase}/${installerName}`;
   const manifestUrl = `https://github.com${manifestRoute}`;
   const installerUrl = `https://github.com${installerRoute}`;
@@ -31,6 +33,7 @@ export function normalizeFixtureConfig(input) {
     candidateTag,
     prerelease: candidateVersion.includes("-"),
     installerName,
+    manifestName,
     manifestRoute,
     installerRoute,
     manifestUrl,
@@ -51,7 +54,7 @@ export function releaseList(config) {
     body: "## Highlights\n- Signed Windows update acceptance candidate",
     assets: [
       {
-        name: "latest-v2.json",
+        name: config.manifestName,
         browser_download_url: config.manifestUrl,
       },
       {

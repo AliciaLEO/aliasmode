@@ -19,8 +19,9 @@ dependencies = [
 
 [[package]]
 name = "aliasmode-desktop"
-version = "0.1.0-beta.51"
+version = "0.1.0-beta.66"
 dependencies = [
+ "flate2",
  "hex",
  "rand",
  "reqwest",
@@ -28,6 +29,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

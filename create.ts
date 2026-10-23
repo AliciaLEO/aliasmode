@@ -11,14 +11,17 @@
  */
 
 import type { Profile, ProfileEngine, ProxySpec } from "./types.ts";
-import { createFirefoxProfileConfig } from "./firefox-config.ts";
-import { deterministicSeed, hostPlatformOs } from "./fingerprint.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, normalizeChromiumRuntime, syncFirefoxTimezone } from "./firefox-config.ts";
+import { chromiumDeviceScale, defaultChromiumRuntime, hostDisplayScale, hostDisplaySize } from "./aliasmode-chromium.ts";
+import { deterministicSeed, generateProfileHardware, hostPlatformOs } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { parseStrictCustomNo, parseStrictResolution, parsePlatformOs } from "./parse.ts";
 
 export interface NewProfileInput {
-  /** Browser identity engine. Defaults to Chromium for compatibility. */
+  /** Browser identity engine. Omitted means this computer's default engine. */
   engine?: ProfileEngine;
+  /** "aliasmode" (Chromium 155) or "cloakbrowser". Omitted means Chromium 155 where this computer can run it. */
+  chromiumRuntime?: string;
   name?: string;
   group?: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
@@ -29,7 +32,7 @@ export interface NewProfileInput {
   emailPassword?: string;
   twofa?: string;
   proxy?: { type?: string; host?: string; port?: string; user?: string; pass?: string } | null;
-  /** "1920x1080" / "1920*1080"; empty → a random realistic resolution. */
+  /** "1920x1080" / "1920*1080"; empty → a random realistic resolution no smaller than this computer's display. */
   screen?: string;
   /** Fingerprint OS override: "windows" | "macos" | "linux". Empty/omitted → host OS. */
   platformOs?: string;
@@ -52,6 +55,43 @@ function randomId(): string {
   return Array.from(bytes, (b) => (b % 36).toString(36)).join(""); // 8 base36 chars, AdsPower-ish
 }
 
+/**
+ * This computer's display as a new profile's pages would measure it, or null when unknown.
+ * Chromium 155 on Windows reports the stored screen divided by the display scale, as Chrome
+ * does there; every other engine reports the stored screen.
+ */
+export function hostScreenFloor(
+  engine: ProfileEngine,
+  chromiumRuntime: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): { width: number; height: number } | null {
+  const display = hostDisplaySize(env);
+  if (!display) return null;
+  const hostScale = hostDisplayScale(env);
+  const scale = hostScale / (engine === "chromium" ? chromiumDeviceScale(platform, chromiumRuntime, hostScale) : 1);
+  return { width: Math.round(display.width / scale), height: Math.round(display.height / scale) };
+}
+
+/**
+ * A random realistic resolution not smaller than `floor`, or `floor` itself when none is.
+ * On a smaller screen a maximized window would have to shrink to fit it.
+ */
+export function defaultScreen(floor: { width: number; height: number } | null, random = Math.random): { width: number; height: number } {
+  const fits = SCREENS.filter(([width, height]) => !floor || (width >= floor.width && height >= floor.height));
+  if (!fits.length) return floor!;
+  const [width, height] = fits[Math.floor(random() * fits.length)]!;
+  return { width, height };
+}
+
+/**
+ * The engine of a new profile that names none: AliasMode Chromium on Windows and AliasMode
+ * Firefox on macOS and Linux. CloakBrowser profiles on one computer can be linked to each other.
+ */
+export function defaultProfileEngine(platform: NodeJS.Platform = process.platform): ProfileEngine {
+  return platform === "darwin" || platform === "linux" ? "firefox" : "chromium";
+}
+
 /** A unique profile id, collision-checked against `exists`. */
 export function generateId(exists: (id: string) => boolean): string {
   for (let i = 0; i < 100; i++) {
@@ -66,27 +106,28 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
 
-  const screen = (input.screen || "").trim();
-  const selected = screen
-    ? parseStrictResolution(screen)
-    : (() => {
-      const [width, height] = SCREENS[Math.floor(Math.random() * SCREENS.length)]!;
-      return { width, height };
-    })();
-  const engine = input.engine === undefined ? "chromium" : input.engine;
+  // A named Chromium runtime implies Chromium. A CloakBrowser profile stores no runtime.
+  const engine = input.engine ?? (input.chromiumRuntime ? "chromium" : defaultProfileEngine());
   if (engine !== "chromium" && engine !== "firefox") throw new Error("unsupported profile engine");
+  const chromiumRuntime = input.chromiumRuntime
+    ? normalizeChromiumRuntime(input.chromiumRuntime, engine)
+    : engine === "chromium" ? defaultChromiumRuntime() : undefined;
+  const screen = (input.screen || "").trim();
+  const selected = screen ? parseStrictResolution(screen) : defaultScreen(hostScreenFloor(engine, chromiumRuntime));
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
-    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs)
+    ? createFirefoxProfileConfig(selected.width, selected.height, platformOs, deterministicSeed(id))
     : undefined;
   const firefoxUa = firefox?.config["navigator.userAgent"];
   const firefoxScreenWidth = firefox?.config["screen.width"];
   const firefoxScreenHeight = firefox?.config["screen.height"];
   const firefoxTimezone = firefox?.config.timezone;
 
-  return {
+  return completeProfileFingerprint({
     id,
     engine,
+    ...(chromiumRuntime ? { chromiumRuntime } : {}),
+    ...(engine === "chromium" && !chromiumRuntime ? { hardware: generateProfileHardware(deterministicSeed(id)) } : {}),
     ...(firefox ? { firefox } : {}),
     accId: "",
     name: (input.name || "").trim() || id, // AdsPower auto-names blank profiles after the id
@@ -111,5 +152,33 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     fingerprintSeed: deterministicSeed(id),
     cookies: [],
     seeded: false,
+  });
+}
+
+/**
+ * A new imported profile that names no browser, as AdsPower and other tools export it, gets the
+ * browser of every other new profile on this computer. It keeps its screen, system, seed and
+ * timezone. Chrome extensions need Chromium.
+ */
+export function withDefaultBrowser(profile: Profile): Profile {
+  const engine = profile.engine ?? (profile.extensions?.length ? "chromium" : defaultProfileEngine());
+  if (engine === "chromium") {
+    const chromiumRuntime = defaultChromiumRuntime();
+    return { ...profile, engine, ...(chromiumRuntime ? { chromiumRuntime } : {}) };
+  }
+  const platformOs = parsePlatformOs(profile.platformOs) ?? hostPlatformOs();
+  const firefox = createFirefoxProfileConfig(profile.screenWidth, profile.screenHeight, platformOs, profile.fingerprintSeed);
+  const { "navigator.userAgent": ua, "screen.width": width, "screen.height": height, timezone } = firefox.config;
+  const imported: Profile = {
+    ...profile,
+    engine,
+    firefox,
+    platformOs,
+    ua: typeof ua === "string" ? ua : "",
+    screenWidth: typeof width === "number" ? width : profile.screenWidth,
+    screenHeight: typeof height === "number" ? height : profile.screenHeight,
+    timezone: profile.timezone || (typeof timezone === "string" ? timezone : Intl.DateTimeFormat().resolvedOptions().timeZone),
   };
+  syncFirefoxTimezone(imported);
+  return completeProfileFingerprint(imported);
 }

@@ -9,9 +9,14 @@
 
 import { readdirSync, existsSync, mkdirSync, watch, statSync } from "node:fs";
 import { join } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { completeProfileFingerprint } from "./firefox-config.ts";
+import { withDefaultBrowser } from "./create.ts";
 import type { ParsedProfileImport } from "./parse.ts";
 import { parseImportFile } from "./import-formats.ts";
 import { FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
+import { attachTimezones, type FetchLike } from "./geoip.ts";
+import { proxyIdentityKey } from "./proxy.ts";
 import type { Profile } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
 
@@ -88,8 +93,11 @@ function unsafeImportError(problems: string[], status = 400): ProfileImportError
   return new ProfileImportError(`unsafe import rejected; no profiles were changed: ${problems.join("; ")}`, status);
 }
 
-function sameFirefoxConfig(a: Profile["firefox"], b: Profile["firefox"]): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+function sameFirefoxConfig(existing: Profile, incoming: Profile): boolean {
+  return isDeepStrictEqual(
+    completeProfileFingerprint(existing).firefox,
+    completeProfileFingerprint({ ...existing, firefox: incoming.firefox }).firefox,
+  );
 }
 
 /** Merge only fields actually present in an AdsPower re-export. */
@@ -118,6 +126,7 @@ function mergeExisting(existing: Profile, incoming: SourcedImport): Profile {
     if (Number.isInteger(seed) && seed >= 1 && seed <= 0xffff_ffff) out.fingerprintSeed = p.fingerprintSeed;
   }
   if (present.has("timezone") && p.timezone) out.timezone = p.timezone;
+  if (present.has("locale") && p.locale) out.locale = p.locale;
   if (present.has("platform_os") && p.platformOs) out.platformOs = p.platformOs;
   if (present.has("extensions")) out.extensions = [...(p.extensions ?? [])];
   if (present.has("tags")) out.tags = [...(p.tags ?? [])];
@@ -132,6 +141,10 @@ function mergeExisting(existing: Profile, incoming: SourcedImport): Profile {
       ? { ...p.proxy, type: existing.proxy.type }
       : p.proxy;
     delete out.proxyError;
+    // A resolved timezone belongs to a new proxy. An unchanged proxy or a failed lookup keeps the saved one.
+    if (p.timezone && existing.engine !== "firefox" && proxyIdentityKey(out.proxy) !== proxyIdentityKey(existing.proxy)) {
+      out.timezone = p.timezone;
+    }
   }
   return out;
 }
@@ -145,9 +158,11 @@ export interface PreparedImportBatch {
 /** Decode, parse, validate, override, and enrich uploaded profile exports. */
 export async function prepareImportBuffers(
   files: { name: string; bytes: Uint8Array }[],
-  _log: (msg: string) => void = console.log,
+  log: (msg: string) => void = console.log,
   overrides: ImportOverrides = {},
   exists: (id: string) => boolean = () => false,
+  timezoneFetch?: FetchLike,
+  saved: (id: string) => Profile | null = () => null,
 ): Promise<PreparedImportBatch> {
   let cookiesStripped = 0;
   let skipped = 0;
@@ -176,6 +191,27 @@ export async function prepareImportBuffers(
   }
   if (problems.length) throw unsafeImportError(problems);
 
+  // Look up the proxy the merge will save, and only when it differs from the saved one.
+  // Firefox keeps its saved configuration, which an import cannot change.
+  const toResolve = collected.flatMap((entry) => {
+    const current = saved(entry.profile.id);
+    const proxy = current ? mergeExisting(current, entry).proxy : entry.profile.proxy;
+    if (!entry.presentFields.includes("proxy") || !proxy || entry.profile.timezone || (current ?? entry.profile).engine === "firefox") return [];
+    if (current && proxyIdentityKey(proxy) === proxyIdentityKey(current.proxy)) return [];
+    return [{ entry, profile: { ...entry.profile, proxy } }];
+  });
+  const { resolved } = await attachTimezones(toResolve.map((item) => item.profile), timezoneFetch);
+  for (const { entry, profile } of toResolve) Object.assign(entry.profile, { timezone: profile.timezone, locale: profile.locale });
+  if (toResolve.length) log(`import: resolved timezone for ${resolved}/${toResolve.length} supplied proxy/proxies`);
+
+  // A new profile whose import names no browser gets this computer's default. Stored
+  // hardware belongs to CloakBrowser. A saved profile never changes its browser.
+  for (const entry of collected) {
+    if (saved(entry.profile.id) || entry.profile.engine === "firefox" || entry.profile.hardware) continue;
+    if (entry.sourceFields.chromium_runtime?.trim()) continue;
+    entry.profile = withDefaultBrowser(entry.profile);
+  }
+
   return {
     imports: collected,
     profiles: collected.map((entry) => entry.profile),
@@ -195,8 +231,9 @@ export async function importBuffers(
   overrides: ImportOverrides = {},
   /** Optional hub-side lock/CAS guard, called synchronously immediately before the atomic write. */
   beforeCommit?: (profiles: readonly Profile[]) => void,
+  timezoneFetch?: FetchLike,
 ): Promise<InboxResult> {
-  const batch = await prepareImportBuffers(files, log, overrides, (id) => !!store.getProfile(id) || store.isTrashed(id));
+  const batch = await prepareImportBuffers(files, log, overrides, (id) => !!store.getProfile(id) || store.isTrashed(id), timezoneFetch, (id) => store.getProfile(id));
   const collected = batch.imports;
   const trashedIds = collected.map((entry) => entry.profile.id).filter((id) => store.isTrashed(id));
   if (trashedIds.length) throw unsafeImportError([
@@ -204,7 +241,7 @@ export async function importBuffers(
   ], 409);
   const problems: string[] = [];
 
-  // All parsing and validation completed before this point. No await occurs
+  // All parsing, validation and timezone lookups completed before this point. No await occurs
   // between reading the current rows and committing the merged batch.
   const prepared: Profile[] = [];
   for (const entry of collected) {
@@ -217,9 +254,15 @@ export async function importBuffers(
     if (present.has("engine") || present.has("firefox_config")) {
       if ((entry.profile.engine ?? "chromium") !== (existing.engine ?? "chromium")) {
         problems.push(`${entry.source}: profile ${entry.profile.id}: profile engine cannot change in place`);
-      } else if (existing.engine === "firefox" && !sameFirefoxConfig(existing.firefox, entry.profile.firefox)) {
+      } else if (existing.engine === "firefox" && !sameFirefoxConfig(existing, entry.profile)) {
         problems.push(`${entry.source}: profile ${entry.profile.id}: Firefox config cannot change through import`);
       }
+    }
+    if (present.has("chromium_runtime") && (entry.profile.chromiumRuntime ?? "") !== (existing.chromiumRuntime ?? "")) {
+      problems.push(`${entry.source}: profile ${entry.profile.id}: Chrome version cannot change through import`);
+    }
+    if (present.has("hardware_cores") && (entry.profile.hardware?.cores ?? 0) !== (existing.hardware?.cores ?? 0)) {
+      problems.push(`${entry.source}: profile ${entry.profile.id}: stored hardware cannot change through import`);
     }
     if (present.has("proxy") && !entry.profile.proxy && (existing.proxy || existing.proxyError)) {
       problems.push(`${entry.source}: profile ${entry.profile.id}: blank proxy would erase the stored proxy; use profile edit to remove it explicitly`);

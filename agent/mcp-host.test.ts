@@ -181,13 +181,23 @@ test("MCP profile creation forwards the selected browser engine", async () => {
   const tool = (await client.listTools()).tools.find((tool) => tool.name === "aliasmode_profile_create");
   expect(tool?.inputSchema).toMatchObject({
     additionalProperties: false,
-    properties: { engine: { type: "string", enum: ["chromium", "firefox"] } },
+    properties: {
+      engine: { type: "string", enum: ["chromium", "firefox"] },
+      chromiumRuntime: { type: "string", enum: ["aliasmode", "cloakbrowser"] },
+    },
   });
+  expect(tool?.description).toContain("Without engine, Windows creates an AliasMode Chromium profile, and macOS and Linux create an AliasMode Firefox profile.");
   const created = await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Firefox", engine: "firefox" } });
   expect(created.isError).not.toBe(true);
   expect(runtime.calls.at(-1)).toEqual({
     method: "profiles.create",
     params: { input: { name: "Firefox", engine: "firefox" }, temporary: false },
+  });
+  // An explicit CloakBrowser request reaches the runtime unchanged.
+  await client.callTool({ name: "aliasmode_profile_create", arguments: { name: "Cloak", chromiumRuntime: "cloakbrowser" } });
+  expect(runtime.calls.at(-1)).toEqual({
+    method: "profiles.create",
+    params: { input: { name: "Cloak", chromiumRuntime: "cloakbrowser" }, temporary: false },
   });
 
   await client.close();

@@ -1,10 +1,17 @@
-import { test, expect } from "bun:test";
+import { afterEach, beforeEach, test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ProfileStore } from "./store.ts";
 import { importBuffers, importInbox, prepareImportBuffers } from "./inbox.ts";
-import { parseExport, serializeAdsTxt } from "./parse.ts";
+import { parseExport, serializeAdsTxt, serializeXlsxRows } from "./parse.ts";
+import { buildNewProfile } from "./create.ts";
+import { writeXlsx } from "./xlsx.ts";
+
+// Imports look up proxy timezones; answer them locally so tests stay offline.
+const realFetch = globalThis.fetch;
+beforeEach(() => { globalThis.fetch = (async () => Response.json({ status: "fail" })) as unknown as typeof fetch; });
+afterEach(() => { globalThis.fetch = realFetch; });
 
 const REC = (id: string) => `id=${id}
 name=acct-${id}
@@ -125,8 +132,8 @@ test("Firefox re-imports preserve the saved config and reject identity replaceme
     engine: "firefox" as const,
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", nested: { value: true } },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", nested: { value: true } },
     },
   };
   store.upsertProfile(original);
@@ -164,7 +171,7 @@ test("sparse Local imports preserve timezones for Chromium and Firefox", async (
     timezone: "Europe/London",
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
+      runtimeVersion: "156.0.1-beta.36",
       config: { timezone: "Europe/London" },
     },
   };
@@ -242,21 +249,42 @@ test("an explicit imported timezone is retained without a lookup", async () => {
   expect(logs.some((message) => message.includes("resolved timezone"))).toBe(false);
 });
 
-test("a proxy import preserves an existing timezone without a lookup", async () => {
+test("a proxy import sets the new proxy's timezone and keeps the saved one when the lookup fails", async () => {
+  for (const [row, timezone] of [[{ status: "success", timezone: "Europe/Paris" }, "Europe/Paris"], [{ status: "fail" }, "America/Los_Angeles"]] as const) {
+    const store = new ProfileStore(":memory:");
+    const original = parseExport(REC("existing")).profiles[0]!;
+    original.timezone = "America/Los_Angeles";
+    store.upsertProfile(original);
+    const logs: string[] = [];
+
+    await importBuffers(store, [{
+      name: "proxy.txt",
+      bytes: new TextEncoder().encode(`id=${original.id}\nproxytype=http\nproxy=8.8.8.8:8080:user:pass\n******************`),
+    }], (message) => logs.push(message), {}, undefined, async () => ({ json: async () => row }));
+
+    expect(store.getProfile(original.id)).toMatchObject({
+      proxy: { host: "8.8.8.8", port: "8080" },
+      timezone,
+    });
+    expect(logs).toContain(`import: resolved timezone for ${timezone === "Europe/Paris" ? 1 : 0}/1 supplied proxy/proxies`);
+    store.close();
+  }
+});
+
+test("re-importing an unchanged proxy keeps the saved timezone without a lookup", async () => {
   const store = new ProfileStore(":memory:");
   const original = parseExport(REC("existing")).profiles[0]!;
   original.timezone = "America/Los_Angeles";
   store.upsertProfile(original);
+  let lookups = 0;
 
-  await importBuffers(store, [{
-    name: "proxy.txt",
-    bytes: new TextEncoder().encode(`id=${original.id}\nproxytype=http\nproxy=8.8.8.8:8080:user:pass\n******************`),
-  }], () => {});
-
-  expect(store.getProfile(original.id)).toMatchObject({
-    proxy: { host: "8.8.8.8", port: "8080" },
-    timezone: "America/Los_Angeles",
+  await importBuffers(store, [{ name: "refresh.txt", bytes: new TextEncoder().encode(REC("existing")) }], () => {}, {}, undefined, async () => {
+    lookups++;
+    return { json: async () => ({ status: "success", timezone: "Europe/Paris" }) };
   });
+
+  expect(lookups).toBe(0);
+  expect(store.getProfile(original.id)!.timezone).toBe("America/Los_Angeles");
   store.close();
 });
 
@@ -487,4 +515,63 @@ test("importInbox creates the inbox dir when missing", async () => {
   expect(r.files).toBe(0);
   store.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+/** Runs `run` as if on Windows x64, Apple Silicon macOS, or Linux x64. */
+async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise<void>): Promise<void> {
+  const host = { platform: process.platform, arch: process.arch };
+  Object.defineProperties(process, { platform: { value: platform }, arch: { value: platform === "darwin" ? "arm64" : "x64" } });
+  try {
+    await run();
+  } finally {
+    Object.defineProperties(process, { platform: { value: host.platform }, arch: { value: host.arch } });
+  }
+}
+
+test.each([
+  ["win32", "chromium", "aliasmode"],
+  ["darwin", "firefox", undefined],
+  ["linux", "firefox", undefined],
+] as const)("on %s a new import that names no browser gets %s; an export that names one keeps it", async (platform, engine, runtime) => {
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser", name: "cloak" }, () => false);
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode", name: "beta" }, () => false);
+  const firefox = buildNewProfile({ engine: "firefox", name: "firefox" }, () => false);
+  const ours = serializeAdsTxt([cloak, beta, firefox]);
+  // A CloakBrowser export from before runtimes were named still carries its stored hardware.
+  const older = serializeAdsTxt([{ ...cloak, id: "k1older1" }]).replace(/^chromium_runtime=cloakbrowser\n/m, "");
+  expect(older).not.toContain("chromium_runtime=");
+  const sheet = serializeXlsxRows([{ ...cloak, id: "k1sheet1" }, { ...beta, id: "k1sheet2" }]);
+  const store = new ProfileStore(":memory:");
+  store.upsertProfile({ ...buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false), id: "k1saved1" });
+  const file = (name: string, text: string) => ({ name, bytes: new TextEncoder().encode(text) });
+  await onHost(platform, async () => {
+    await importBuffers(store, [
+      file("ours.txt", ours),
+      file("older.txt", older),
+      file("adspower.txt", `${REC("k1ads001")}\n${REC("k1saved1")}`),
+      { name: "ours.xlsx", bytes: await writeXlsx(sheet.headers, sheet.rows) },
+    ], () => {});
+  });
+  const browser = (id: string) => {
+    const profile = store.getProfile(id)!;
+    return [profile.engine ?? "chromium", profile.chromiumRuntime, profile.hardware?.cores];
+  };
+  expect(browser(cloak.id)).toEqual(["chromium", undefined, cloak.hardware!.cores]);
+  expect(browser(beta.id)).toEqual(["chromium", "aliasmode", undefined]);
+  expect(browser(firefox.id)).toEqual(["firefox", undefined, undefined]);
+  expect(browser("k1older1")).toEqual(["chromium", undefined, cloak.hardware!.cores]);
+  expect(browser("k1sheet1")).toEqual(["chromium", undefined, cloak.hardware!.cores]);
+  expect(browser("k1sheet2")).toEqual(["chromium", "aliasmode", undefined]);
+  // A saved profile keeps its browser.
+  expect(browser("k1saved1")).toEqual(["chromium", undefined, store.getProfile("k1saved1")!.hardware?.cores]);
+  // An AdsPower record gets this computer's default and keeps its account, screen and session.
+  const ads = store.getProfile("k1ads001")!;
+  expect([ads.engine, ads.chromiumRuntime]).toEqual([engine, runtime]);
+  expect([ads.screenWidth, ads.screenHeight]).toEqual([1680, 1050]);
+  expect(ads.cookies.map((cookie) => cookie.name)).toEqual(["auth_token"]);
+  if (engine === "firefox") {
+    expect(ads.ua).toContain("Firefox");
+    expect(ads.firefox!.config["navigator.userAgent"]).toBe(ads.ua);
+  }
+  store.close();
 });

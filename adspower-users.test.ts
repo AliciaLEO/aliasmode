@@ -163,6 +163,41 @@ test("user/create without a proxy succeeds and skips geoip", async () => {
   expect(p.group).toBe("g");
 });
 
+/** Runs `run` as if on Windows x64, Apple Silicon macOS, or Linux x64. */
+async function onHost(platform: "win32" | "darwin" | "linux", run: () => Promise<void>): Promise<void> {
+  const host = { platform: process.platform, arch: process.arch };
+  Object.defineProperties(process, { platform: { value: platform }, arch: { value: platform === "darwin" ? "arm64" : "x64" } });
+  try {
+    await run();
+  } finally {
+    Object.defineProperties(process, { platform: { value: host.platform }, arch: { value: host.arch } });
+  }
+}
+
+// The API's clients use the CDP WebSocket, so it creates Chromium 155 profiles on every computer.
+test.each(["win32", "darwin", "linux"] as const)("user/create on %s defaults to Chromium 155, and an explicit browser request wins", async (platform) => {
+  const { store, launcher } = setup();
+  const create = async (body: object) => {
+    const response = await (await handleUserApi(post("/api/v1/user/create", { name: "n", ...body }), launcher, store, null, geoip))!.json();
+    expect(response.code).toBe(0);
+    return store.getProfile(response.data.id)!;
+  };
+  await onHost(platform, async () => {
+    expect(await create({})).toMatchObject({ engine: "chromium", chromiumRuntime: "aliasmode" });
+    const cloak = await create({ chromium_runtime: "cloakbrowser" });
+    expect(cloak.engine).toBe("chromium");
+    expect(cloak.chromiumRuntime).toBeUndefined();
+    expect(await create({ engine: "chromium" })).toMatchObject({ engine: "chromium", chromiumRuntime: "aliasmode" });
+    // A Firefox profile keeps the proxy's timezone in its saved configuration.
+    const firefox = await create({
+      engine: "firefox",
+      user_proxy_config: { proxy_type: "http", proxy_host: "9.9.9.9", proxy_port: "8000" },
+    });
+    expect(firefox.engine).toBe("firefox");
+    expect(firefox.firefox!.config.timezone).toBe("America/New_York");
+  });
+});
+
 test("user/update persists the exact name and AdsPower credential fields", async () => {
   const { store, launcher } = setup();
   const before = store.getProfile("k1d0cd11")!;
@@ -225,6 +260,27 @@ test("user/update leaves omitted credentials unchanged", async () => {
     emailPassword: "existing-mail-password",
     twofa: "EXISTINGSEED",
   });
+});
+
+test("user/update sends only supplied fields to a Cloud roster", async () => {
+  const { store, launcher } = setup();
+  const updates: unknown[] = [];
+  const roster = {
+    listProfiles: async () => [],
+    updateProfile: async (id: string, edits: unknown) => { updates.push({ id, edits }); },
+  };
+  const body = await (await handleUserApi(
+    post("/api/v1/user/update", { user_id: "k1d0cd11", name: "renamed", username: "renamed", fakey: "SEED" }),
+    launcher,
+    store,
+    null,
+    undefined,
+    roster,
+  ))!.json();
+
+  expect(body.code).toBe(0);
+  expect(updates).toEqual([{ id: "k1d0cd11", edits: { name: "renamed", username: "renamed", twofa: "SEED" } }]);
+  expect(store.getProfile("k1d0cd11")!.name).toBe("acct");
 });
 
 test("user/update on an unknown id fails AdsPower-style", async () => {

@@ -101,8 +101,8 @@ test("local Firefox XLSX exports retain config through the full import path", as
     engine: "firefox" as const,
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0" },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" },
     },
   };
   const { headers, rows } = serializeXlsxRows([chromium, firefox]);

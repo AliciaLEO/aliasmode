@@ -10,6 +10,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { folderTree } from "./folders.ts";
 import type {
   CookieRecord,
   FingerprintVerdict,
@@ -19,13 +20,16 @@ import type {
   ProfileEngine,
   ProxySpec,
 } from "./types.ts";
-import { normalizeProfileEngine } from "./firefox-config.ts";
+import { completeProfileFingerprint, normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import { normalizeProfileHardware } from "./fingerprint.ts";
 import { normalizeProxySpec } from "./proxy.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { assertValidProfile } from "./profile-validation.ts";
 
 export class ProfileStore {
   private db: Database;
+  /** Called after each profile save, so the app can start the downloads that profile needs. */
+  onProfileSaved?: (profile: Profile) => void;
 
   constructor(path = "profiles.sqlite") {
     this.db = new Database(path, { create: true });
@@ -34,6 +38,8 @@ export class ProfileStore {
       CREATE TABLE IF NOT EXISTS profiles (
         id TEXT PRIMARY KEY,
         engine TEXT NOT NULL DEFAULT 'chromium',
+        chromium_runtime TEXT NOT NULL DEFAULT '',
+        hardware_json TEXT NOT NULL DEFAULT '',
         firefox_config_json TEXT NOT NULL DEFAULT '',
         acc_id TEXT NOT NULL DEFAULT '',
         name TEXT NOT NULL DEFAULT '',
@@ -47,6 +53,7 @@ export class ProfileStore {
         proxy_json TEXT,
         ua TEXT NOT NULL DEFAULT '',
         timezone TEXT NOT NULL DEFAULT '',
+        locale TEXT NOT NULL DEFAULT '',
         screen_width INTEGER NOT NULL DEFAULT 1920,
         screen_height INTEGER NOT NULL DEFAULT 1080,
         fingerprint_seed INTEGER NOT NULL,
@@ -132,6 +139,13 @@ export class ProfileStore {
     } catch {
       /* column already exists */
     }
+    for (const column of ["parent_name TEXT", "label TEXT"]) {
+      try {
+        this.db.exec(`ALTER TABLE groups ADD COLUMN ${column}`);
+      } catch {
+        /* column already exists */
+      }
+    }
     this.db.exec(`INSERT OR IGNORE INTO groups (name) SELECT DISTINCT "group" FROM profiles WHERE "group" <> '' AND trashed_at = 0`);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS agent_temporary_profiles (
@@ -153,6 +167,8 @@ export class ProfileStore {
     for (const col of [
       "engine TEXT NOT NULL DEFAULT 'chromium'",
       "firefox_config_json TEXT NOT NULL DEFAULT ''",
+      "chromium_runtime TEXT NOT NULL DEFAULT ''",
+      "hardware_json TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         this.db.exec(`ALTER TABLE profiles ADD COLUMN ${col}`);
@@ -214,6 +230,7 @@ export class ProfileStore {
     // the comparison between them.
     for (const col of [
       "platform_os TEXT NOT NULL DEFAULT ''",
+      "locale TEXT NOT NULL DEFAULT ''",
       "fp_observed_json TEXT NOT NULL DEFAULT ''",
       "fp_expected_json TEXT NOT NULL DEFAULT ''",
       "fp_verdict_json TEXT NOT NULL DEFAULT ''",
@@ -236,10 +253,54 @@ export class ProfileStore {
         /* column already exists */
       }
     }
+    this.completeClosedFingerprints();
+  }
+
+  private completeClosedFingerprints(profileId?: string): void {
+    this.transaction(() => {
+      const rows = this.db.query<any, [string | null]>(
+        `SELECT * FROM profiles WHERE (?1 IS NULL OR id = ?1)
+         AND id NOT IN (SELECT profile_id FROM launches)
+         AND (locale = '' OR engine = 'firefox')`,
+      ).all(profileId ?? null);
+      const update = this.db.query("UPDATE profiles SET locale = ?, firefox_config_json = ?, ua = ? WHERE id = ?");
+      for (const row of rows) {
+        // Corrupt identities must still fail when read, not prevent the whole store from opening.
+        let profile: Profile;
+        try { profile = completeProfileFingerprint(rowToProfile(row)); } catch { continue; }
+        const firefox = profile.firefox ? JSON.stringify(profile.firefox) : "";
+        // A Firefox engine update also changes the version in the user agent.
+        if (profile.locale !== row.locale || firefox !== row.firefox_config_json || profile.ua !== row.ua) {
+          update.run(profile.locale!, firefox, profile.ua, profile.id);
+        }
+      }
+    })();
   }
 
   close(): void {
     this.db.close();
+  }
+
+  /**
+   * Use this in place of bun:sqlite's db.transaction(). That API prepares
+   * statements that close() never finalizes, so the database file stays open
+   * after close() and Windows refuses to delete or rename it. Nested calls
+   * become savepoints, as they do there.
+   */
+  private transaction<A extends unknown[], T>(fn: (...args: A) => T): (...args: A) => T {
+    return (...args) => {
+      const nested = this.db.inTransaction;
+      this.db.exec(nested ? "SAVEPOINT store_tx" : "BEGIN");
+      try {
+        const result = fn(...args);
+        this.db.exec(nested ? "RELEASE store_tx" : "COMMIT");
+        return result;
+      } catch (error) {
+        // SQLite has already ended the transaction after some errors.
+        if (this.db.inTransaction) this.db.exec(nested ? "ROLLBACK TO store_tx; RELEASE store_tx" : "ROLLBACK");
+        throw error;
+      }
+    };
   }
 
   /** Insert or replace a profile's identity. Preserves the existing seeded flag. */
@@ -247,28 +308,45 @@ export class ProfileStore {
     // Defense in depth for direct hub/API/remote callers that bypass the import
     // parser. Invalid full-profile JSON must never reach persistent identity.
     assertValidProfile(p);
+    const existing = this.db
+      .query<{ seeded: number; trashed_at: number; engine: unknown; chromium_runtime: unknown; hardware_json: string; locale: string }, [string]>("SELECT seeded, trashed_at, engine, chromium_runtime, hardware_json, locale FROM profiles WHERE id = ?")
+      .get(p.id);
+    if (!p.locale && existing?.locale) p = { ...p, locale: existing.locale };
+    // The runtime is fixed at creation. An edit or re-import that omits it keeps it.
+    const storedRuntime = existing ? normalizeChromiumRuntime(existing.chromium_runtime, storedProfileEngine(existing.engine)) : undefined;
+    if (!p.chromiumRuntime && storedRuntime) p = { ...p, chromiumRuntime: storedRuntime };
+    // Stored hardware is fixed at creation too. An edit or re-import that omits it keeps it.
+    const storedHardware = existing?.hardware_json || "";
+    if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
+    if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
     const browser = normalizeProfileEngine(p.engine, p.firefox);
     if (p.proxy && p.proxyError) throw new Error("profile cannot contain both a valid proxy and a proxy quarantine error");
     const proxy = p.proxyError ? null : normalizeProxySpec(p.proxy);
     const proxyError = p.proxyError?.trim() ?? "";
-    const existing = this.db
-      .query<{ seeded: number; trashed_at: number; engine: unknown }, [string]>("SELECT seeded, trashed_at, engine FROM profiles WHERE id = ?")
-      .get(p.id);
     if (existing?.trashed_at) throw new Error("Profile is in Trash; restore it before importing or editing it");
     if (existing && storedProfileEngine(existing.engine) !== browser.engine) {
       throw new Error("profile engine cannot change in place");
+    }
+    const chromiumRuntime = normalizeChromiumRuntime(p.chromiumRuntime, browser.engine);
+    if (existing && storedRuntime !== chromiumRuntime) {
+      throw new Error("profile Chromium runtime cannot change in place");
+    }
+    const hardware = normalizeProfileHardware(p.hardware, browser.engine, chromiumRuntime);
+    const hardwareJson = hardware ? JSON.stringify(hardware) : "";
+    if (existing && storedHardware !== hardwareJson) {
+      throw new Error("profile hardware cannot change in place");
     }
     const seeded = existing ? existing.seeded : p.seeded ? 1 : 0;
     this.db
       .query(
         `INSERT INTO profiles
-           (id, engine, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone,
+           (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, locale,
             screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
          ON CONFLICT(id) DO UPDATE SET
            engine=$engine, firefox_config_json=$firefox,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
@@ -294,7 +372,7 @@ export class ProfileStore {
              WHEN proxy_json IS $proxy THEN timezone
              ELSE ''
            END,
-           screen_width=$w, screen_height=$h,
+           screen_width=$w, screen_height=$h, locale=$locale,
            fingerprint_seed=$seed, platform_os=$platformOs,
            -- An ordinary profile edit carries no capture. Preserving the stored
            -- one keeps a rename from erasing a measurement that is still true.
@@ -314,6 +392,8 @@ export class ProfileStore {
       .run({
         $id: p.id,
         $engine: browser.engine,
+        $chromiumRuntime: chromiumRuntime ?? "",
+        $hardware: hardwareJson,
         $firefox: browser.firefox ? JSON.stringify(browser.firefox) : "",
         $acc: p.accId,
         $name: p.name,
@@ -331,6 +411,7 @@ export class ProfileStore {
         $customNo: p.customNo ?? "",
         $ua: p.ua,
         $tz: p.timezone ?? "",
+        $locale: p.locale ?? "",
         $w: p.screenWidth,
         $h: p.screenHeight,
         $seed: p.fingerprintSeed,
@@ -345,6 +426,7 @@ export class ProfileStore {
         $created: Date.now(),
       });
     if (p.group) this.registerGroup(p.group);
+    this.onProfileSaved?.(p);
   }
 
   /** Explicit edits and authoritative restores may clear a saved timezone. */
@@ -354,7 +436,7 @@ export class ProfileStore {
 
   /** Apply a prevalidated profile batch atomically (all rows or none). */
   upsertProfiles(profiles: Profile[], sessions: ReadonlyMap<string, string> = new Map()): void {
-    const apply = this.db.transaction((items: Profile[]) => {
+    const apply = this.transaction((items: Profile[]) => {
       for (const profile of items) {
         this.upsertProfile(profile);
         const bundle = sessions.get(profile.id);
@@ -414,7 +496,7 @@ export class ProfileStore {
   }
 
   trashProfile(id: string): boolean {
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const changed = this.db.query(`UPDATE profiles SET trashed_at = ? WHERE id = ? AND trashed_at = 0`).run(Date.now(), id);
       if (changed.changes) this.clearAgentTemporary(id);
       return changed.changes > 0;
@@ -422,7 +504,7 @@ export class ProfileStore {
   }
 
   restoreProfile(id: string): boolean {
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const row = this.db.query<{ group: string }, [string]>(
         `SELECT "group" FROM profiles WHERE id = ? AND trashed_at > 0`,
       ).get(id);
@@ -486,7 +568,7 @@ export class ProfileStore {
   setGroup(ids: string[], group: string): number {
     if (ids.length === 0) return 0;
     const destination = group.trim();
-    const move = this.db.transaction((profileIds: string[]) => {
+    const move = this.transaction((profileIds: string[]) => {
       if (destination) this.registerGroup(destination);
       let changed = 0;
       for (const id of profileIds) {
@@ -507,6 +589,72 @@ export class ProfileStore {
   registerGroup(name: string): void {
     const n = name.trim();
     if (n) this.db.query(`INSERT OR IGNORE INTO groups (name) VALUES (?)`).run(n);
+  }
+
+  listFolders(): Array<{ name: string; parentName: string | null; label: string }> {
+    return this.db.query<{ name: string; parentName: string | null; label: string }, []>(
+      `SELECT name, parent_name AS parentName, COALESCE(label, name) AS label FROM groups ORDER BY name`,
+    ).all();
+  }
+
+  createGroup(label: string, parentName: string | null = null): { name: string; parentName: string | null; label: string } {
+    const value = label.trim();
+    if (!value) throw new Error("group name required");
+    return this.transaction(() => {
+      const folders = this.listFolders();
+      if (parentName !== null && !folders.some((folder) => folder.name === parentName)) throw new Error("parent folder not found");
+      const name = parentName === null ? value : `${parentName}/${value}`;
+      const existing = folders.find((folder) => folder.name === name);
+      if (existing && (existing.parentName !== parentName || existing.label !== value)) throw new Error("folder already exists");
+      if (!existing) this.db.query(`INSERT INTO groups (name, parent_name, label) VALUES (?, ?, ?)`).run(name, parentName, value);
+      return { name, parentName, label: value };
+    })();
+  }
+
+  private rewriteGroup(from: string, label: string, parentName?: string | null): { moved: number; name: string } {
+    return this.transaction(() => {
+      const folders = this.listFolders();
+      const branch = folderTree(folders).filter((folder) => folder.name === from || folder.ancestors.includes(from));
+      const root = branch[0];
+      if (!root) throw new Error("folder not found");
+      const parent = parentName === undefined ? root.parentName : parentName;
+      if (!label.trim()) throw new Error("group name required");
+      if (parent !== null && (!folders.some((folder) => folder.name === parent) || branch.some((folder) => folder.name === parent))) {
+        throw new Error("invalid parent folder");
+      }
+      const names = new Map<string, string>();
+      for (const folder of branch) {
+        const nextParent = folder === root ? parent : names.get(folder.parentName!)!;
+        const nextLabel = folder === root ? label.trim() : folder.label;
+        names.set(folder.name, nextParent === null ? nextLabel : `${nextParent}/${nextLabel}`);
+      }
+      const targets = new Set(names.values());
+      if (targets.size !== names.size || folders.some((folder) => !names.has(folder.name) && targets.has(folder.name))) throw new Error("folder already exists");
+      let moved = 0;
+      const temporary = new Map(branch.map((folder) => [folder.name, `folder-move-${crypto.randomUUID()}`]));
+      for (const folder of branch) {
+        const temp = temporary.get(folder.name)!;
+        this.db.query(`UPDATE groups SET name = ? WHERE name = ?`).run(temp, folder.name);
+        this.db.query(`UPDATE groups SET parent_name = ? WHERE parent_name = ?`).run(temp, folder.name);
+        moved += this.db.query(`UPDATE profiles SET "group" = ? WHERE "group" = ?`).run(temp, folder.name).changes;
+      }
+      for (const folder of branch) {
+        const name = names.get(folder.name)!;
+        const temp = temporary.get(folder.name)!;
+        this.db.query(`UPDATE groups SET name = ?, parent_name = ?, label = ? WHERE name = ?`)
+          .run(name, folder === root ? parent : names.get(folder.parentName!)!, folder === root ? label.trim() : folder.label, temp);
+        this.db.query(`UPDATE groups SET parent_name = ? WHERE parent_name = ?`).run(name, temp);
+        this.db.query(`UPDATE profiles SET "group" = ? WHERE "group" = ?`).run(name, temp);
+      }
+      return { moved, name: names.get(from)! };
+    })();
+  }
+
+  moveGroup(name: string, parentName: string | null): { name: string; parentName: string | null; label: string } {
+    const folder = this.listFolders().find((item) => item.name === name);
+    if (!folder) throw new Error("folder not found");
+    const result = this.rewriteGroup(name, folder.label, parentName);
+    return { name: result.name, parentName, label: folder.label };
   }
 
   getGroupExtensionDefaults(name: string): string[] {
@@ -532,7 +680,7 @@ export class ProfileStore {
     const group = name.trim();
     if (!group) throw new Error("group name required");
     const defaultExtensions = normalizeExtensionIds(extensionIds);
-    const apply = this.db.transaction(() => {
+    const apply = this.transaction(() => {
       this.registerGroup(group);
       this.db.query(`UPDATE groups SET extension_defaults_json = ? WHERE name = ?`)
         .run(JSON.stringify(defaultExtensions), group);
@@ -563,12 +711,20 @@ export class ProfileStore {
 
   /**
    * Rename a group: move every member profile from `from` to `to`, and migrate
-   * its defaults. If `to` exists the groups merge and its defaults win.
+   * its defaults. Existing flat leaf groups retain their legacy merge behavior.
    */
   renameGroup(from: string, to: string): number {
     const source = from.trim(), destination = to.trim();
     if (!source || !destination || source === destination) return 0;
-    const rename = this.db.transaction(() => {
+    const folders = this.listFolders();
+    const sourceFolder = folders.find((folder) => folder.name === source);
+    if (!sourceFolder) return 0;
+    const destinationFolder = folders.find((folder) => folder.name === destination);
+    if (!destinationFolder || sourceFolder.parentName !== null || destinationFolder.parentName !== null ||
+        folders.some((folder) => folder.parentName === source || folder.parentName === destination)) {
+      return this.rewriteGroup(source, destination).moved;
+    }
+    const rename = this.transaction(() => {
       const destinationExists = !!this.db
         .query<{ found: number }, [string]>(`SELECT 1 AS found FROM groups WHERE name = ?`)
         .get(destination);
@@ -590,7 +746,8 @@ export class ProfileStore {
    */
   deleteGroup(name: string): number {
     const n = name.trim();
-    const remove = this.db.transaction(() => {
+    const remove = this.transaction(() => {
+      if (this.db.query(`SELECT 1 FROM groups WHERE parent_name = ?`).get(n)) throw new Error("Move or delete subfolders first.");
       const res = this.db.query(`UPDATE profiles SET "group" = '' WHERE "group" = ? AND trashed_at = 0`).run(n);
       this.db.query(`DELETE FROM groups WHERE name = ?`).run(n);
       return Number(res.changes);
@@ -651,7 +808,7 @@ export class ProfileStore {
 
   /** Remove an extension id from every profile and group default that contains it. */
   unassignExtension(id: string): void {
-    const unassign = this.db.transaction(() => {
+    const unassign = this.transaction(() => {
       for (const group of this.listGroupExtensionDefaults()) {
         if (!group.extensions.includes(id)) continue;
         this.db.query(`UPDATE groups SET extension_defaults_json = ? WHERE name = ?`)
@@ -810,7 +967,10 @@ export class ProfileStore {
   }
 
   clearLaunch(profileId: string): void {
-    this.db.query(`DELETE FROM launches WHERE profile_id = ?`).run(profileId);
+    this.transaction(() => {
+      this.db.query(`DELETE FROM launches WHERE profile_id = ?`).run(profileId);
+      this.completeClosedFingerprints(profileId);
+    })();
   }
 }
 
@@ -852,6 +1012,8 @@ function rowToProfile(row: any): Profile {
   return {
     id: row.id,
     engine: browser.engine,
+    ...(row.chromium_runtime ? { chromiumRuntime: normalizeChromiumRuntime(row.chromium_runtime, browser.engine) } : {}),
+    ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json), browser.engine, row.chromium_runtime) } : {}),
     ...(browser.firefox ? { firefox: browser.firefox } : {}),
     accId: row.acc_id ?? "",
     name: row.name ?? "",
@@ -869,6 +1031,7 @@ function rowToProfile(row: any): Profile {
     customNo: typeof row.custom_no === "string" ? row.custom_no : "",
     ua: row.ua ?? "",
     timezone: row.timezone ?? "",
+    ...(row.locale ? { locale: row.locale } : {}),
     screenWidth: row.screen_width ?? 1920,
     screenHeight: row.screen_height ?? 1080,
     fingerprintSeed: row.fingerprint_seed,

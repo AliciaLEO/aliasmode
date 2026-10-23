@@ -14,6 +14,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
     version: string;
     bundle: {
       createUpdaterArtifacts: boolean | string;
+      resources: Record<string, string>;
       windows: {
         webviewInstallMode: { type: string };
         nsis: { compression: string; installMode: string; installerIcon: string };
@@ -118,16 +119,12 @@ test("release version and updater trust stay aligned across the desktop bundle",
     installedAcceptance.indexOf('    "runtime-desktop" {'),
     installedAcceptance.indexOf('    "browser" {'),
   );
-  const cacheStep = (job: string) => {
-    const start = job.indexOf("      - name: Cache pinned CloakBrowser");
-    return job.slice(start, job.indexOf("\n      - ", start + 1));
-  };
   const baselineStep = (job: string, nextStep: string) => job.slice(
     job.indexOf("      - name: Prepare bundle with verified official baseline Bun"),
     job.indexOf(nextStep),
   );
 
-  expect(ALIASMODE_VERSION).toBe("0.1.0-beta.51");
+  expect(ALIASMODE_VERSION).toBe("0.1.0-beta.66");
   expect(packageJson.version).toBe(ALIASMODE_VERSION);
   expect(packageJson.scripts["desktop:build:nsis"]).toBe("bun run desktop:prepare && tauri build --bundles nsis --no-sign");
   expect(tauriConfig.version).toBe(ALIASMODE_VERSION);
@@ -142,16 +139,10 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(updaterConfig.bundle.windows.webviewInstallMode.type).toBe("downloadBootstrapper");
   expect(browserInstallSource).toContain('CLOAKBROWSER_VERSION = "146.0.7680.177.5"');
   expect(browserInstallSource).toContain('env.CLOAKBROWSER_AUTO_UPDATE = "false"');
-  expect(ciWorkflow).toContain("name: Cache pinned CloakBrowser");
-  expect(ciWorkflow).toContain("path: src-tauri/target/cloakbrowser-cache");
-  expect(releaseWorkflow).not.toContain("name: Cache pinned CloakBrowser");
-  expect(ciWorkflow).toContain("cloakbrowser-version=146.0.7680.177.5");
-  expect(ciWorkflow).toContain(
-    "cloakbrowser-archive-sha256=b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe",
-  );
-  expect(ciWorkflow).toContain(
-    "cloakbrowser-executable-sha256=03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80",
-  );
+  // The installer carries no CloakBrowser: the app downloads it on first use.
+  expect(tauriConfig.bundle.resources).not.toHaveProperty("resources/cloakbrowser/");
+  expect(ciWorkflow).not.toContain("cloakbrowser-cache");
+  expect(ciWorkflow).not.toContain("cloakbrowser-version=");
   expect(releasesSource).toContain('const UPDATE_MANIFEST: &str = "latest-v2.json";');
   expect(releasesSource).toContain(".on_before_exit(move || {");
   expect(releasesSource).toContain("let _ = sidecar.kill_owned();");
@@ -167,10 +158,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciSuccessorJob).toContain("shared-key: windows_full");
   expect(ciSuccessorJob).toContain("workspaces: src-tauri -> target");
   expect(ciSuccessorJob).toContain("cache-on-failure: true");
-  expect(ciSuccessorJob.indexOf("uses: Swatinem/rust-cache@v2")).toBeLessThan(
-    ciSuccessorJob.indexOf("name: Cache pinned CloakBrowser"),
-  );
-  expect(cacheStep(ciSuccessorJob)).toBe(cacheStep(windowsFullJob));
   expect(ciSuccessorVersionFiles).toBe([
     "            $versionFiles = @(",
     '              ".\\package.json",',
@@ -240,7 +227,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(signSuccessorInputStep).toContain('Status -cne "NotSigned"');
   expect(signSuccessorInputStep).toContain("Copy-Item $installer $signedInstaller");
   expect(signSuccessorInputStep).not.toContain("TAURI_SIGNING_PRIVATE_KEY");
-  expect(signSuccessorJob).not.toContain("Cache pinned CloakBrowser");
   expect(signSuccessorJob).not.toContain("prepare-windows-bundle.ts");
   expect(signSuccessorJob).not.toContain("build-windows-installer.ps1");
   expect(signSuccessorJob).not.toContain("src-tauri -> target");
@@ -310,13 +296,6 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciWorkflow).toContain("node-version: 22.23.2");
   expect(windowsFullJob).toContain("\n    needs: windows_cache\n");
   expect(windowsFullJob).not.toContain("windows_prepare");
-  expect(cacheStep(windowsFullJob)).toBe(cacheStep(windowsPrepareJob));
-  expect(windowsFullJob.indexOf("uses: Swatinem/rust-cache@v2")).toBeLessThan(
-    windowsFullJob.indexOf("name: Cache pinned CloakBrowser"),
-  );
-  expect(cacheStep(windowsFullJob)).toContain(
-    "key: cloakbrowser-windows-x64-v1-146.0.7680.177.5-b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe-03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80",
-  );
   const fullBaselineStep = baselineStep(
     windowsFullJob,
     "      - name: Build full offline installer",
@@ -383,7 +362,18 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(ciWorkflow).not.toContain("nsis-updater");
   expect(compatibilityWorkflow).toContain("name: aliasmode-windows-candidate");
   expect(compatibilityWorkflow).toContain('role -cne "candidate"');
-  expect(compatibilityWorkflow).toContain('event -cne "push"');
+  // Pushes and pull requests run only the Ubuntu job. The Windows pipeline runs
+  // on a manual dispatch from main, and the release workflows accept only that run.
+  expect(compatibilityWorkflow).toContain('event -cne "workflow_dispatch"');
+  expect(releaseWorkflow).toContain('event -cne "workflow_dispatch"');
+  expect(compatibilityWorkflow).not.toContain('event -cne "push"');
+  expect(releaseWorkflow).not.toContain('event -cne "push"');
+  expect(ciWorkflow).toContain(
+    "  windows_firefox:\n    name: Pinned AliasMode Firefox runtime\n    if: github.event_name == 'workflow_dispatch' || inputs.client_ci_reusable_call == true\n",
+  );
+  expect(ciWorkflow).toContain('require_result "Windows pipeline job" "$result" skipped');
+  expect(windowsCacheSaveJob).toContain("github.event_name == 'workflow_dispatch' &&");
+  expect(windowsCacheSaveJob).not.toContain("github.event_name == 'push'");
   expect(compatibilityWorkflow).toContain("scripts/windows-artifact-manifest.ts verify");
   expect(compatibilityWorkflow).not.toContain("aliasmode-windows-unsigned");
   expect(ciWorkflow).not.toContain("-cjoin");
@@ -434,7 +424,7 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(runtimeOwnershipShard).not.toContain("browser close --profile $preexistingProfileId");
   expect(runtimeOwnershipShard).not.toContain("Remove-PersistentProfile $helper $preexistingProfileId");
   for (const contract of [
-    '$metadata.firefox.version -ne "152.0.4-beta.30"',
+    '$metadata.firefox.version -ne "156.0.1-beta.36"',
     '"ALIASMODE_FIREFOX_BINARY_PATH"',
     '"ALIASMODE_FIREFOX_BINARY_SHA256"',
     "candidate Firefox metadata is invalid",
@@ -510,6 +500,10 @@ test("release version and updater trust stay aligned across the desktop bundle",
   expect(updaterAcceptance).toContain("Get-WebViewDebugPort $WebViewRoot $ExpectedDebugPort");
   expect(updaterAcceptance).toContain("$candidateDebugPortProbe.Server.ExclusiveAddressUse = $true");
   expect(updaterAcceptance).toContain('[void]$browserProcess.Handle');
+  // Chromium's own idle helpers may exit during the rejected update; the CDP owner may not.
+  expect(updaterAcceptance).toContain(
+    "$observations.browserStayedActiveAfterRejection = -not (Test-ProcessExited $oldBrowserMain)",
+  );
   expect(updaterAcceptance).toContain("$deadline = [TimeSpan]::FromMinutes(5)");
   expect(updaterAcceptance).toContain("sourceDebugArgumentSeen");
   expect(updaterAcceptance).toContain("$savedUserEnvironment[$name]");

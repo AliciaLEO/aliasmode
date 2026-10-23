@@ -22,7 +22,12 @@ import {
   telegramAuthSignature,
   writeSession,
   writeSessionToBrowser,
+  keepUnreadableOrigins,
+  sessionCaptureSeed,
+  workerCaptureSeed,
 } from "./session.ts";
+
+const PACKAGED_NODE = process.platform === "win32" ? "node.exe" : "node";
 
 test("playwrightTransportAttribution reads the shared transport counters", () => {
   const key = Symbol.for("aliasmode.playwrightTransportStats");
@@ -47,7 +52,7 @@ test("session worker command follows source and packaged runtime layouts", () =>
 
   const packaged = join("AliasMode", "playwright");
   expect(readSessionWorkerCommand("ws://browser", packaged)).toEqual([
-    join(packaged, "node", "node.exe"),
+    join(packaged, "node", PACKAGED_NODE),
     join(packaged, "worker.mjs"),
   ]);
 });
@@ -1457,3 +1462,33 @@ for (const startupTabUrl of [
     expect(events).toEqual(["connect", "goto:https://x.com/home", "close"]);
   });
 }
+
+test("an origin that the browser cannot open keeps its saved storage", () => {
+  const saved = JSON.stringify({
+    cookies: [],
+    origins: [
+      { origin: "https://blocked.example", localStorage: [{ name: "login", value: "saved" }] },
+      { origin: "https://open.example", localStorage: [{ name: "old", value: "1" }] },
+    ],
+  });
+  const seed = sessionCaptureSeed(saved);
+  // The worker gets the origin names only, not the saved storage.
+  expect(workerCaptureSeed(seed)).toEqual({ origins: ["https://blocked.example", "https://open.example"] });
+  const fromWorker = JSON.stringify({
+    cookies: [],
+    origins: [{ origin: "https://open.example", localStorage: [{ name: "new", value: "2" }] }],
+    tabs: ["https://open.example/"],
+    unreadableOrigins: ["https://blocked.example", "https://never-saved.example"],
+  });
+  expect(JSON.parse(keepUnreadableOrigins(fromWorker, seed.saved))).toEqual({
+    cookies: [],
+    origins: [
+      { origin: "https://blocked.example", localStorage: [{ name: "login", value: "saved" }] },
+      { origin: "https://open.example", localStorage: [{ name: "new", value: "2" }] },
+    ],
+    tabs: ["https://open.example/"],
+  });
+  // A capture with no such origin passes through unchanged.
+  const plain = JSON.stringify({ cookies: [], origins: [] });
+  expect(keepUnreadableOrigins(plain, seed.saved)).toBe(plain);
+});

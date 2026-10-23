@@ -8,10 +8,11 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { buildNewProfile } from "../create.ts";
 import { Launcher } from "../launcher.ts";
-import { createFirefoxProfileConfig } from "../firefox-config.ts";
-import { callFirefoxOwner, FirefoxOwnerError } from "../firefox-runtime.ts";
+import { completeProfileFingerprint, createFirefoxProfileConfig, syncFirefoxTimezone } from "../firefox-config.ts";
+import { callFirefoxOwner, closeFirefoxOwner, FirefoxOwnerError, reserveFirefoxOwner, startFirefoxOwner } from "../firefox-runtime.ts";
 import { decodePortableProfile, encodePortableProfile } from "../portable-profile.ts";
 import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
+import { PythonRuntime } from "../python-runtime.ts";
 import { applySourceRuntime, type SourceRuntime } from "../source-runtime.ts";
 import { applySessionToEndpoint, readSessionInSubprocess } from "../session.ts";
 import { ProfileStore } from "../store.ts";
@@ -42,6 +43,7 @@ const concurrentFirefoxId = "firefoxconcurrent";
 const concurrentFirefoxPeerId = "firefoxconcurrentpeer";
 let concurrentChromiumId: string | undefined;
 const nativeCloseId = "firefoxnativeclose";
+const lastTabCloseId = "firefoxlasttabclose";
 
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
@@ -67,6 +69,17 @@ async function closeNativeFirefoxWindow(browserPid: number): Promise<void> {
   end tell
 end tell`;
   await run("osascript", ["-e", script]);
+}
+
+async function nativeFirefoxKeys(browserPid: number, commands: string): Promise<void> {
+  await run("osascript", ["-e", `tell application "System Events"
+    set browserProcesses to every application process whose unix id is ${browserPid}
+    if (count of browserProcesses) is not 1 then error "exact browser process is unavailable"
+    tell item 1 of browserProcesses
+      set frontmost to true
+      ${commands}
+    end tell
+  end tell`]);
 }
 
 async function waitForNativeFirefoxClose(profileId: string): Promise<void> {
@@ -111,8 +124,9 @@ async function ownerScript(
   assert.equal(typeof bridge.endpoint, "string", "Firefox owner supplies a private Playwright endpoint");
   const runtime = resolvePlaywrightRuntime();
   const sourceRoot = resolve(import.meta.dir, "..");
+  // The packaged runtime has no Python: download the pinned runtime the desktop app uses.
   const executable = language === "python"
-    ? runtime.kind === "packaged" ? join(runtime.root, "python", "python.exe") : process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3")
+    ? runtime.kind === "packaged" ? await new PythonRuntime(join(root, "runtimes")).ensure() : process.env.PYTHON ?? (process.platform === "win32" ? "python" : "python3")
     : runtime.nodeExecutable;
   const runner = runtime.kind === "packaged"
     ? join(runtime.root, "agent", language === "python" ? "script-runner.py" : "script-runner.mjs")
@@ -135,7 +149,7 @@ async function ownerScript(
     new Response(child.stderr).text(),
     child.exited,
   ]);
-  if (exitCode !== 0) throw new Error("Firefox external script runner failed");
+  if (exitCode !== 0) throw new Error(`Firefox external ${language} script runner failed: ${stderr || stdout}`);
   const result = JSON.parse(await readFile(resultPath, "utf8"));
   return { result, logs: `${stdout}${stderr}`.split(/\r?\n/).filter(Boolean) };
 }
@@ -162,7 +176,7 @@ function profile(id: string, config: ReturnType<typeof createFirefoxProfileConfi
     screenWidth: 1440,
     screenHeight: 900,
     fingerprintSeed: 101,
-    platformOs: "Windows",
+    platformOs: "windows",
     cookies: [],
     seeded: false,
   };
@@ -173,6 +187,11 @@ try {
   assert.equal(await sha256File(binary), expectedSha256, "CI passes the approved Firefox executable hash");
 
   server = createServer((request, response) => {
+    if (request.url === "/headers") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ acceptLanguage: request.headers["accept-language"] }));
+      return;
+    }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(`<!doctype html><title>AliasMode local Firefox fixture</title><main>${request.url}</main>`);
   });
@@ -188,7 +207,10 @@ try {
   const expectedProxyAuthorization = `Basic ${Buffer.from(`${proxyUser}:${proxyPassword}`).toString("base64")}`;
   let proxyRequests = 0;
   let proxyFixtureRequests = 0;
+  let exitIpLookups = 0;
   let proxyFailure: string | undefined;
+  // A documentation address that the proxy reports as its exit, as ip-api.com would.
+  const exitIp = "203.0.113.7";
   proxyServer = createServer((request, response) => {
     if (request.headers["proxy-authorization"] !== expectedProxyAuthorization) {
       proxyFailure = "Firefox did not authenticate through the Launcher proxy relay";
@@ -202,6 +224,13 @@ try {
       proxyFailure = "Firefox did not send an absolute URL to the Launcher proxy relay";
       response.writeHead(400);
       response.end();
+      return;
+    }
+    // The Launcher asks for the proxy's exit IP through the proxy before Firefox starts.
+    if (target.hostname === "ip-api.com" && target.pathname === "/json/") {
+      exitIpLookups++;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ status: "success", timezone: "America/New_York", countryCode: "US", query: exitIp }));
       return;
     }
     if (target.hostname !== fixtureHost || target.port !== String(fixturePort)) {
@@ -239,6 +268,36 @@ try {
   const telegramTab = `${telegramOrigin}/k/`;
   const mutator = join(root, "mutate.mjs");
   const verifier = join(root, "verify.mjs");
+  const identityProbe = `async () => {
+    const workerUrl = URL.createObjectURL(new Blob([
+      'postMessage({ language: navigator.language, languages: [...navigator.languages], locale: Intl.DateTimeFormat().resolvedOptions().locale, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone })'
+    ], { type: 'text/javascript' }));
+    const worker = new Worker(workerUrl);
+    let workerIdentity;
+    try {
+      workerIdentity = await new Promise((resolve, reject) => { worker.onmessage = (event) => resolve(event.data); worker.onerror = reject; });
+    } finally { worker.terminate(); URL.revokeObjectURL(workerUrl); }
+    const context = document.createElement('canvas').getContext('2d');
+    const fonts = {};
+    for (const name of ['Arial', 'SimSun', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', 'AliasMode Missing Font']) {
+      let local = false;
+      try { await new FontFace('probe', 'local("' + name + '")').load(); local = true; } catch {}
+      context.font = '32px "' + name + '", monospace';
+      fonts[name] = { local, width: context.measureText('ABC abc 0123 中文').width };
+    }
+    return {
+      userAgent: navigator.userAgent, platform: navigator.platform,
+      language: navigator.language, languages: [...navigator.languages],
+      locale: Intl.DateTimeFormat().resolvedOptions().locale,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      acceptLanguage: (await (await fetch('/headers')).json()).acceptLanguage,
+      worker: workerIdentity, fonts,
+      touch: navigator.maxTouchPoints,
+      coarsePointer: matchMedia('(pointer: coarse)').matches,
+      finePointer: matchMedia('(pointer: fine)').matches,
+      screen: [screen.width, screen.height, screen.colorDepth],
+    };
+  }`;
   await writeFile(mutator, `
 import { writeFile } from "node:fs/promises";
 export default async ({ context, inputs, log }) => {
@@ -286,13 +345,7 @@ export default async ({ context, inputs, log }) => {
   });
   await telegram.close();
   const result = {
-    identity: await first.evaluate(() => ({
-      userAgent: navigator.userAgent,
-      platform: navigator.platform,
-      languages: [...navigator.languages],
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      screen: [screen.width, screen.height, screen.colorDepth],
-    })),
+    identity: await first.evaluate(${identityProbe}),
     tabs: context.pages().map((page) => page.url()),
   };
   await writeFile(inputs.resultPath, JSON.stringify(result) + "\\n");
@@ -337,13 +390,7 @@ export default async ({ context, inputs, log }) => {
     };
   })) : null;
   const result = {
-    identity: await page.evaluate(() => ({
-      userAgent: navigator.userAgent,
-      platform: navigator.platform,
-      languages: [...navigator.languages],
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      screen: [screen.width, screen.height, screen.colorDepth],
-    })),
+    identity: await page.evaluate(${identityProbe}),
     localStorage: await page.evaluate(() => localStorage.getItem("launcher-proof")),
     indexedDB: stored,
     telegramAuth,
@@ -377,11 +424,15 @@ async def run(*, context, inputs, log, **_kwargs):
   const generatedConfig = createFirefoxProfileConfig(1440, 900);
   const savedProfile: Profile = {
     ...profile(profileId, generatedConfig),
+    timezone: "America/New_York",
     proxy: { type: "http", host: "127.0.0.1", port: String(proxyPort), user: proxyUser, pass: proxyPassword },
   };
+  syncFirefoxTimezone(savedProfile);
   localStore.upsertProfile(savedProfile);
-  assert.deepEqual(localStore.getProfile(profileId)?.firefox, generatedConfig, "generated Firefox identity persists in ProfileStore");
+  const savedConfig = completeProfileFingerprint(savedProfile).firefox;
+  assert.deepEqual(localStore.getProfile(profileId)?.firefox, savedConfig, "completed Firefox identity persists in ProfileStore");
 
+  const firefoxConfigs: Array<Record<string, unknown>> = [];
   localLauncher = new Launcher({
     store: localStore,
     dataRoot: localDataRoot,
@@ -389,6 +440,12 @@ async def run(*, context, inputs, log, **_kwargs):
     expectedFirefoxBinarySha256: expectedSha256,
     headless: true,
     portRange: { start: 18000, end: 18999 },
+    firefoxRuntime: {
+      reserve: reserveFirefoxOwner,
+      start: (input, callbacks) => { firefoxConfigs.push(input.config); return startFirefoxOwner(input, callbacks); },
+      call: callFirefoxOwner,
+      close: closeFirefoxOwner,
+    },
   });
   const initial = await localLauncher.start(profileId, [], { autoNavigate: false });
   const initialLaunch = localStore.getLaunch(profileId)!;
@@ -399,8 +456,20 @@ async def run(*, context, inputs, log, **_kwargs):
   assert.equal(await localLauncher.certifiedActive(profileId), true, "Launcher certifies the owned Firefox process");
   const mutationRun = await ownerScript(localLauncher, profileId, mutator, { origin, firstTab, secondTab, telegramTab });
   assert.ok(mutationRun.logs.includes("Fixture state saved"), "external JavaScript runner returns fixture logs");
-  const mutated = mutationRun.result as { identity: unknown; tabs: string[] };
+  const mutated = mutationRun.result as { identity: any; tabs: string[] };
+  // Compared across the Windows, macOS and Linux jobs: the same identity on each host.
+  console.log(`firefox-launcher-acceptance:fonts ${JSON.stringify(mutated.identity.fonts)}`);
+  assert.equal(mutated.identity.language, "en-US", "page uses the saved US locale");
+  assert.equal(mutated.identity.locale, "en-US", "page Intl uses the saved locale");
+  assert.equal(mutated.identity.acceptLanguage.split(",")[0], "en-US", "HTTP uses the saved locale");
+  assert.equal(mutated.identity.worker.language, "en-US", "worker uses the saved locale");
+  assert.equal(mutated.identity.worker.locale, "en-US", "worker Intl uses the saved locale");
+  assert.equal(mutated.identity.timezone, savedProfile.timezone);
+  assert.equal(mutated.identity.worker.timezone, savedProfile.timezone);
+  assert.equal(mutated.identity.fonts["AliasMode Missing Font"].local, false);
   assert.equal(proxyFailure, undefined, "Launcher relays Firefox through the authenticated proxy");
+  assert.ok(exitIpLookups > 0, "Launcher looks up the exit IP through the authenticated proxy");
+  assert.equal(firefoxConfigs[0]?.["webrtc:ipv4"], exitIp, "Firefox shows the proxy exit IP as WebRTC's public address");
   assert.ok(proxyRequests > 0 && proxyFixtureRequests > 0, "Firefox reaches the loopback fixture through the Launcher proxy relay");
   assert.ok(mutated.tabs.includes(firstTab) && mutated.tabs.includes(secondTab), "fixture opens two local tabs");
 
@@ -434,7 +503,7 @@ async def run(*, context, inputs, log, **_kwargs):
   const portable = encodePortableProfile(localStore.getProfile(profileId)!, captured);
   const handoff = decodePortableProfile(portable);
   assert.equal(handoff.profile.engine, "firefox", "portable profile keeps the Firefox engine");
-  assert.deepEqual(handoff.profile.firefox, generatedConfig, "portable profile keeps the exact generated Firefox identity");
+  assert.deepEqual(handoff.profile.firefox, savedConfig, "portable profile keeps the exact saved Firefox identity");
 
   assert.equal(await localLauncher.stop(profileId), true, "Launcher stops Firefox before disabled native reopen");
   const nativeRestoreDisabled = await localLauncher.start(profileId, [], { autoNavigate: false, restoreLastSession: false });
@@ -452,7 +521,7 @@ async def run(*, context, inputs, log, **_kwargs):
     localStore.upsertProfile(profile(concurrentFirefoxId, createFirefoxProfileConfig(1440, 900)));
     localStore.upsertProfile(profile(concurrentFirefoxPeerId, createFirefoxProfileConfig(1440, 900)));
     const chromiumProfile = buildNewProfile(
-      { engine: "chromium", name: "Chromium concurrent acceptance", screen: "1440x900" },
+      { engine: "chromium", chromiumRuntime: "cloakbrowser", name: "Chromium concurrent acceptance", screen: "1440x900" },
       (id) => localStore.getProfile(id) !== null,
     );
     const chromiumId = chromiumProfile.id;
@@ -497,20 +566,99 @@ async def run(*, context, inputs, log, **_kwargs):
     foreignOwner = undefined;
   }
 
+  if (process.platform === "win32") {
+    // A script that closes every page ends Windows Firefox through its last tab. Firefox would
+    // restore that window as an empty new-tab page, and each later open timed out.
+    console.log("firefox-launcher-acceptance:last-tab-close-reopen");
+    localStore.upsertProfile(profile(lastTabCloseId, createFirefoxProfileConfig(1440, 900)));
+    await localLauncher.start(lastTabCloseId, [], { autoNavigate: false, headless: false });
+    const closer = join(root, "close-every-page.mjs");
+    await writeFile(closer, `
+import { writeFile } from "node:fs/promises";
+export default async ({ context, page, inputs }) => {
+  await page.goto(inputs.url, { waitUntil: "domcontentloaded" });
+  await writeFile(inputs.resultPath, JSON.stringify({ url: page.url() }));
+  for (const item of context.pages()) await item.close();
+};
+`);
+    await ownerScript(localLauncher, lastTabCloseId, closer, { url: `http://127.0.0.1:${fixturePort}/first` });
+    await waitForNativeFirefoxClose(lastTabCloseId);
+    assert.equal(await localLauncher.stop(lastTabCloseId), true, "Launcher confirms cleanup after the last tab closed Firefox");
+    await localLauncher.start(lastTabCloseId, [], { autoNavigate: false, headless: false });
+    assert.equal(await localLauncher.certifiedActive(lastTabCloseId), true, "Firefox reopens after a script closed its last tab");
+    assert.equal(await localLauncher.stop(lastTabCloseId), true, "Launcher stops the reopened Firefox");
+  }
+
   if (process.platform === "darwin") {
-    console.log("firefox-launcher-acceptance:native-axclose-before-stop");
     localStore.upsertProfile(profile(nativeCloseId, createFirefoxProfileConfig(1440, 900)));
-    await localLauncher.start(nativeCloseId, [], { autoNavigate: false, headless: false });
-    const nativeLaunch = localStore.getLaunch(nativeCloseId);
-    assert.ok(nativeLaunch?.firefoxOwner, "native AXClose profile has a Firefox owner");
-    const nativeStatus = await callFirefoxOwner<{ browserPid: number }>(nativeLaunch.firefoxOwner!, "status", {}, { timeoutMs: 800 });
-    assert.ok(Number.isSafeInteger(nativeStatus.browserPid) && nativeStatus.browserPid > 0, "native AXClose browser PID is valid");
-    // Cloud opens verify identity right after launch; headed macOS adds GPU helper processes.
-    await localLauncher.verifyRunningIdentity(nativeCloseId);
-    await closeNativeFirefoxWindow(nativeStatus.browserPid);
-    await waitForNativeFirefoxClose(nativeCloseId);
-    assert.equal(await localLauncher.stop(nativeCloseId), true, "Launcher confirms stop after native AXClose");
-    assert.equal(localStore.getLaunch(nativeCloseId), null, "native AXClose launch clears after confirmed stop");
+    const nativeOrigin = `http://127.0.0.1:${fixturePort}`;
+    const nativeNavigator = join(root, "native-tab.mjs");
+    await writeFile(nativeNavigator, `
+import { writeFile } from "node:fs/promises";
+export default async ({ context, inputs }) => {
+  const page = context.pages().find(page => ["about:blank", "about:newtab"].includes(page.url()));
+  if (!page) throw new Error("native empty tab is unavailable");
+  await page.goto(inputs.url, { waitUntil: "domcontentloaded" });
+  await writeFile(inputs.resultPath, JSON.stringify({ url: page.url() }));
+};
+`);
+    for (const close of ["window", "quit", "managed", "reduced", "blank"]) {
+      console.log(`firefox-launcher-acceptance:native-close-reopen:${close}`);
+      await localLauncher.start(nativeCloseId, [], { autoNavigate: false, restoreLastSession: false, headless: false });
+      const nativeLaunch = localStore.getLaunch(nativeCloseId)!;
+      assert.ok(nativeLaunch.firefoxOwner, "native close profile has a Firefox owner");
+      const owner = nativeLaunch.firefoxOwner!;
+      const tabs = close === "blank" ? [] : [`${nativeOrigin}/first`, `${nativeOrigin}/second`, `${nativeOrigin}/first`];
+      const status = () => callFirefoxOwner<{ pageTargets: Array<{ url: string }> }>(owner, "status", {});
+      if (tabs.length) {
+        await callFirefoxOwner(owner, "navigate", { urls: [tabs[0]] });
+        for (const url of tabs.slice(1)) {
+          const count = (await status()).pageTargets.length;
+          await nativeFirefoxKeys(nativeLaunch.pid, 'keystroke "t" using command down');
+          const deadline = Date.now() + 30_000;
+          while ((await status()).pageTargets.length === count && Date.now() < deadline) await Bun.sleep(50);
+          assert.equal((await status()).pageTargets.length, count + 1, "native shortcut opens one tab");
+          await ownerScript(localLauncher, nativeCloseId, nativeNavigator, { url });
+        }
+        const deadline = Date.now() + 30_000;
+        while (JSON.stringify((await status()).pageTargets.map(page => page.url)) !== JSON.stringify(tabs) && Date.now() < deadline) await Bun.sleep(50);
+        assert.deepEqual((await status()).pageTargets.map(page => page.url), tabs, "native tabs finish navigation before close");
+        await callFirefoxOwner(owner, "page", { kind: "scripts", scripts: [
+          `(() => { localStorage.setItem('native-close', '${close}'); document.cookie = 'native-close=${close}; Max-Age=86400; path=/'; })()`,
+        ] });
+      }
+      if (close === "reduced") {
+        await nativeFirefoxKeys(nativeLaunch.pid, 'keystroke "2" using command down\ndelay 0.2\nkeystroke "w" using command down');
+        tabs.splice(1, 1);
+        const deadline = Date.now() + 30_000;
+        while ((await status()).pageTargets.length !== tabs.length && Date.now() < deadline) await Bun.sleep(50);
+        assert.deepEqual((await status()).pageTargets.map(page => page.url), tabs, "closing one tab keeps only the remaining tabs");
+      }
+      await localLauncher.verifyRunningIdentity(nativeCloseId);
+      if (close === "managed") {
+        assert.equal(await localLauncher.captureLocalSession(nativeCloseId), true);
+        assert.equal(await localLauncher.stop(nativeCloseId), true);
+      } else {
+        if (close === "quit") await nativeFirefoxKeys(nativeLaunch.pid, 'keystroke "q" using command down');
+        else await closeNativeFirefoxWindow(nativeLaunch.pid);
+        await waitForNativeFirefoxClose(nativeCloseId);
+        assert.deepEqual(localLauncher.closedFirefoxTabs(nativeCloseId, nativeLaunch), tabs, "native close saves current ordered tabs before managed cleanup");
+        if (close !== "window") assert.equal(await localLauncher.stop(nativeCloseId), true, "Launcher confirms native close cleanup");
+      }
+      assert.deepEqual(localLauncher.closedFirefoxTabs(nativeCloseId, nativeLaunch), tabs, "cleanup does not erase native-close tabs");
+      await localLauncher.start(nativeCloseId, [], { autoNavigate: false, headless: false });
+      const reopenedOwner = localStore.getLaunch(nativeCloseId)!.firefoxOwner!;
+      const reopenedStatus = await callFirefoxOwner<{ pageTargets: Array<{ url: string }> }>(reopenedOwner, "status", {});
+      assert.deepEqual(reopenedStatus.pageTargets.map(page => page.url).filter(url => /^https?:/.test(url)), tabs, "native close then reopen preserves exact URL order and duplicates");
+      if (tabs.length) {
+        const values = await callFirefoxOwner(reopenedOwner, "page", { kind: "scripts", scripts: [
+          "({ storage: localStorage.getItem('native-close'), cookie: document.cookie })",
+        ] }) as Array<{ storage: string; cookie: string }>;
+        assert.equal(values[0]!.storage, close, "native reopen keeps fresh Local Storage");
+        assert.ok(values[0]!.cookie.includes(`native-close=${close}`), "native reopen keeps cookies");
+      }
+      assert.equal(await localLauncher.stop(nativeCloseId), true);
+    }
   }
 
   cloudStore.upsertProfile(handoff.profile);
@@ -542,6 +690,7 @@ async def run(*, context, inputs, log, **_kwargs):
     binarySha256: expectedSha256,
     localNativePersistence: true,
     cloudPortableHandoff: true,
+    identity: mutated.identity,
     initialPort: initial.port,
     cloudPort: cloud.port,
   }));
@@ -554,6 +703,7 @@ async def run(*, context, inputs, log, **_kwargs):
       ? stopForCleanup(concurrentLauncher, localStore, concurrentChromiumId)
       : Promise.resolve(true),
     stopForCleanup(localLauncher, localStore, nativeCloseId),
+    stopForCleanup(localLauncher, localStore, lastTabCloseId),
     stopForCleanup(localLauncher, localStore, "firefoxlaunchproof"),
   ]);
   if (foreignOwner) {

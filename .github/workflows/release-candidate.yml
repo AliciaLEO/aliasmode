@@ -64,10 +64,10 @@ jobs:
             $run.path -cne ".github/workflows/ci.yml" -or
             $run.status -cne "completed" -or
             $run.conclusion -cne "success" -or
-            $run.event -cne "push" -or
+            $run.event -cne "workflow_dispatch" -or
             $run.head_branch -cne "main"
           ) {
-            throw "installer run must be a successful Client CI push from main"
+            throw "installer run must be a successful manually dispatched Client CI run from main"
           }
           if (
             $run.repository.full_name -cne $env:GITHUB_REPOSITORY -or
@@ -181,8 +181,9 @@ jobs:
           ) {
             throw "candidate installer size report is inconsistent"
           }
+          # The installer carries no CloakBrowser; the app downloads it on first use.
           $browser = Get-Content ".\candidate\browser.json" -Raw | ConvertFrom-Json
-          if ($browser.executable -cne "chrome.exe" -or [string]$browser.sha256 -notmatch '^[a-f0-9]{64}$') {
+          if ($null -ne $browser.executable -or [string]$browser.firefox.sha256 -notmatch '^[a-f0-9]{64}$') {
             throw "candidate browser metadata is invalid"
           }
 

@@ -37,7 +37,7 @@ export interface FingerprintSample {
   timezone?: string;
   hardwareConcurrency?: number;
   deviceMemory?: number;
-  screen?: { width: number; height: number; availWidth: number; availHeight: number; colorDepth: number; dpr: number };
+  screen?: { width: number; height: number; availWidth: number; availHeight: number; availLeft?: number; availTop?: number; colorDepth: number; dpr: number };
   webglVendor?: string;
   webglRenderer?: string;
   canvasHash?: string;
@@ -233,6 +233,8 @@ export async function fingerprintProbe(): Promise<FingerprintSample> {
       height: screen.height,
       availWidth: screen.availWidth,
       availHeight: screen.availHeight,
+      availLeft: (screen as any).availLeft,
+      availTop: (screen as any).availTop,
       colorDepth: screen.colorDepth,
       dpr: devicePixelRatio,
     };

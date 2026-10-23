@@ -84,7 +84,8 @@ test("serializeCsv/AdsTxt round-trip through parseUpdateFile", () => {
 
 test("serializeXlsxRows emits the documented columns in order", () => {
   const { headers } = serializeXlsxRows([profile()]);
-  expect(headers).toEqual([...XLSX_COLUMNS]);
+  // A Chromium profile names its runtime, so a re-import keeps its browser.
+  expect(headers).toEqual([...XLSX_COLUMNS, "chromium_runtime"]);
   expect(headers[0]).toBe("id"); // first, so a re-upload can match rows
 });
 
@@ -208,7 +209,7 @@ test("Firefox profiles do not materialize group extension defaults", () => {
   const s = new ProfileStore(":memory:");
   const firefox = {
     engine: "firefox" as const,
-    firefox: { version: 1 as const, runtimeVersion: "152.0.4-beta.30", config: {} },
+    firefox: { version: 1 as const, runtimeVersion: "156.0.1-beta.36", config: {} },
   };
   s.upsertProfile(profile({ id: "chromium", group: "Sales", extensions: ["old"] }));
   s.upsertProfile(profile({ id: "firefox-member", group: "Sales", extensions: [], ...firefox }));
@@ -327,7 +328,7 @@ test("the export carries the restored identity fields", () => {
 test("full exports fill a blank UA from its capture without changing launch flags", async () => {
   const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/146.0.0.0";
   const original = profile({
-    platformOs: "windows", timezone: "America/New_York", fingerprintSeed: 1685817975,
+    platformOs: "windows", timezone: "America/New_York", locale: "en-US", fingerprintSeed: 1685817975,
     fpObserved: { ua, platform: "Win32", canvas: "captured-canvas" },
     cookies: [{ name: "session", value: "test-value", domain: ".example.com", path: "/", httpOnly: false, secure: false }],
   });

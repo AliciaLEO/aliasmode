@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -7,6 +7,7 @@ import { ProfileStore } from "./store.ts";
 import { AutofillBridge } from "./autofill-bridge.ts";
 import { CloudBrowserCoordinator } from "./cloud-browser.ts";
 import { PendingSyncQueue } from "./pending-sync.ts";
+import type { ExitLocation } from "./geoip.ts";
 import { autofillExtensionDir } from "./autofill-extension.ts";
 import {
   BrowserLaunchError,
@@ -21,6 +22,10 @@ import {
   matchOwnedBrowserPids,
   matchProfileDirHolderPids,
   parseTasklistImageNames,
+  parseWindowsProcessEntry,
+  decodeWindowsCommandLine,
+  readWindowsProcessSnapshotNative,
+  readWindowsProcessSnapshotWmi,
   parseDarwinFirefoxPsSnapshot,
   parseDarwinKernelExecutablePath,
   parseDarwinKernelArgv,
@@ -38,7 +43,9 @@ import {
 } from "./launcher.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { parseExport } from "./parse.ts";
+import { buildNewProfile } from "./create.ts";
 import { SessionRestoreError } from "./session.ts";
+import type { FingerprintSample } from "./diagnose.ts";
 
 const linuxTest = process.platform === "win32" ? test.skip : test;
 
@@ -239,7 +246,7 @@ for (const headless of [false, true]) {
       expect(args[0]).toContain(`--disable-extensions-except=${directory},/data/extensions/assigned`);
       const binding = JSON.parse(readFileSync(join(directory, "bind.json"), "utf8"));
       expect(binding.port).toBe(autofill.port);
-      const request = () => new Request(`http://127.0.0.1:${binding.port}/v1/fields`, {
+      const request = () => new Request(`http://127.0.0.1:${binding.port}/v1/menu`, {
         method: "POST", headers: { authorization: `Bearer ${binding.token}` }, body: JSON.stringify({ url: "https://x.com" }),
       });
       expect((await autofill.handle(request())).status).toBe(200);
@@ -369,7 +376,7 @@ for (const proxied of [false, true]) {
         readSession: async () => { throw new Error("healthy survivor must not be captured"); },
         applySession: async () => { throw new Error("healthy survivor must not be restored"); },
         heartbeatMs: 0,
-        dirtyMonitorMs: 0,
+        storageCheckpoints: false,
       });
 
       await next.reconcileOrphans();
@@ -834,6 +841,32 @@ test("stale cleanup prevents a deleted native session from being reported restor
   expect(existsSync(join(userDataDir, "Default", "Sessions"))).toBe(false);
   expect(spawnedArgs[0]).not.toContain("--restore-last-session");
   expect(result.nativeSessionRestored).toBe(false);
+  store.close();
+});
+
+test("native session is unreadable only when DPAPI rejects its cookie key, once per key", async () => {
+  const store = seeded();
+  const checked: string[][] = [];
+  let answer: boolean[] | null = [false];
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+    dpapiKeysReadable: async (keys) => { checked.push(keys); return answer; },
+  });
+  const dir = launcher.userDataDir("k1d0cd11");
+  mkdirSync(dir, { recursive: true });
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true); // no Local State
+  const blob = Buffer.concat([Buffer.from("DPAPI"), Buffer.from("other account")]);
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: blob.toString("base64") } }));
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(false);
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(false);
+  expect(checked).toEqual([[Buffer.from("other account").toString("base64")]]);
+
+  // An unanswered check keeps native reuse and is not cached.
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.concat([Buffer.from("DPAPI"), Buffer.from("new key")]).toString("base64") } }));
+  answer = null;
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true);
+  answer = [true];
+  expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true);
+  expect(checked.length).toBe(3);
   store.close();
 });
 
@@ -1600,6 +1633,54 @@ test("Darwin Firefox kernel argv rejects split and sibling profiles, bad generat
   expect(parseDarwinKernelExecutablePath(executable, 3)).toBeNull();
 });
 
+test("native Windows process structures decode into exact identity fields", () => {
+  const entry = new Uint8Array(568);
+  const entryView = new DataView(entry.buffer);
+  entryView.setUint32(8, 4321, true);
+  entryView.setUint32(32, 1234, true);
+  entry.set(Buffer.from("chrome.exe\0", "utf16le"), 44);
+  expect(parseWindowsProcessEntry(entry)).toEqual({ pid: 4321, parentPid: 1234, processName: "chrome.exe" });
+
+  const commandLine = '"C:\\Cloak\\chrome.exe" --remote-debugging-port=9333 "--user-data-dir=C:\\Data\\profile one"';
+  const text = Buffer.from(commandLine, "utf16le");
+  const buffer = new Uint8Array(16 + text.byteLength);
+  const header = new DataView(buffer.buffer);
+  header.setUint16(0, text.byteLength, true);
+  header.setBigUint64(8, 0x10000n + 16n, true);
+  buffer.set(text, 16);
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe(commandLine);
+  expect(matchOwnedBrowserPids(
+    { profileId: "p1", debugPort: 9333, userDataDir: "C:\\Data\\profile one", binaryPath: "C:\\Cloak\\chrome.exe" },
+    { records: [{ pid: 4321, executablePath: "C:\\Cloak\\chrome.exe", commandLine }], incomplete: false },
+  )).toEqual([4321]);
+  // A string pointer outside the buffer is unreadable, not an empty command line.
+  expect(decodeWindowsCommandLine(buffer, 0x20000)).toBeNull();
+  // WMI ends a command line at the first NUL that a process wrote into it.
+  buffer.set(Buffer.from("\0", "utf16le"), 16 + 2 * commandLine.indexOf(" --remote"));
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe('"C:\\Cloak\\chrome.exe"');
+  header.setUint16(0, 0, true);
+  expect(decodeWindowsCommandLine(buffer, 0x10000)).toBe("");
+});
+
+test.skipIf(process.platform === "win32")("the native Windows scan throws off Windows so the WMI fallback runs", () => {
+  expect(() => readWindowsProcessSnapshotNative()).toThrow();
+});
+
+test.skipIf(process.platform !== "win32")("native Windows scan lists this process with the same fields as WMI", async () => {
+  const native = readWindowsProcessSnapshotNative();
+  expect(native.incomplete).toBe(false);
+  const self = native.records.find((record) => record.pid === process.pid);
+  expect(self?.executablePath).toBeTruthy();
+  expect(self?.commandLine).toBeTruthy();
+  expect(self?.parentPid).toBeGreaterThan(0);
+  const wmi = await readWindowsProcessSnapshotWmi();
+  const wmiSelf = wmi?.records.find((record) => record.pid === process.pid);
+  // WMI may report a different letter case for the same path; every matcher compares paths case-insensitively.
+  expect(wmiSelf?.executablePath?.toLowerCase()).toBe(self!.executablePath!.toLowerCase());
+  expect(wmiSelf?.commandLine).toBe(self!.commandLine);
+  expect(wmiSelf?.processName).toBe(self!.processName);
+}, 90_000);
+
 test("bounded process snapshot reader kills a hung scanner and returns unknown", async () => {
   let streamController!: ReadableStreamDefaultController<Uint8Array>;
   let finishExit!: (code: number) => void;
@@ -1654,6 +1735,12 @@ test("platformHomeUrl lands supported platforms on their home pages", () => {
   expect(platformHomeUrl("telegram.org")).toBe("https://web.telegram.org/k/"); // standalone compatibility
   expect(platformHomeUrl("telegram.org", "a")).toBe("https://web.telegram.org/a/");
   expect(platformHomeUrl("telegram.org", "k")).toBe("https://web.telegram.org/k/");
+  expect(platformHomeUrl("youtube.com")).toBe("https://www.youtube.com/");
+  expect(platformHomeUrl("threads.net")).toBe("https://www.threads.com/");
+  expect(platformHomeUrl("snapchat.com")).toBe("https://www.snapchat.com/web");
+  expect(platformHomeUrl("discord")).toBe("https://discord.com/app");
+  expect(platformHomeUrl("gmail.com")).toBe("https://mail.google.com/");
+  expect(platformHomeUrl("ebay.com")).toBe("https://www.ebay.com/");
   expect(platformHomeUrl("")).toBeNull(); // unset platform → keep the browser default page
   expect(platformHomeUrl(undefined)).toBeNull();
 });
@@ -2228,9 +2315,9 @@ test("missing Firefox kernel pin has an engine-specific preflight reason before 
     engine: "firefox",
     firefox: {
       version: 1,
-      runtimeVersion: "152.0.4-beta.30",
+      runtimeVersion: "156.0.1-beta.36",
       config: {
-        "navigator.userAgent": "Mozilla/5.0 Firefox/152.0",
+        "navigator.userAgent": "Mozilla/5.0 Firefox/156.0",
         timezone: "UTC",
       },
     },
@@ -3292,6 +3379,79 @@ test("graceful CDP close still exact-kills an owned process that survived after 
   store.close();
 });
 
+test("a stop succeeds when a dashboard poll clears the same closed launch first", async () => {
+  const store = seeded();
+  let alive = true;
+  let launcher!: Launcher;
+  launcher = new Launcher({
+    store,
+    binaryPath: "/fake/cloak",
+    dataRoot: "/tmp/cloak-graceful-reconciled-test",
+    portProbe: () => true,
+    spawn: () => ({ pid: 8124, kill() {} }),
+    fetch: async () => ({
+      ok: alive,
+      json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/reconciled" }),
+    }),
+    isPidAlive: (pid) => pid === 8124 && alive,
+    findOwnedBrowserPids: async () => alive ? [8124] : [],
+    browserClose: async () => {
+      alive = false;
+      // The dashboard's poll runs while the browser closes and forgets the dead launch.
+      await launcher.reconcileOrphans();
+      return true;
+    },
+    killPid: async () => { throw new Error("must not force-kill a closed browser"); },
+    ensureCookies: async () => ({ injected: false }),
+    navigate: async () => {},
+    labelWindow: async () => {},
+  });
+  await launcher.start("k1d0cd11");
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
+test("a forced stop succeeds when a dashboard poll clears the same dead launch first", async () => {
+  const store = seeded();
+  let cdpAlive = true;
+  let ownedAlive = true;
+  const killed: number[] = [];
+  let launcher!: Launcher;
+  launcher = new Launcher({
+    store,
+    binaryPath: "/fake/cloak",
+    dataRoot: "/tmp/cloak-forced-reconciled-test",
+    portProbe: () => true,
+    spawn: () => ({ pid: 8125, kill() {} }),
+    fetch: async () => ({
+      ok: cdpAlive,
+      json: async () => ({ webSocketDebuggerUrl: "ws://127.0.0.1:9333/devtools/browser/forced" }),
+    }),
+    isPidAlive: (pid) => pid === 8125 && ownedAlive,
+    findOwnedBrowserPids: async () => ownedAlive ? [8125] : [],
+    // The process outlives the graceful window, as a slow Windows exit does.
+    browserClose: async () => { cdpAlive = false; return true; },
+    teardownTimeoutMs: 0,
+    killPid: async (pid) => {
+      killed.push(pid);
+      ownedAlive = false;
+      // The dashboard's poll sees the dead browser and forgets the launch before stop() does.
+      await launcher.reconcileOrphans();
+    },
+    ensureCookies: async () => ({ injected: false }),
+    navigate: async () => {},
+    labelWindow: async () => {},
+  });
+  await launcher.start("k1d0cd11");
+
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  expect(killed).toEqual([8125]);
+  expect(store.getLaunch("k1d0cd11")).toBeNull();
+  store.close();
+});
+
 test("post-restart reattach verifies ownership and refreshes a changed live CDP websocket", async () => {
   const store = seeded();
   const profile = store.getProfile("k1d0cd11")!;
@@ -3738,34 +3898,6 @@ test("hasPageTargets distinguishes a background-only browser", async () => {
   expect(await launcher.hasPageTargets("k1d0cd11")).toBe(false);
   targets = [{ type: "page" }];
   expect(await launcher.hasPageTargets("k1d0cd11")).toBe(true);
-  store.close();
-});
-
-test("pageTargetFingerprint is generation-fenced and stable across target order", async () => {
-  const store = seeded();
-  store.recordLaunch({ profileId: "k1d0cd11", pid: 1, debugPort: 9333, ws: "ws://x", startedAt: 1 });
-  let targets = [
-    { id: "b", type: "page", url: "https://example.com/b" },
-    { id: "a", type: "page", url: "https://example.com/a" },
-    { id: "worker", type: "service_worker", url: "https://example.com/sw.js" },
-  ];
-  const launcher = new Launcher({
-    store,
-    binaryPath: "/fake",
-    fetch: async () => ({ ok: true, json: async () => targets }),
-  });
-
-  const first = await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 });
-  targets = [
-    targets[1]!,
-    targets[0]!,
-    { id: "blank", type: "page", url: "about:blank" },
-    { id: "capture", type: "page", url: "https://example.com/?__aliasmode_session_capture__=1" },
-  ];
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 })).toBe(first);
-  targets[0] = { ...targets[0]!, url: "https://example.com/changed" };
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9333, startedAt: 1 })).not.toBe(first);
-  expect(await launcher.pageTargetFingerprint("k1d0cd11", { debugPort: 9444, startedAt: 2 })).toBeNull();
   store.close();
 });
 
@@ -4291,19 +4423,20 @@ test("windowWidthScale / windowHeightScale control the launched window size", as
   store.close();
 });
 
-test("buildArgs disables background throttling so minimized/occluded windows keep running at full speed", () => {
+test("buildArgs keeps a minimized window's renderer priority but Chrome's page timers and visibility", () => {
   const store = seeded();
   const f = fleet();
   const profile = store.getProfile("k1d0cd11")!;
   const launcher = new Launcher({ store, binaryPath: "/fake", spawn: f.spawn, fetch: f.fetchFn, ensureCookies: async () => ({ injected: true }) });
   const args = launcher.buildArgs(profile, 9333, "/data", []);
   // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus.
-  // Keep minimized windows responsive, but let Chromium exit when the user closes
-  // the final visible window instead of retaining an invisible background process.
+  // Process priority is invisible to pages, and Chromium still exits when the user
+  // closes the final visible window instead of retaining a background process.
   expect(args).toContain("--disable-background-mode");
-  expect(args).toContain("--disable-background-timer-throttling");
-  expect(args).toContain("--disable-backgrounding-occluded-windows");
   expect(args).toContain("--disable-renderer-backgrounding");
+  // Pages can measure these: hidden-tab timer rate and a covered window's visibility.
+  expect(args).not.toContain("--disable-background-timer-throttling");
+  expect(args).not.toContain("--disable-backgrounding-occluded-windows");
   expect(args).toContain("--disk-cache-size=20971520");
   store.close();
 });
@@ -4559,6 +4692,19 @@ test("a fresh launch refuses to spawn after an inconclusive profile-dir scan", a
   rmSync(dataRoot, { recursive: true, force: true });
 });
 
+(process.platform === "win32" ? test : test.skip)("the Windows process scan works when PATH has no PowerShell folder", async () => {
+  // A failed scan stops every saved profile with browser_launch/profile_directory.
+  const env: Record<string, string | undefined> = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"),
+  );
+  env.PATH = (process.env.PATH ?? "").split(";").filter((dir) => !/WindowsPowerShell/i.test(dir)).join(";");
+  const child = Bun.spawn([
+    process.execPath, "-e",
+    'const { readHostProcessSnapshot } = await import("./launcher.ts"); process.stdout.write(String((await readHostProcessSnapshot()) !== null));',
+  ], { cwd: import.meta.dir, env, stdout: "pipe", stderr: "ignore" });
+  expect(await new Response(child.stdout).text()).toBe("true");
+}, 120_000);
+
 // --- fingerprint capture: bookkeeping that must never fail a launch ---
 
 test("a fingerprint probe that throws does not fail the launch", async () => {
@@ -4625,5 +4771,567 @@ test("a launch verifies the profile against an imported attestation", async () =
   const verdict = store.getProfile("k1d0cd11")!.fpVerdict!;
   expect(verdict.verdict).toBe("mismatch");
   expect(verdict.differences[0]!.field).toBe("canvas");
+  store.close();
+});
+
+test("Chromium 155 beta profiles launch the installed beta runtime without CloakBrowser-only flags", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const roots: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async (root) => {
+      roots.push(root);
+      return "/fake/runtimes/chromium-155/chrome.exe";
+    },
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(roots).toEqual(["/fake/runtimes", "/fake/runtimes"]);
+  expect(binaries).toEqual(["/fake/runtimes/chromium-155/chrome.exe"]);
+  expect(spawnedArgs[0]).toContain(`--fingerprint=${profile.fingerprintSeed}`);
+  expect(spawnedArgs[0]!.some((arg) => arg.startsWith("--fingerprint-storage-quota="))).toBe(false);
+  expect(store.getLaunch(profile.id)?.binaryPath).toBe("/fake/runtimes/chromium-155/chrome.exe");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Windows displays, and its own canvas", async () => {
+  const launchArgs = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    const profile = engine === "aliasmode" ? chromium155 : cloakbrowser;
+    store.upsertProfile(profile);
+    const f = fleet();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+    });
+    await launcher.start(profile.id);
+    await launcher.stop(profile.id);
+    store.close();
+    return spawnedArgs[0]!;
+  };
+  expect(await launchArgs("win32", "aliasmode")).toContain("--ignore-gpu-blocklist");
+  // A Mac has a graphics card, and CloakBrowser reports a card by itself.
+  expect(await launchArgs("darwin", "aliasmode")).not.toContain("--ignore-gpu-blocklist");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--ignore-gpu-blocklist");
+  // Chromium 155 pages are drawn at 100%, so the Windows window must be at 100% too, or it is blurry.
+  expect(await launchArgs("win32", "aliasmode")).toContain("--force-device-scale-factor=1");
+  expect(await launchArgs("darwin", "aliasmode")).not.toContain("--force-device-scale-factor=1");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--force-device-scale-factor=1");
+  // Each Chromium 155 profile draws its own canvas image. CloakBrowser varies it by itself.
+  expect(await launchArgs("win32", "aliasmode")).toContain("--fingerprint-noise");
+  expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--fingerprint-noise");
+});
+
+test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels, as Chrome does there", async () => {
+  const launch = async (
+    hostPlatform: NodeJS.Platform,
+    engine: "aliasmode" | "cloakbrowser",
+    screen: string,
+    hostScale: number,
+    options: { storedAvailableScreen?: string; capture?: FingerprintSample } = {},
+  ) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", screen }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    if (options.storedAvailableScreen) {
+      store.saveObservedFingerprint(chromium155.id, { availableScreen: options.storedAvailableScreen }, null);
+    }
+    const spawnedArgs: string[][] = [];
+    const areas: unknown[] = [];
+    const scales: unknown[] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      hostScale,
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => options.capture ?? null,
+      watchWindowFit: (_ws, area, opts) => {
+        areas.push(area);
+        scales.push(opts?.scale);
+        return { stop: () => {} };
+      },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    const args = spawnedArgs[0]!;
+    return {
+      args: args.filter((arg) => /^--(force-device-scale-factor|fingerprint-screen-(width|height)|window-size)=/.test(arg)),
+      areas,
+      scales,
+    };
+  };
+
+  expect(await launch("win32", "aliasmode", "1920x1080", 1.25)).toEqual({
+    args: ["--window-size=998,778", "--fingerprint-screen-width=1536", "--fingerprint-screen-height=864", "--force-device-scale-factor=1.25"],
+    areas: [{ left: 0, top: 0, width: 1536, height: 864 }],
+    // The watcher reads window bounds rounded at that scale.
+    scales: [1.25],
+  });
+  // A capture from an earlier launch at scale 1 is larger than this screen, so the whole screen
+  // stands in; a capture from this launch is already in CSS pixels.
+  expect((await launch("win32", "aliasmode", "1920x1080", 1.25, { storedAvailableScreen: "1920*1040" })).areas)
+    .toEqual([{ left: 0, top: 0, width: 1536, height: 864 }]);
+  const capture = { screen: { width: 1536, height: 864, availWidth: 1536, availHeight: 816, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1.25 } };
+  expect((await launch("win32", "aliasmode", "1920x1080", 1.25, { capture })).areas)
+    .toEqual([{ left: 0, top: 0, width: 1536, height: 816 }]);
+  // The window never exceeds a screen that the scale made smaller than the window floors.
+  expect((await launch("win32", "aliasmode", "1366x768", 1.75)).args).toEqual([
+    "--window-size=781,439", "--fingerprint-screen-width=781", "--fingerprint-screen-height=439", "--force-device-scale-factor=1.75",
+  ]);
+  // The Mac build and CloakBrowser keep the stored screen and no forced scale.
+  expect((await launch("darwin", "aliasmode", "1920x1080", 1.25)).args).toEqual([
+    "--window-size=1248,972", "--fingerprint-screen-width=1920", "--fingerprint-screen-height=1080",
+  ]);
+  expect((await launch("win32", "cloakbrowser", "1920x1080", 1.25)).args).toEqual([
+    "--window-size=1248,972", "--fingerprint-screen-width=1920", "--fingerprint-screen-height=1080",
+  ]);
+});
+
+test("Chromium 155 on Windows names its window with a launch switch instead of a page title script", async () => {
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), name: "sophie" };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const label = buildWindowLabel("sophie", profileDisplayNo(undefined, store.getSerial(chromium155.id)));
+    const scripted: string[] = [];
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => null,
+      labelWindow: async (_ws, text) => { scripted.push(text); },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    return { label, scripted, switches: spawnedArgs[0]!.filter((arg) => arg.startsWith("--aliasmode-window-label=")) };
+  };
+
+  const native = await launch("win32", "aliasmode");
+  expect(native.label).toBe("sophie · #1 — ");
+  // The engine adds the trailing space itself; Windows would strip it from a switch value.
+  expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
+  expect(native.scripted).toEqual([]);
+  // CloakBrowser on Windows has no such switch, so it keeps the page script.
+  const cloak = await launch("win32", "cloakbrowser");
+  expect(cloak.switches).toEqual([]);
+  expect(cloak.scripted).toEqual([cloak.label]);
+  // On Mac no Chromium build has the switch, and pages could read a title script.
+  for (const engine of ["aliasmode", "cloakbrowser"] as const) {
+    const mac = await launch("darwin", engine);
+    expect(mac.switches).toEqual([]);
+    expect(mac.scripted).toEqual([]);
+  }
+});
+
+test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines do not", async () => {
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+  const launch = async (
+    hostPlatform: NodeJS.Platform,
+    engine: "aliasmode" | "cloakbrowser",
+    lookup: () => Promise<string | null>,
+    profileProxy: typeof proxy | null = proxy,
+  ) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy: profileProxy };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const asked: unknown[] = [];
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+      lookupExitLocation: async (spec) => {
+        asked.push(spec);
+        const ip = await lookup();
+        return ip ? { timezone: chromium155.timezone, ip } : null;
+      },
+    });
+    await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    const webrtc = spawnedArgs[0]!.filter((arg) => /^--(force-webrtc-ip-handling-policy|fingerprint-webrtc-(ip|udp))=/.test(arg));
+    return { asked, webrtc };
+  };
+  const policy = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp";
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7"))
+    .toEqual({ asked: [proxy], webrtc: [policy, "--fingerprint-webrtc-ip=203.0.113.7"] });
+  expect((await launch("win32", "aliasmode", async () => "2001:db8::7")).webrtc)
+    .toEqual([policy, "--fingerprint-webrtc-ip=2001:db8::7"]);
+  // No answer, or a failed lookup, keeps the arguments as they were.
+  expect(await launch("win32", "aliasmode", async () => null)).toEqual({ asked: [proxy], webrtc: [policy] });
+  expect(await launch("win32", "aliasmode", () => Promise.reject(new Error("offline"))))
+    .toEqual({ asked: [proxy], webrtc: [policy] });
+  // Without a proxy WebRTC keeps the computer's own route and nothing is looked up.
+  expect(await launch("win32", "aliasmode", async () => "203.0.113.7", null))
+    .toEqual({ asked: [], webrtc: ["--force-webrtc-ip-handling-policy=default_public_interface_only"] });
+  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change. Their exit is asked
+  // for its timezone only.
+  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [proxy], webrtc: [policy] });
+  }
+});
+
+test("every proxied Chromium launch takes the proxy exit's timezone, and no answer keeps the saved one", async () => {
+  const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", exit: ExitLocation | null) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy, timezone: "Europe/London" };
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const f = fleet();
+    const spawnedArgs: string[][] = [];
+    const options = {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+      lookupExitLocation: async () => exit,
+    };
+    const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, options);
+    const opened = await launcher.start(chromium155.id);
+    const stored = store.getProfile(chromium155.id)!.timezone;
+    // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    const restarted = newLauncher(store, f, spawnedArgs, undefined, undefined, options);
+    expect(await restarted.start(chromium155.id)).toEqual({ ...opened, nativeSessionRestored: false });
+    expect(spawnedArgs).toHaveLength(1);
+    await restarted.stop(chromium155.id);
+    store.close();
+    return { stored, flags: spawnedArgs[0]!.filter((arg) => arg.startsWith("--fingerprint-timezone=")) };
+  };
+  const tokyo = { timezone: "Asia/Tokyo", country: "JP", ip: "203.0.113.7" };
+  for (const [host, engine] of [["win32", "aliasmode"], ["darwin", "aliasmode"], ["win32", "cloakbrowser"], ["darwin", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, tokyo)).toEqual({ stored: "Asia/Tokyo", flags: ["--fingerprint-timezone=Asia/Tokyo"] });
+  }
+  expect(await launch("win32", "aliasmode", null))
+    .toEqual({ stored: "Europe/London", flags: ["--fingerprint-timezone=Europe/London"] });
+});
+
+test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {
+  const watched = async (engine: "aliasmode" | "cloakbrowser", headless: boolean) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", screen: "1440x900" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const calls: Array<{ ws: string; area: unknown }> = [];
+    let stops = 0;
+    const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+      headless,
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => ({
+        screen: { width: 1440, height: 900, availWidth: 1440, availHeight: 852, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1 },
+      }),
+      watchWindowFit: (ws, area) => {
+        calls.push({ ws, area });
+        return { stop: () => { stops++; } };
+      },
+    });
+    const { ws } = await launcher.start(chromium155.id);
+    await launcher.stop(chromium155.id);
+    store.close();
+    return { calls, stops, ws };
+  };
+  const headed = await watched("aliasmode", false);
+  expect(headed.calls).toEqual([{ ws: headed.ws, area: { left: 0, top: 0, width: 1440, height: 852 } }]);
+  expect(headed.stops).toBe(1);
+  expect((await watched("aliasmode", true)).calls).toEqual([]);
+  expect((await watched("cloakbrowser", false)).calls).toEqual([]);
+});
+
+test("a Chromium 155 window that survives an app restart is watched again", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode", screen: "1440x900" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const options = (calls: Array<{ ws: string; area: unknown }>) => ({
+    headless: false,
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+    captureFingerprint: async () => ({
+      screen: { width: 1440, height: 900, availWidth: 1440, availHeight: 852, availLeft: 0, availTop: 0, colorDepth: 24, dpr: 1 },
+    }),
+    watchWindowFit: (ws: string, area: unknown) => {
+      calls.push({ ws, area });
+      return { stop: () => {} };
+    },
+  });
+  const before: Array<{ ws: string; area: unknown }> = [];
+  const launcherA = newLauncher(store, f, [], undefined, undefined, options(before));
+  await launcherA.start(profile.id);
+  (launcherA as any).closeRelay(profile.id);
+
+  const after: Array<{ ws: string; area: unknown }> = [];
+  const launcherB = newLauncher(store, f, [], undefined, undefined, options(after));
+  await launcherB.reconcileOrphans();
+  const { ws } = await launcherB.start(profile.id);
+  await launcherB.start(profile.id);
+  for (let i = 0; i < 20 && after.length === 0; i++) await Bun.sleep(1);
+
+  // The stored capture from the first launch still names the area above the taskbar.
+  expect(after).toEqual([{ ws, area: { left: 0, top: 0, width: 1440, height: 852 } }]);
+  await launcherB.stop(profile.id);
+  store.close();
+});
+
+test("Chromium 155 beta download failure is a public preflight error", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  const spawnedArgs: string[][] = [];
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    ensureAliasmodeChromium: async () => { throw new Error("offline"); },
+  });
+  const error = await launcher.start(profile.id).catch((caught) => caught);
+  expect(error).toEqual(new BrowserLaunchError("preflight", "chromium155_download"));
+  expect(error.guidance).toContain("could not be downloaded");
+  expect(spawnedArgs).toEqual([]);
+  store.close();
+});
+
+test("the macOS app opens a CloakBrowser profile with the downloaded macOS build, never with Chromium 155", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  let betaDownloads = 0;
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "darwin",
+    hostArch: "arm64",
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureAliasmodeChromium: async () => { betaDownloads++; return "/unused"; },
+    ensureDownloadedCloakBrowser: async (root) => `${root}/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["/fake/runtimes/cloakbrowser-145/Chromium.app/Contents/MacOS/Chromium"]);
+  expect(betaDownloads).toBe(0);
+  // Without this flag macOS asks for the Keychain password when a second Chromium build starts.
+  expect(spawnedArgs[0]).toContain("--use-mock-keychain");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("a failed CloakBrowser download is a public preflight error on every desktop system", async () => {
+  for (const [hostPlatform, hostArch] of [["darwin", "arm64"], ["linux", "x64"], ["win32", "x64"]] as const) {
+    const store = new ProfileStore(":memory:");
+    const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+    store.upsertProfile(profile);
+    const launcher = new ProductionLauncher({
+      store,
+      binaryPath: "",
+      dataRoot: testDataRoot(store),
+      hostPlatform,
+      hostArch,
+      ensureDownloadedCloakBrowser: async () => { throw new Error("offline"); },
+      spawn: () => { throw new Error("must not spawn"); },
+    });
+    const error = await launcher.start(profile.id).catch((caught) => caught);
+    expect(error).toEqual(new BrowserLaunchError("preflight", "cloakbrowser_download"));
+    expect(error.guidance).toContain("Check your internet connection");
+    store.close();
+  }
+});
+
+test("the Linux app opens a CloakBrowser profile with the downloaded Linux build and no desktop keyring", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "linux",
+    hostArch: "x64",
+    chromiumRuntimeRoot: "/fake/runtimes",
+    ensureDownloadedCloakBrowser: async (root) => `${root}/cloakbrowser-146/chrome`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["/fake/runtimes/cloakbrowser-146/chrome"]);
+  expect(spawnedArgs[0]).toContain("--password-store=basic");
+  expect(spawnedArgs[0]).not.toContain("--use-mock-keychain");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("the Windows app opens a CloakBrowser profile with the downloaded build and its pinned kernel hash", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  store.upsertProfile(profile);
+  const f = fleet();
+  const spawnedArgs: string[][] = [];
+  const binaries: string[] = [];
+  const launcher = newLauncher(store, f, spawnedArgs, undefined, undefined, {
+    binaryPath: "",
+    hostPlatform: "win32",
+    hostArch: "x64",
+    chromiumRuntimeRoot: "C:\\fake\\runtimes",
+    ensureDownloadedCloakBrowser: async (root) => `${root}\\cloakbrowser-146.0.7680.177.5\\chrome.exe`,
+    spawn: (bin, args) => {
+      binaries.push(bin);
+      spawnedArgs.push(args);
+      return f.spawn(bin, args);
+    },
+  });
+
+  await launcher.start(profile.id);
+  expect(binaries).toEqual(["C:\\fake\\runtimes\\cloakbrowser-146.0.7680.177.5\\chrome.exe"]);
+  // The same executable the installer bundled before, so live browsers and personas stay valid.
+  expect(store.getLaunch(profile.id)?.binarySha256).toBe("03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80");
+  expect(spawnedArgs[0]).not.toContain("--use-mock-keychain");
+  expect(spawnedArgs[0]).not.toContain("--password-store=basic");
+  expect(await launcher.stop(profile.id)).toBe(true);
+  store.close();
+});
+
+test("prefetch downloads each runtime and font pack that saved profiles need, and removes unpinned runtimes first", async () => {
+  const store = new ProfileStore(":memory:");
+  const root = join(tmpdir(), `aliasmode-prefetch-${crypto.randomUUID()}`);
+  mkdirSync(join(root, "cloakbrowser-145.0.7632.109.2"), { recursive: true });
+  mkdirSync(join(root, "chromium-155.0.8059.31-aliasmode.1"));
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const firefox = buildNewProfile({ engine: "firefox", platformOs: "macos" }, () => false);
+  store.upsertProfile(cloak);
+  // A browser that still runs from an older runtime keeps it.
+  store.recordLaunch({
+    profileId: cloak.id, pid: 1, debugPort: 9333, ws: "", startedAt: 1,
+    binaryPath: join(root, "chromium-155.0.8059.31-aliasmode.1", "chrome.exe"),
+  });
+  const downloads: string[] = [];
+  const fontPacks: string[] = [];
+  let failCloakBrowser = true;
+  const logs: string[] = [];
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    chromiumRuntimeRoot: root,
+    hostPlatform: "win32",
+    hostArch: "x64",
+    ensureDownloadedCloakBrowser: async () => {
+      downloads.push("cloakbrowser");
+      if (failCloakBrowser) throw new Error("offline");
+      return "unused";
+    },
+    ensureAliasmodeChromium: async () => { downloads.push("chromium155"); return "unused"; },
+    ensureFirefoxFontPack: async (_root, pack) => { fontPacks.push(pack.os); return "unused"; },
+    log: (message) => logs.push(message),
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+
+  launcher.prefetchBrowserRuntimes([firefox]);
+  expect(downloads).toEqual([]);
+  expect(fontPacks).toEqual(["macos"]);
+  expect(readdirSync(root)).toEqual(["chromium-155.0.8059.31-aliasmode.1"]);
+  launcher.prefetchBrowserRuntimes([firefox, cloak, beta]);
+  launcher.prefetchBrowserRuntimes([cloak, beta]);
+  await Bun.sleep(0);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+  expect(logs).toEqual(["CloakBrowser download failed: offline"]);
+  // A failed background download waits for the next open or app start instead of looping.
+  failCloakBrowser = false;
+  launcher.prefetchBrowserRuntimes([cloak]);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+
+  // A configured CloakBrowser binary needs no download.
+  const configured = new ProductionLauncher({
+    store, binaryPath: "C:\\cloak\\chrome.exe", dataRoot: testDataRoot(store), chromiumRuntimeRoot: root,
+    hostPlatform: "win32", hostArch: "x64",
+    ensureDownloadedCloakBrowser: async () => { downloads.push("configured"); return "unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  configured.prefetchBrowserRuntimes([cloak]);
+  expect(downloads).toEqual(["cloakbrowser", "chromium155"]);
+  rmSync(root, { recursive: true, force: true });
+  store.close();
+});
+
+test("a Linux computer that blocks the Chrome sandbox gets a public preflight error before any download", async () => {
+  const store = new ProfileStore(":memory:");
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const cloak = buildNewProfile({ chromiumRuntime: "cloakbrowser" }, () => false);
+  store.upsertProfile(beta);
+  store.upsertProfile(cloak);
+  let downloads = 0;
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    hostPlatform: "linux",
+    hostArch: "x64",
+    chromiumSandboxBlocked: () => true,
+    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    ensureDownloadedCloakBrowser: async () => { downloads++; return "/unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  for (const id of [beta.id, cloak.id]) {
+    const error = await launcher.start(id).catch((caught) => caught);
+    expect(error).toEqual(new BrowserLaunchError("preflight", "chromium_sandbox"));
+    expect(error.guidance).toContain("install command");
+  }
+  expect(downloads).toBe(0);
+  store.close();
+});
+
+test("Chromium 155 beta is refused on unsupported hosts before any download", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile(profile);
+  let downloads = 0;
+  const launcher = new ProductionLauncher({
+    store,
+    dataRoot: testDataRoot(store),
+    hostPlatform: "linux",
+    hostArch: "arm64",
+    ensureAliasmodeChromium: async () => { downloads++; return "/unused"; },
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  await expect(launcher.start(profile.id)).rejects.toEqual(new BrowserLaunchError("preflight", "chromium155_host"));
+  launcher.prefetchBrowserRuntimes([profile]);
+  expect(downloads).toBe(0);
   store.close();
 });

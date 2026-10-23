@@ -69,6 +69,8 @@ export interface CloudWorkspace {
 
 export interface CloudFolder {
   name: string;
+  parentName?: string | null;
+  label?: string;
   archivedAt: number | null;
   permission: FolderPermission;
   extensionDefaults: string[];
@@ -76,6 +78,12 @@ export interface CloudFolder {
 
 export interface CloudFolderGrant {
   folderName: string;
+  accountId: string;
+  permission: FolderPermission;
+}
+
+export interface CloudProfileGrant {
+  profileId: string;
   accountId: string;
   permission: FolderPermission;
 }
@@ -96,6 +104,7 @@ export interface CloudMember {
   role: WorkspaceRole;
   joinedAt: number;
   grants: CloudFolderGrant[];
+  profileGrants?: CloudProfileGrant[];
 }
 
 export interface CloudDevice {
@@ -258,6 +267,7 @@ export interface PortableProfileV1 {
     tags: string[];
     ua: string;
     timezone: string;
+    locale?: string;
     screenWidth: number;
     screenHeight: number;
     fingerprintSeed: number;
@@ -292,7 +302,25 @@ export interface PortableProfileV2 {
   session: PortableSessionV1;
 }
 
-export type PortableProfile = PortableProfileV1 | PortableProfileV2;
+/** Chromium on the opt-in AliasMode Chromium runtime. Older clients reject it instead of opening it on CloakBrowser. */
+export interface PortableProfileV3 {
+  schemaVersion: 3;
+  profile: PortableProfileV1["profile"] & {
+    chromiumRuntime: "aliasmode";
+  };
+  session: PortableSessionV1;
+}
+
+/** CloakBrowser with stored hardware. Older clients reject it instead of opening it with the engine default and saving it without the hardware. */
+export interface PortableProfileV4 {
+  schemaVersion: 4;
+  profile: PortableProfileV1["profile"] & {
+    hardware: { cores: number };
+  };
+  session: PortableSessionV1;
+}
+
+export type PortableProfile = PortableProfileV1 | PortableProfileV2 | PortableProfileV3 | PortableProfileV4;
 
 export interface CloudProfileSummary {
   id: string;
@@ -373,6 +401,16 @@ export interface ListFoldersResponse {
 
 export interface CreateFolderRequest {
   name: string;
+  parentName?: string | null;
+}
+
+export interface MoveFolderRequest {
+  parentName: string | null;
+}
+
+export interface SetProfileGrantResponse {
+  ok: true;
+  grant: CloudProfileGrant;
 }
 
 export interface RenameFolderRequest {

@@ -87,6 +87,26 @@ test("Cloud client encodes folder and account path segments", async () => {
   expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ permission: "view" });
 });
 
+test("Cloud client sends explicit folder parents and encoded profile grants", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const cloud = client(async (url, init) => {
+    calls.push({ url: String(url), init });
+    return Response.json({ ok: true });
+  });
+  await cloud.createFolder("Fitness", "Facebook");
+  await cloud.createFolder("Literal/Root");
+  await cloud.moveFolder("Facebook/Fitness", null);
+  await cloud.setProfileGrant("profile/1", "account/1", "edit");
+  await cloud.removeProfileGrant("profile/1", "account/1");
+  expect(calls.map(({ url, init }) => [url.replace("https://cloud.aliasmode.test/v1", ""), init?.method, init?.body ? JSON.parse(String(init.body)) : null])).toEqual([
+    ["/workspace/folders", "POST", { name: "Fitness", parentName: "Facebook" }],
+    ["/workspace/folders", "POST", { name: "Literal/Root" }],
+    ["/workspace/folders/Facebook%2FFitness/move", "POST", { parentName: null }],
+    ["/profiles/profile%2F1/grants/account%2F1", "PUT", { permission: "edit" }],
+    ["/profiles/profile%2F1/grants/account%2F1", "DELETE", null],
+  ]);
+});
+
 test("Cloud client uses invitation and move request shapes", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const cloud = client(async (url, init) => {
@@ -201,6 +221,34 @@ test("Cloud close rejects malformed conflicts without a current version", async 
   }, { status: 409 }));
   await expect(cloud.closeOpen("registration-1", { expectedVersion: 7, payload }))
     .rejects.toThrow("missing currentVersion");
+});
+
+test("Cloud client shares one roster download between callers until a write", async () => {
+  let rosterRequests = 0;
+  const waiting: Array<() => void> = [];
+  const cloud = client(async (url) => {
+    if (String(url).endsWith("/profiles/import")) return Response.json({ ok: true, imported: 0, ids: [] }, { status: 201 });
+    rosterRequests++;
+    await new Promise<void>((resolve) => { waiting.push(resolve); });
+    return Response.json({ ok: true, profiles: [] }, { headers: { etag: `"roster-${rosterRequests}"` } });
+  });
+
+  const first = cloud.listProfiles();
+  const second = cloud.listProfiles();
+  await Bun.sleep(0);
+  expect(rosterRequests).toBe(1);
+  waiting.shift()!();
+  expect(await second).toEqual(await first);
+
+  const before = cloud.listProfiles();
+  await Bun.sleep(0);
+  await cloud.importProfiles({ destination: "Sales", profiles: [] });
+  // A roster started before the write cannot answer for the state after it.
+  const after = cloud.listProfiles();
+  await Bun.sleep(0);
+  expect(rosterRequests).toBe(3);
+  for (const release of waiting.splice(0)) release();
+  await Promise.all([before, after]);
 });
 
 test("Cloud client imports one profile batch and invalidates its roster cache", async () => {
@@ -341,6 +389,35 @@ test("Cloud client classifies fetch failures without losing their cause", async 
     expect(error).toBeInstanceOf(CloudRequestError);
     expect(error).toMatchObject({ failure: { kind: "transport", retryable: true }, cause: failure });
   }
+});
+
+function trickle(chunks: string[], gapMs: number, stallAfter = Infinity): ReadableStream<Uint8Array> {
+  let sent = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      if (sent >= stallAfter) return new Promise<void>(() => {});
+      await Bun.sleep(gapMs);
+      if (sent === chunks.length) return controller.close();
+      controller.enqueue(new TextEncoder().encode(chunks[sent++]!));
+    },
+  });
+}
+
+test("Cloud client finishes a roster that keeps arriving past the timeout", async () => {
+  const body = JSON.stringify({ ok: true, profiles: [] }).padEnd(400, " ");
+  const chunks = body.match(/.{1,20}/gs)!;
+  const cloud = client(async () => new Response(trickle(chunks, 5)), 50);
+  const started = performance.now();
+  expect(await cloud.listProfiles()).toEqual({ ok: true, profiles: [] });
+  expect(performance.now() - started).toBeGreaterThan(50);
+});
+
+test("Cloud client times out a response body that stops arriving", async () => {
+  const cloud = client(async () => new Response(trickle(['{"ok":true,', '"profiles":[]}'], 1, 1)), 30);
+  await expect(cloud.listProfiles()).rejects.toMatchObject({
+    message: expect.stringContaining("timed out after 30ms"),
+    failure: { kind: "timeout", retryable: true },
+  });
 });
 
 test("Cloud client bounds fetch implementations that ignore abort", async () => {

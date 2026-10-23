@@ -79,8 +79,8 @@ test("local TXT and XLSX exports preserve a saved Firefox config", () => {
     engine: "firefox" as const,
     firefox: {
       version: 1 as const,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", nested: { value: true } },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", nested: { value: true } },
     },
   };
   const txt = serializeAdsTxt([firefox]);

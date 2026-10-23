@@ -115,7 +115,7 @@ const ALIAS_TOOLS = [
   },
   {
     name: "aliasmode_profile_create",
-    description: "Create a persistent AliasMode profile, or an explicit temporary profile.",
+    description: "Create a persistent AliasMode profile, or an explicit temporary profile. Without engine, Windows creates an AliasMode Chromium profile, and macOS and Linux create an AliasMode Firefox profile.",
     annotations: toolAnnotations("Create an AliasMode profile"),
     inputSchema: {
       type: "object",
@@ -124,6 +124,11 @@ const ALIAS_TOOLS = [
         group: { type: "string" },
         platform: { type: "string" },
         engine: { type: "string", enum: ["chromium", "firefox"] },
+        chromiumRuntime: {
+          type: "string",
+          enum: ["aliasmode", "cloakbrowser"],
+          description: "Chromium profiles only. aliasmode (Chromium 155) is the default where this computer can run it. CloakBrowser profiles on one computer can be linked to each other.",
+        },
         screen: { type: "string" },
         proxy: {
           anyOf: [
@@ -460,6 +465,8 @@ export function sanitizeEnvironment(env = process.env) {
     "ALIASMODE_APP_VERSION", "ALIASMODE_DESKTOP_EXE", "ALIASMODE_MCP_DIAGNOSTICS",
     "ALIASMODE_RUNTIME_DESCRIPTOR",
     "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "TMP", "USERPROFILE",
+    // Linux: the app that the host may start needs the desktop session, and the data folder.
+    "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
   ]);
   for (const key of Object.keys(env)) {
     if (!allowed.has(key.toUpperCase())) delete env[key];
@@ -472,7 +479,9 @@ async function main() {
     dirname(fileURLToPath(import.meta.url)),
     "..",
     "..",
-    "AliasMode.exe",
+    // macOS: Contents/Resources -> Contents/MacOS; Linux: lib/<app> -> bin.
+    ...(process.platform === "darwin" ? ["..", "MacOS", "aliasmode"]
+      : process.platform === "linux" ? ["..", "..", "bin", "aliasmode"] : ["AliasMode.exe"]),
   );
   const host = await createAliasModeMcp({ runtime: { desktopExecutable } });
   let shuttingDown = false;

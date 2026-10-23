@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, readdirSync, readlinkSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
@@ -48,8 +49,8 @@ test("store persists a Firefox identity and rejects in-place engine conversion",
     engine: "firefox",
     firefox: {
       version: 1,
-      runtimeVersion: "152.0.4-beta.30",
-      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", nested: { value: true } },
+      runtimeVersion: "156.0.1-beta.36",
+      config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", nested: { value: true } },
     },
   };
 
@@ -63,6 +64,49 @@ test("store persists a Firefox identity and rejects in-place engine conversion",
     "unsupported Firefox profile config version",
   );
   store.close();
+});
+
+test("a Firefox 152 profile moves to the 156 engine when the store opens or the profile closes, never while it runs", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aliasmode-firefox-156-"));
+  const path = join(dir, "profiles.sqlite");
+  const ua152 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
+  const ua156 = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:156.0) Gecko/20100101 Firefox/156.0";
+  const legacy = {
+    version: 1 as const, runtimeVersion: "152.0.4-beta.30",
+    config: { "navigator.userAgent": ua152, "navigator.platform": "Win32", "screen.width": 1920, timezone: "UTC", fonts: ["Arial"] },
+  };
+  try {
+    let store = new ProfileStore(path);
+    for (const id of ["closed152", "running152"]) {
+      store.upsertProfile({ ...parseExport(SAMPLE).profiles[0]!, id, ua: ua156, engine: "firefox", locale: "de-DE",
+        firefox: { ...legacy, runtimeVersion: "156.0.1-beta.36", config: { ...legacy.config, "navigator.userAgent": ua156 } } });
+    }
+    store.recordLaunch({ profileId: "running152", pid: 1, debugPort: 4321, ws: "firefox://x", startedAt: 1, engine: "firefox" } as any);
+    store.close();
+    // Saved by the previous app version.
+    const db = new Database(path);
+    db.query("UPDATE profiles SET ua = ?, firefox_config_json = ?").run(ua152, JSON.stringify(legacy));
+    db.close();
+
+    store = new ProfileStore(path);
+    const closed = store.getProfile("closed152")!;
+    expect(closed.ua).toBe(ua156);
+    expect(closed.firefox!.runtimeVersion).toBe("156.0.1-beta.36");
+    const { "navigator.userAgent": migratedUa, ...rest } = closed.firefox!.config;
+    expect(migratedUa).toBe(ua156);
+    // Everything else of the identity stays, apart from the usual locale completion.
+    expect(rest).toMatchObject({ "navigator.platform": "Win32", "screen.width": 1920, timezone: "UTC", fonts: ["Arial"] });
+    expect(closed.locale).toBe("de-DE");
+    // The open browser keeps the identity it started with until it closes.
+    expect(store.getProfile("running152")!.firefox).toEqual(legacy);
+    expect(store.getProfile("running152")!.ua).toBe(ua152);
+    store.clearLaunch("running152");
+    expect(store.getProfile("running152")!.firefox).toEqual(closed.firefox);
+    expect(store.getProfile("running152")!.ua).toBe(ua156);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("store persists Firefox launch ownership without exposing it through profile data", () => {
@@ -299,6 +343,105 @@ test("setGroup reassigns multiple profiles and ignores unknown ids", () => {
   store.close();
 });
 
+// Windows refuses to delete or rename a database that a closed store still
+// holds open. Linux shows the same leak as an open descriptor, so it fails here too.
+const linuxTest = process.platform === "linux" ? test : test.skip;
+linuxTest("close releases the database file after transactions ran", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aliasmode-store-close-"));
+  const path = join(dir, "profiles.sqlite");
+  try {
+    const store = new ProfileStore(path);
+    store.createGroup("Facebook");
+    store.createGroup("Fitness", "Facebook");
+    store.close();
+    const held = readdirSync("/proc/self/fd").filter((fd) => {
+      try { return readlinkSync(`/proc/self/fd/${fd}`).startsWith(path); } catch { return false; }
+    });
+    expect(held).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy folder migration and explicit hierarchy survive reopening", () => {
+  const dir = mkdtempSync(join(tmpdir(), "aliasmode-folder-migration-"));
+  const path = join(dir, "profiles.sqlite");
+  let store = new ProfileStore(path);
+  try {
+    store.registerGroup("Facebook/Literal");
+    store.close();
+    const legacy = new Database(path);
+    legacy.exec("ALTER TABLE groups DROP COLUMN parent_name; ALTER TABLE groups DROP COLUMN label;");
+    legacy.close();
+    store = new ProfileStore(path);
+    expect(store.listFolders()).toContainEqual({ name: "Facebook/Literal", parentName: null, label: "Facebook/Literal" });
+    store.createGroup("Facebook");
+    store.createGroup("Fitness", "Facebook");
+    store.close();
+    store = new ProfileStore(path);
+    expect(store.listFolders()).toContainEqual({ name: "Facebook/Fitness", parentName: "Facebook", label: "Fitness" });
+    expect(store.listFolders().find((folder) => folder.name === "Facebook/Literal")?.parentName).toBeNull();
+  } finally {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("nested groups keep legacy slash names flat and distinguish identical child labels", () => {
+  const store = memStore();
+  store.registerGroup("Facebook/Literal");
+  store.createGroup("Facebook");
+  store.createGroup("TikTok");
+  expect(store.createGroup("Fitness", "Facebook")).toEqual({ name: "Facebook/Fitness", label: "Fitness", parentName: "Facebook" });
+  expect(store.createGroup("Fitness", "TikTok").name).toBe("TikTok/Fitness");
+  expect(store.listFolders().find((folder) => folder.name === "Facebook/Literal")?.parentName).toBeNull();
+  expect(() => store.createGroup("Literal", "Facebook")).toThrow();
+  expect(() => store.createGroup("Orphan", "Missing")).toThrow();
+  store.close();
+});
+
+test("nested group rename and move preserve live and trashed profiles and defaults", () => {
+  const store = memStore();
+  store.createGroup("Facebook");
+  store.createGroup("Fitness", "Facebook");
+  store.createGroup("Gym", "Facebook/Fitness");
+  store.registerGroup("Facebook/Unrelated");
+  store.setGroupExtensionDefaults("Facebook/Fitness/Gym", ["extension-a"]);
+  const profile = parseExport(SAMPLE).profiles[0]!;
+  store.upsertProfile({ ...profile, group: "Facebook/Fitness/Gym", extensions: ["extension-a"] });
+  store.upsertProfile({ ...profile, id: "trashed", group: "Facebook/Fitness/Gym" });
+  store.trashProfile("trashed");
+  store.renameGroup("Facebook", "Social");
+  expect(store.getProfile(profile.id)?.group).toBe("Social/Fitness/Gym");
+  expect(store.listTrashed()[0]?.group).toBe("Social/Fitness/Gym");
+  expect(store.getGroupExtensionDefaults("Social/Fitness/Gym")).toEqual(["extension-a"]);
+  expect(store.listFolders().find((folder) => folder.name === "Facebook/Unrelated")?.parentName).toBeNull();
+  expect(() => store.moveGroup("Social", "Social/Fitness/Gym")).toThrow();
+  expect(() => store.deleteGroup("Social")).toThrow();
+  store.moveGroup("Social/Fitness", null);
+  expect(store.getProfile(profile.id)?.group).toBe("Fitness/Gym");
+  expect(store.listTrashed()[0]?.group).toBe("Fitness/Gym");
+  store.restoreProfile("trashed");
+  expect(store.getProfile("trashed")?.group).toBe("Fitness/Gym");
+  store.deleteGroup("Fitness/Gym");
+  expect(store.getProfile(profile.id)?.group).toBe("");
+  expect(store.getProfile(profile.id)?.extensions).toEqual(["extension-a"]);
+  store.close();
+});
+
+test("subtree name collisions leave local profiles and folders unchanged", () => {
+  const store = memStore();
+  store.createGroup("A");
+  store.createGroup("Child", "A");
+  store.registerGroup("B/Child");
+  const before = store.listFolders();
+  expect(() => store.renameGroup("A", "B")).toThrow();
+  expect(store.listFolders()).toEqual(before);
+  store.renameGroup("A", "A/Child");
+  expect(store.listGroups()).toContain("A/Child/Child");
+  store.close();
+});
+
 test("launch records round-trip exact process, kernel, and persona identity", () => {
   const store = memStore();
   store.recordLaunch({
@@ -471,5 +614,16 @@ test("a new expectation clears a verdict computed against the previous one", () 
   const back = store.getProfile("fp0005")!;
   expect(back.fpExpected).toEqual({ canvas: "ffffffff" });
   expect(back.fpVerdict).toBeUndefined();
+  store.close();
+});
+
+test("every profile save, single or in a batch, reaches the save hook", () => {
+  const store = new ProfileStore(":memory:");
+  const saved: string[] = [];
+  store.onProfileSaved = (profile) => saved.push(profile.id);
+  const [first, second] = parseExport("id=hook0001\nname=one\n******************\nid=hook0002\nname=two\n******************").profiles;
+  store.upsertProfile(first!);
+  store.upsertProfiles([second!]);
+  expect(saved).toEqual(["hook0001", "hook0002"]);
   store.close();
 });

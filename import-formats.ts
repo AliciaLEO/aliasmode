@@ -35,6 +35,7 @@ const STRING_FIELDS: Array<[string, string[]]> = [
   ["fakey", ["fakey", "twofa", "2fa", "totp", "otp", "totpsecret", "otpsecret", "twofasecret", "accounttwofa"]],
   ["ua", ["ua", "useragent", "useragentstring", "browseruseragent", "profileuseragent", "navigatoruseragent", "fingerprintnavigatoruseragent"]],
   ["seed", ["seed", "fingerprintseed", "profileseed"]],
+  ["locale", ["locale", "profilelocale"]],
 ];
 
 const PROXY_VALUE_ALIASES = [
@@ -293,7 +294,7 @@ function normalizeRecord(
   const extensionText = list(extensions.value);
   if (extensions.present && extensionText !== undefined) output.extensions = extensionText;
 
-  for (const field of ["engine", "firefox_config"] as const) {
+  for (const field of ["engine", "firefox_config", "chromium_runtime", "hardware_cores"] as const) {
     const found = find(index, [normalizedKey(field)]);
     const value = scalar(found.value);
     if (found.present && value !== undefined) output[field] = value;

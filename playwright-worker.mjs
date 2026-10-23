@@ -12,6 +12,10 @@ const ERROR_MESSAGES = {
   timeout: "Playwright operation timed out",
   runtime_unavailable: "Playwright runtime is unavailable",
 };
+// Playwright emulates focus in every tab it attaches to, so the user's open tabs would read
+// document.hasFocus() as true and get focus and blur events each time a helper connects.
+// The patched Playwright leaves focus alone while this is false.
+globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] = false;
 
 async function readStdin() {
   const chunks = [];
@@ -199,6 +203,18 @@ function localStorageHasTelegramAuth(entries) {
       return Object.entries(account).some(([name, value]) => /^dc[1-5]_auth_key$/i.test(name) && typeof value === "string" && value.length > 0);
     } catch { return false; }
   });
+}
+
+/** passcodeDatabasePresent for records already read over CDP. */
+function indexedDBHasTelegramAuth(databases) {
+  return databases.some((database) => (telegramRule(database.name)?.presence ?? []).some((presence) => presence.stores.some((storeName) => {
+    const keys = (database.stores.find((store) => store.name === storeName)?.records ?? [])
+      .filter((record) => record.valueEncoded !== undefined || (record.value !== undefined && record.value !== null))
+      .map((record) => String(record.key));
+    if (presence.allKeys?.every((key) => keys.includes(key))) return true;
+    const matcher = presence.anyKeyPattern && new RegExp(presence.anyKeyPattern, presence.caseInsensitive ? "i" : "");
+    return !!matcher && keys.some((key) => matcher.test(key));
+  })));
 }
 
 async function passcodeDatabasePresent(page) {
@@ -447,7 +463,6 @@ async function collectTelegramIndexedDB(cdp, origin) {
           securityOrigin: origin,
           databaseName: name,
           objectStoreName: store.name,
-          indexName: "",
           skipCount,
           pageSize: 1_000,
         });
@@ -606,7 +621,9 @@ async function createReadOnlyStorageReader(browser, context) {
           storageId: { securityOrigin: origin, isLocalStorage: true },
         });
         const localStorage = (response.entries ?? []).map(([name, value]) => ({ name, value }));
-        const indexedDB = origin === TELEGRAM_ORIGIN ? await collectTelegramIndexedDB(cdp, origin) : [];
+        const collected = origin === TELEGRAM_ORIGIN ? await collectTelegramIndexedDB(cdp, origin) : [];
+        // As for a live Telegram page: a normal A/K login is in localStorage; only a passcode login needs IndexedDB.
+        const indexedDB = localStorageHasTelegramAuth(localStorage) && !indexedDBHasTelegramAuth(collected) ? [] : collected;
         return { localStorage, ...(indexedDB.length ? { indexedDB } : {}) };
       } finally {
         await context.unroute(url, handler).catch(() => {});
@@ -661,7 +678,12 @@ function registerNativeOrigins(context, origins) {
 
 export async function captureSession(browser, payload, options = {}) {
   const context = contextOf(browser);
-  const tabs = context.pages().map((page) => canonicalUserPageUrl(page.url())).filter(Boolean);
+  const pages = context.pages();
+  const shown = await shownPageUrls(context, pages, !!options.nativeStorage);
+  // No window is not an intentional empty tab list (a live blank page is).
+  const tabs = options.nativeStorage && pages.length === 0
+    ? undefined
+    : pages.map((page) => canonicalUserPageUrl(shown.get(page))).filter(Boolean);
   const seed = payload.captureSeed;
   if (seed !== undefined && (!seed || typeof seed !== "object" || Array.isArray(seed)
     || !Array.isArray(seed.origins)
@@ -672,9 +694,9 @@ export async function captureSession(browser, payload, options = {}) {
 
   const origins = new Set(seed?.origins ?? []);
   let telegramClient = seed?.telegramClient;
-  for (const page of context.pages()) {
+  for (const page of pages) {
     try {
-      const pageUrl = canonicalUserPageUrl(page.url());
+      const pageUrl = canonicalUserPageUrl(shown.get(page));
       if (!pageUrl) continue;
       const url = new URL(pageUrl);
       const origin = canonicalWebOrigin(url.origin);
@@ -691,15 +713,26 @@ export async function captureSession(browser, payload, options = {}) {
   let reader;
   try {
     const byOrigin = new Map();
+    const unreadable = [];
     for (const origin of [...origins].sort()) {
       let storage = await captureLiveOrigin(context, origin, !!options.nativeStorage);
+      // The caller keeps its saved copy of this origin; no temporary page opens.
+      if (!storage && seed?.openTabsOnly) continue;
       if (!storage) {
         if (options.nativeStorage) {
-          // Firefox reads a closed origin through a visible temporary window. Storage
-          // cannot change until that origin loads again, which clears its cache entry.
+          // Closed-origin storage cannot change until that origin loads again,
+          // which clears its cache entry.
           storage = options.storageCache?.get(origin);
           if (!storage) {
-            storage = await sessionStep("origin_storage", () => nativeOriginStorage(context, origin));
+            try {
+              storage = await nativeOriginStorage(context, origin);
+            } catch {
+              // The browser can refuse to open an origin as a page, for example when an extension
+              // blocks it. One such origin must not stop the capture: the caller keeps the storage
+              // that it saved for this origin before.
+              unreadable.push(origin);
+              continue;
+            }
             if (!storage) throw sessionError("origin_storage");
             if (!hasOriginPage(context, origin)) options.storageCache?.set(origin, storage);
           }
@@ -730,37 +763,77 @@ export async function captureSession(browser, payload, options = {}) {
       origins: [...byOrigin.values()],
       tabs,
       ...(telegramClient ? { telegramClient } : {}),
+      ...(unreadable.length ? { unreadableOrigins: unreadable } : {}),
     });
   } finally {
     await reader?.close();
   }
 }
 
+// Loads a document in a page with no new entry in the Back history of its window.
+async function replaceDocument(page, target, timeout) {
+  await Promise.all([
+    page.waitForURL(target, { waitUntil: "domcontentloaded", timeout }),
+    page.evaluate((next) => { globalThis.location.replace(next); }, target).catch(() => {}),
+  ]);
+}
+
 function isInternalNewTabUrl(url) {
   return INTERNAL_NEW_TAB_URLS.has(url) || url === "about:newtab" || url === "about:home";
 }
 
-async function navigatePages(context, urls, replacePages = false) {
+// Chromium shows the search engine's own new tab page (https://duckduckgo.com/chrome_newtab) as
+// chrome://newtab/, but Playwright reports the web address, so that page counted as a site tab.
+// The CDP target keeps the address that the tab shows. Firefox has no CDP.
+async function shownPageUrl(context, page, isFirefox) {
+  let url = "";
+  let cdp;
+  try {
+    url = page.url();
+    if (isFirefox || !/^https:/.test(url)) return url;
+    cdp = await context.newCDPSession(page);
+    const shown = (await cdp.send("Target.getTargetInfo"))?.targetInfo?.url;
+    return isInternalNewTabUrl(shown) ? shown : url;
+  } catch {
+    return url;
+  } finally {
+    await cdp?.detach().catch(() => {});
+  }
+}
+
+async function shownPageUrls(context, pages, isFirefox) {
+  return new Map(await Promise.all(pages.map(async (page) => [page, await shownPageUrl(context, page, isFirefox)])));
+}
+
+// In Firefox a new page from Playwright is a new window. A page can open a tab in its own window,
+// and "noopener" leaves that tab with no link to the page.
+async function openTabBeside(context, page) {
+  try {
+    const opened = context.waitForEvent("page", { timeout: 5_000 });
+    await page.evaluate(() => { globalThis.open("about:blank", "_blank", "noopener"); });
+    return await opened;
+  } catch {
+    return undefined;
+  }
+}
+
+async function navigatePages(context, urls, replacePages = false, tabsInOneWindow = false) {
   const targets = (Array.isArray(urls) ? urls : []).map(canonicalUserPageUrl).filter(Boolean);
   const existing = [...context.pages()];
-  const existingUserPage = existing.some((page) => {
-    try { return canonicalUserPageUrl(page.url()) !== undefined; } catch { return false; }
-  });
-  let blank = existing.find((page) => {
-    try { return page.url() === "about:blank"; } catch { return false; }
-  }) || existing.find((page) => {
-    try { return isInternalNewTabUrl(page.url()); } catch { return false; }
-  }) || existing.find((page) => {
-    try { return page.url() === UNGOOGLED_FIRST_RUN_URL; } catch { return false; }
-  });
+  // Only Firefox opens the tabs in one window.
+  const shown = await shownPageUrls(context, existing, tabsInOneWindow);
+  const urlOf = (page) => shown.get(page) ?? "";
+  const existingUserPage = existing.some((page) => canonicalUserPageUrl(urlOf(page)) !== undefined);
+  let blank = existing.find((page) => urlOf(page) === "about:blank")
+    || existing.find((page) => isInternalNewTabUrl(urlOf(page)))
+    || existing.find((page) => urlOf(page) === UNGOOGLED_FIRST_RUN_URL);
   if (!replacePages && existingUserPage) blank = undefined;
   let firstError;
 
   if (replacePages) {
     if (!blank) blank = await context.newPage();
     for (const page of existing) {
-      let url = "";
-      try { url = page.url(); } catch {}
+      const url = urlOf(page);
       const disposable = canonicalUserPageUrl(url) !== undefined
         || (url === UNGOOGLED_FIRST_RUN_URL && page !== blank)
         || (isInternalNewTabUrl(url) && page !== blank)
@@ -770,9 +843,7 @@ async function navigatePages(context, urls, replacePages = false) {
     }
   } else {
     for (const page of existing) {
-      let url = "";
-      try { url = page.url(); } catch {}
-      if (url !== UNGOOGLED_FIRST_RUN_URL) continue;
+      if (urlOf(page) !== UNGOOGLED_FIRST_RUN_URL) continue;
       if (page === blank && !existingUserPage) {
         if (targets.length > 0) continue;
         try {
@@ -786,14 +857,25 @@ async function navigatePages(context, urls, replacePages = false) {
     }
   }
 
+  // The tabs open in the window of the empty page, before that page gets its own address. Each
+  // tab opens from the tab before it, because Firefox puts a new tab directly after its opener.
+  const tabs = [];
+  if (tabsInOneWindow && blank) {
+    let opener = blank;
+    for (let index = 1; index < targets.length; index++) {
+      tabs[index] = await openTabBeside(context, opener);
+      opener = tabs[index] ?? opener;
+    }
+  }
   for (let index = 0; index < targets.length; index++) {
     try {
-      const page = index === 0 && blank ? blank : await context.newPage();
+      const page = index === 0 && blank ? blank : tabs[index] ?? await context.newPage();
       await page.goto(targets[index], { waitUntil: "domcontentloaded", timeout: 30_000 });
     } catch (error) {
       firstError ??= error;
     }
   }
+  if (tabs.some(Boolean)) await blank.bringToFront?.().catch(() => {});
   if (firstError) throw firstError;
 }
 
@@ -808,13 +890,30 @@ export async function restoreSession(browser, context, payload, options = {}) {
   const storageSource = origins.some((target) => target.indexedDB?.length)
     ? await sessionStep("origin_storage", storageScriptSource)
     : undefined;
+  // In Firefox a new page is a new window. One page then serves all origins: the empty first
+  // window when there is one.
+  let shared;
+  let sharedIsFirstWindow = false;
+  try {
   for (const target of origins) {
     await sessionStep("origin_storage", async () => {
       const existing = context.pages();
       for (const page of existing) {
-        try { if (new URL(page.url()).origin === target.origin) await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 }); } catch {}
+        if (page === shared) continue;
+        try {
+          if (new URL(page.url()).origin !== target.origin) continue;
+          if (isInternalNewTabUrl(await shownPageUrl(context, page, !!options.nativeStorage))) continue;
+          await page.goto("about:blank", { waitUntil: "domcontentloaded", timeout: 5_000 });
+        } catch {}
       }
-      const page = await context.newPage();
+      if (options.nativeStorage && !shared) {
+        const empty = context.pages().find((candidate) => {
+          try { return candidate.url() === "about:blank"; } catch { return false; }
+        });
+        shared = empty ?? await context.newPage();
+        sharedIsFirstWindow = !!empty;
+      }
+      const page = shared ?? await context.newPage();
       const restoreUrl = `${target.origin}/?__aliasmode_session_restore__=${Date.now()}`;
       let intercepted = false;
       const handler = (route) => {
@@ -828,7 +927,8 @@ export async function restoreSession(browser, context, payload, options = {}) {
           await cdp.send("Network.setBypassServiceWorker", { bypass: true });
         }
         await context.route(restoreUrl, handler);
-        await page.goto(restoreUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
+        if (shared) await replaceDocument(page, restoreUrl, 10_000);
+        else await page.goto(restoreUrl, { waitUntil: "domcontentloaded", timeout: 10_000 });
         if (!intercepted) throw new Error("Restore navigation was not intercepted");
         if (new URL(page.url()).origin !== target.origin) throw new Error("wrong restore origin");
       await page.evaluate(async ({ entries, databases, source, isFirefox, databaseRules }) => {
@@ -870,14 +970,18 @@ export async function restoreSession(browser, context, payload, options = {}) {
         });
       } finally {
         await context.unroute(restoreUrl, handler).catch(() => {});
-        await page.close();
+        if (!shared) await page.close();
         if (cdp) await cdp.detach().catch(() => {});
       }
     });
   }
+  } finally {
+    if (shared && sharedIsFirstWindow) await replaceDocument(shared, "about:blank", 5_000).catch(() => {});
+    else await shared?.close().catch(() => {});
+  }
   await sessionStep("cookie_clear", () => context.clearCookies());
   if (cookies.length) await sessionStep("cookie_add", () => context.addCookies(cookies));
-  await sessionStep("navigation", () => navigatePages(context, payload.urls, !!payload.replacePages));
+  await sessionStep("navigation", () => navigatePages(context, payload.urls, !!payload.replacePages, !!options.nativeStorage));
   return null;
 }
 
@@ -981,11 +1085,13 @@ async function searchProvider(chromium, payload) {
       }
       if (!duck) throw new Error("Chromium did not save DuckDuckGo");
 
+      // Chrome 146 identifies an engine by `modelIndex`; Chromium 155 renamed it to `id`.
       const modelIndex = (engine) => {
-        if (!Number.isInteger(engine.modelIndex) || engine.modelIndex < 0) {
+        const index = Number.isInteger(engine.modelIndex) ? engine.modelIndex : engine.id;
+        if (!Number.isInteger(index) || index < 0) {
           throw new Error("Chromium search engine model index was unavailable");
         }
-        return engine.modelIndex;
+        return index;
       };
       if (duck.canBeActivated) {
         globalThis.chrome.send("setIsActiveSearchEngine", [modelIndex(duck), true]);
@@ -1036,7 +1142,7 @@ export async function operatePersistentContext(browser, context, operation, payl
   }
   if (operation === "cookie-harvest") return context.cookies(Array.isArray(payload.urls) && payload.urls.length ? payload.urls : SESSION_URLS);
   if (operation === "navigate") {
-    await navigatePages(context, payload.urls, !!payload.replacePages);
+    await navigatePages(context, payload.urls, !!payload.replacePages, true);
     return null;
   }
   if (operation === "profile-card") {
@@ -1085,7 +1191,12 @@ export async function operatePersistentContext(browser, context, operation, payl
     } finally { await page.close().catch(() => {}); }
   }
   if (operation === "page" && payload.kind === "fingerprint") {
-    const page = await context.newPage();
+    // In Firefox a new page is a new window, and the user sees it open and close at each launch.
+    // The empty first window loads the probe document instead, and then becomes empty again.
+    const empty = context.pages().find((candidate) => {
+      try { return candidate.url() === "about:blank"; } catch { return false; }
+    });
+    const page = empty ?? await context.newPage();
     const url = "https://fingerprint.aliasmode.invalid/?__aliasmode_fingerprint__=1";
     let intercepted = false;
     const handler = async (route) => {
@@ -1095,12 +1206,14 @@ export async function operatePersistentContext(browser, context, operation, payl
     };
     try {
       await page.route("**/*", handler);
-      await page.goto(url, { waitUntil: "domcontentloaded", timeout });
+      if (empty) await replaceDocument(page, url, timeout);
+      else await page.goto(url, { waitUntil: "domcontentloaded", timeout });
       if (!intercepted || page.url() !== url) throw new Error("fingerprint document was not fulfilled locally");
       return await page.evaluate(payload.fingerprintScript);
     } finally {
+      if (empty) await replaceDocument(page, "about:blank", 5_000).catch(() => {});
       await page.unroute("**/*", handler).catch(() => {});
-      await page.close().catch(() => {});
+      if (!empty) await page.close().catch(() => {});
     }
   }
   if (operation === "page") {
@@ -1191,10 +1304,11 @@ async function operate(chromium, operation, payload) {
               await cdp.detach().catch(() => {});
             }
           }
+          // The card opens as a background tab, so the user's tab stays in front without being
+          // activated again, which would focus it.
           if (canCreate) {
             const page = await context.newPage();
             await page.goto(payload.url, { waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
-            if (automation !== page) await automation.bringToFront().catch(() => {});
           }
         }
         await targetCdp.send("Target.getTargets");

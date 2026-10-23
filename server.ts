@@ -20,7 +20,7 @@ import {
   type LifecycleAdmissionController,
   type LifecycleState,
 } from "./lifecycle-admission.ts";
-import { harvestCookies, parseCapturedSessionBundle, sessionCaptureSeed } from "./session.ts";
+import { harvestCookies, keepUnreadableOrigins, parseCapturedSessionBundle, sessionCaptureSeed, workerCaptureSeed } from "./session.ts";
 import { isSafeProfileId } from "./profile-id.ts";
 import type { AutomationHealthEntry } from "./remote-types.ts";
 
@@ -49,9 +49,10 @@ function firefoxPublicFields() {
 
 async function captureFirefoxSession(store: ProfileStore, profileId: string, owner: FirefoxOwner): Promise<void> {
   try {
-    const bundle = await callFirefoxOwner<string>(owner, "session-capture", {
-      captureSeed: sessionCaptureSeed(store.getSessionBundle(profileId) ?? ""),
-    });
+    const captureSeed = sessionCaptureSeed(store.getSessionBundle(profileId) ?? "");
+    const bundle = keepUnreadableOrigins(await callFirefoxOwner<string>(owner, "session-capture", {
+      captureSeed: workerCaptureSeed(captureSeed),
+    }), captureSeed.saved);
     parseCapturedSessionBundle(bundle);
     const current = store.getLaunch(profileId);
     if (isFirefoxLaunch(current) && current.firefoxOwner.generation === owner.generation) {

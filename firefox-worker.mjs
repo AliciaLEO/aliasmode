@@ -57,14 +57,28 @@ export function observedFirefoxCaptureUrl(value) {
   } catch {}
 }
 
-function cleanCamouConfig(config) {
+function setChunkedEnv(name, serialized) {
   for (const key of Object.keys(process.env)) {
-    if (/^CAMOU_CONFIG(?:_\d+)?$/i.test(key)) delete process.env[key];
+    if (new RegExp(`^${name}(?:_\\d+)?$`, "i").test(key)) delete process.env[key];
   }
-  const serialized = JSON.stringify(config);
   for (let offset = 0; offset < serialized.length; offset += 2047) {
-    process.env[`CAMOU_CONFIG_${Math.floor(offset / 2047) + 1}`] = serialized.slice(offset, offset + 2047);
+    process.env[`${name}_${Math.floor(offset / 2047) + 1}`] = serialized.slice(offset, offset + 2047);
   }
+}
+
+/** JSON with every non-ASCII character escaped, as Python's json.dumps writes it. */
+function asciiJson(value) {
+  return JSON.stringify(value).replace(/[\u007f-\uffff]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`);
+}
+
+/**
+ * The engine config (CAMOU_CONFIG_n) and its startup preferences (CAMOU_PREFS_n) as ASCII-only
+ * JSON: the engine reads the preferences through the ANSI code page on Windows, and a chunk
+ * boundary can never split a character (a profile name can hold an emoji).
+ */
+export function camouEnvironment(config, prefs) {
+  setChunkedEnv("CAMOU_CONFIG", asciiJson(config));
+  setChunkedEnv("CAMOU_PREFS", prefs && Object.keys(prefs).length ? asciiJson(prefs) : "");
 }
 
 async function readConfig() {
@@ -83,6 +97,7 @@ async function readConfig() {
     || typeof input.executableSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.executableSha256)
     || typeof input.userDataDir !== "string" || !input.userDataDir
     || !validConfig(input.config)
+    || (input.prefs !== undefined && !validConfig(input.prefs))
     || !input.owner || !isLoopbackEndpoint(input.owner.endpoint)
     || typeof input.owner.token !== "string" || !input.owner.token
     || typeof input.owner.generation !== "string" || !input.owner.generation
@@ -154,19 +169,29 @@ function send(response, status, body) {
 }
 
 export function firefoxLaunchOptions(input) {
+  // A stored graphics identity must show on every computer, also where the browser would turn WebGL off.
+  const graphics = input.config?.["webGl:vendor"] ? { "webgl.force-enabled": true } : {};
   return {
     executablePath: input.executablePath,
     viewport: null,
+    // Pages see the computer's colour scheme, motion, contrast and forced colours, as in stock
+    // Firefox. Playwright otherwise emulates light, no-preference and none in every page; null
+    // ("no-override") leaves them to the system, as upstream Camoufox's STOCK_MEDIA_DEFAULTS do.
+    colorScheme: null,
+    reducedMotion: null,
+    forcedColors: null,
+    contrast: null,
     ...(input.proxy ? {
       proxy: input.proxy,
       firefoxUserPrefs: {
         "media.peerconnection.ice.proxy_only": true,
         "media.peerconnection.ice.default_address_only": true,
         "media.peerconnection.ice.no_host": true,
+        ...graphics,
       },
     } : {
       // No proxy: keep WebRTC on the default route so a system VPN's IP is used, not the real NIC.
-      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true },
+      firefoxUserPrefs: { "media.peerconnection.ice.default_address_only": true, ...graphics },
     }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
@@ -175,7 +200,8 @@ export function firefoxLaunchOptions(input) {
 
 async function launchOwner(input) {
   if (await sha256File(input.executablePath) !== input.executableSha256) throw typed("operation_failed");
-  cleanCamouConfig(input.config);
+  camouEnvironment(input.config, input.prefs);
+  process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
   let runtime;
   try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
   if (!runtime.firefox) throw typed("runtime_unavailable");
@@ -212,7 +238,11 @@ async function run() {
   };
   const observePage = (page) => {
     try { observeUrl(page.url()); } catch {}
-    page.on?.("framenavigated", (frame) => { try { observeUrl(frame.url()); } catch {} });
+    // Only the page itself counts. An embedded frame has its own partitioned storage, and a capture
+    // of its origin would open a window for it at every checkpoint.
+    page.on?.("framenavigated", (frame) => {
+      try { if (frame === page.mainFrame()) observeUrl(frame.url()); } catch {}
+    });
   };
   for (const page of context.pages()) observePage(page);
   context.on?.("page", observePage);
@@ -301,7 +331,7 @@ async function run() {
     if (name === "session-capture") {
       const seed = payload.captureSeed;
       if (seed === undefined || (seed && typeof seed === "object" && !Array.isArray(seed) && Array.isArray(seed.origins))) {
-        const origins = new Set([...(seed?.origins ?? []), ...observedOrigins]);
+        const origins = new Set([...(seed?.origins ?? []), ...(seed?.openTabsOnly ? [] : observedOrigins)]);
         payload = {
           ...payload,
           captureSeed: {

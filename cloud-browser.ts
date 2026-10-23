@@ -1,4 +1,4 @@
-import { watch } from "node:fs";
+import { mkdirSync, watch } from "node:fs";
 import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type {
   CloudProfileSummary,
@@ -27,12 +27,13 @@ import {
 } from "./pending-sync.ts";
 import { PlaywrightWorkerError } from "./playwright-runtime.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
+import { completeProfileFingerprint } from "./firefox-config.ts";
 import { proxyHostPort } from "./proxy.ts";
 import {
   bundleHasRestorableLogin,
   bundleTabUrls,
   bundleTelegramClient,
-  canonicalUserPageUrl,
+  keepUncapturedOrigins,
   parseCapturedSessionBundle,
   sessionBundleSignature,
   sessionCaptureSeed,
@@ -129,13 +130,13 @@ type CloudBrowserClient = Pick<
 type CloudBrowserLauncher = Pick<
   Launcher,
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
-  "pageTargetFingerprint" | "browserStorageWatchPaths" | "failedStartGeneration" |
+  "browserStorageWatchPaths" | "failedStartGeneration" |
   "matchesCloudSession" | "recordCloudSession"
->;
+> & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks" | "nativeSessionReadable">>;
 
 export interface CloudBrowserOptions {
   cloud: CloudBrowserClient;
-  launcher: CloudBrowserLauncher;
+  launcher: CloudBrowserLauncher & Partial<Pick<Launcher, "prefetchBrowserRuntimes">>;
   store: ProfileStore;
   queue: () => PendingSyncQueue | undefined;
   accountId: () => string | undefined;
@@ -144,12 +145,11 @@ export interface CloudBrowserOptions {
   /** Restore the bundle and open startup pages over ONE CDP attach, then detach. */
   applySession: (endpoint: string, bundle: string, urls: readonly string[]) => Promise<void>;
   heartbeatMs?: number;
-  /** Target/storage dirty polling interval; disabled by default, and 0 keeps it disabled. */
-  dirtyMonitorMs?: number;
+  /** Checkpoint the open tabs soon after browser storage changes on disk. On by default. */
+  storageCheckpoints?: boolean;
   checkpointDebounceMs?: number;
   checkpointMinIntervalMs?: number;
   watchPath?: (path: string, onDirty: () => void) => { close(): void };
-  observeTargets?: (endpoint: string, onTarget: (origin: string | null) => void) => { close(): void };
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   log?: (message: string) => void;
@@ -162,8 +162,8 @@ const PROXY_BACKFILL_BATCH = 8;
 const PROXY_BACKFILL_RETRY_MS = 300_000;
 /** Parallel closes during a release, matching the dashboard lifecycle limit. */
 const RELEASE_CLOSE_LIMIT = 4;
-const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 1_200;
-const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 3_000;
+const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 2_000;
+const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 20_000;
 const CLOUD_PROFILE_OPEN_ERROR =
   "This Cloud profile is open in another session. Close it there, or try again shortly if that browser already closed.";
 const TERMINAL_CONFLICT_WARNING =
@@ -180,6 +180,7 @@ function isTerminalConflict(capture: PendingClose): boolean {
 interface CloudCheckpointState {
   registrationId: string;
   signature: string;
+  tabs: string[];
   origins: Set<string>;
   telegramClient?: "a" | "k";
 }
@@ -188,12 +189,9 @@ interface CloudDirtyMonitor {
   registrationId: string;
   debugPort: number;
   startedAt: number;
-  pollTimer?: unknown;
   debounceTimer?: ReturnType<typeof setTimeout>;
   watchers: Array<{ close(): void }>;
   watcherGeneration: number;
-  targetObserver?: { close(): void };
-  targetFingerprint?: string;
   dirty: boolean;
   captureInFlight: boolean;
   lastCaptureAt: number;
@@ -223,66 +221,6 @@ const TERMINAL_HEARTBEAT_ERRORS = new Set([
   "profile_not_found",
   "profile_trashed",
 ]);
-
-function canonicalTargetOrigin(raw: string): string | null {
-  const canonical = canonicalUserPageUrl(raw);
-  return canonical ? new URL(canonical).origin : null;
-}
-
-function targetFingerprintOrigins(fingerprint: string): string[] {
-  try {
-    const targets = JSON.parse(fingerprint);
-    if (!Array.isArray(targets)) return [];
-    return [...new Set(targets.flatMap((target) => {
-      const origin = typeof target?.url === "string" ? canonicalTargetOrigin(target.url) : null;
-      return origin ? [origin] : [];
-    }))];
-  } catch {
-    return [];
-  }
-}
-
-export function observeBrowserTargets(
-  endpoint: string,
-  onTarget: (origin: string | null) => void,
-): { close(): void } {
-  const socket = new WebSocket(endpoint);
-  const pageTargets = new Set<string>();
-  const onOpen = () => {
-    try {
-      socket.send(JSON.stringify({ id: 1, method: "Target.setDiscoverTargets", params: { discover: true } }));
-    } catch {}
-  };
-  const onMessage = (event: MessageEvent) => {
-    if (typeof event.data !== "string") return;
-    try {
-      const message = JSON.parse(event.data);
-      if (message?.method === "Target.targetDestroyed") {
-        const targetId = message?.params?.targetId;
-        if (typeof targetId === "string" && pageTargets.delete(targetId)) onTarget(null);
-        return;
-      }
-      if (message?.method !== "Target.targetCreated" && message?.method !== "Target.targetInfoChanged") return;
-      const info = message?.params?.targetInfo;
-      const targetId = info?.targetId;
-      if (info?.type !== "page") {
-        if (typeof targetId === "string" && pageTargets.delete(targetId)) onTarget(null);
-        return;
-      }
-      if (typeof targetId === "string") pageTargets.add(targetId);
-      onTarget(typeof info.url === "string" ? canonicalTargetOrigin(info.url) : null);
-    } catch {}
-  };
-  socket.addEventListener("open", onOpen);
-  socket.addEventListener("message", onMessage);
-  return {
-    close() {
-      socket.removeEventListener("open", onOpen);
-      socket.removeEventListener("message", onMessage);
-      try { socket.close(); } catch {}
-    },
-  };
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -382,7 +320,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private pendingRetryTimer: unknown;
   private pendingRetryInFlight: Promise<void> | null = null;
   private readonly heartbeatMs: number;
-  private readonly dirtyMonitorMs: number;
+  private readonly storageCheckpoints: boolean;
   private readonly checkpointDebounceMs: number;
   private readonly checkpointMinIntervalMs: number;
   private readonly log: (message: string) => void;
@@ -394,10 +332,11 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   /** Last backfill attempt per profile, so a failing fetch is not retried every poll. */
   private readonly proxyCacheAttempts = new Map<string, number>();
   private proxyBackfillTask: Promise<void> | null = null;
+  private rosterReconcile: Promise<void> | null = null;
 
   constructor(private readonly options: CloudBrowserOptions) {
     this.heartbeatMs = Math.max(0, options.heartbeatMs ?? 60_000);
-    this.dirtyMonitorMs = Math.max(0, options.dirtyMonitorMs ?? 0);
+    this.storageCheckpoints = options.storageCheckpoints ?? true;
     this.checkpointDebounceMs = Math.max(0, options.checkpointDebounceMs ?? DEFAULT_CHECKPOINT_DEBOUNCE_MS);
     this.checkpointMinIntervalMs = Math.max(0, options.checkpointMinIntervalMs ?? DEFAULT_CHECKPOINT_MIN_INTERVAL_MS);
     this.log = options.log ?? (() => {});
@@ -442,28 +381,38 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
   async listRoster(): Promise<{ profiles: CloudBrowserProfile[]; healthSources: [] }> {
     const { queue, accountId } = this.requireContext(false);
-    await this.reconcileClosedBrowsers(queue, accountId);
-    const response = await this.options.cloud.listProfiles();
-    this.backfillProxyCache(response.profiles);
+    // Finishing a closed browser uploads its session and waits behind any open
+    // or close of that profile; on a slow link that takes minutes. Run it beside
+    // the roster fetch so the list never waits for it. Local probes usually
+    // finish before the fetch returns, so running state stays current.
+    if (!this.rosterReconcile) {
+      this.rosterReconcile = this.reconcileClosedBrowsers(queue, accountId)
+        .catch((error) => this.log(`Cloud roster reconciliation failed (${safeErrorType(error)})`))
+        .finally(() => { this.rosterReconcile = null; });
+    }
     const localRegistrations = new Map<string, Set<string>>();
     const rememberRegistration = (profileId: string, registrationId: string) => {
       const registrations = localRegistrations.get(profileId) ?? new Set<string>();
       registrations.add(registrationId);
       localRegistrations.set(profileId, registrations);
     };
-    for (const open of queue.listOpens(accountId)) {
-      rememberRegistration(open.profileId, open.registrationId);
-    }
-    const summaries = queue.list(accountId);
-    for (const summary of summaries) {
-      try {
-        const pending = queue.get(summary.id, accountId);
-        if (pending) rememberRegistration(pending.profileId, pending.registrationId);
-      } catch {
-        // An unreadable registration cannot prove local ownership or hide a Cloud lock.
+    // A registration that finishes during the fetch can still be in the Cloud reply.
+    const rememberLocal = () => {
+      for (const open of queue.listOpens(accountId)) rememberRegistration(open.profileId, open.registrationId);
+      for (const summary of queue.list(accountId)) {
+        try {
+          const pending = queue.get(summary.id, accountId);
+          if (pending) rememberRegistration(pending.profileId, pending.registrationId);
+        } catch {
+          // An unreadable registration cannot prove local ownership or hide a Cloud lock.
+        }
       }
-    }
-    const parkedSessions = newestParkedSessions(summaries);
+    };
+    rememberLocal();
+    const response = await this.options.cloud.listProfiles();
+    this.backfillProxyCache(response.profiles);
+    rememberLocal();
+    const parkedSessions = newestParkedSessions(queue.list(accountId));
     return {
       profiles: response.profiles
         .filter((profile) => profile.trashedAt === null)
@@ -478,6 +427,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           return {
             id: profile.id,
             ...(cached?.engine === "firefox" ? { engine: "firefox" as const } : {}),
+            ...(cached?.chromiumRuntime ? { chromiumRuntime: cached.chromiumRuntime } : {}),
             name: profile.name,
             group: profile.group,
             platform: profile.platform,
@@ -541,6 +491,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           this.options.store.upsertProfile(profile);
           this.options.store.setTimezone(profile.id, profile.timezone);
           this.proxyCacheVersions.set(summary.id, response.profile.version);
+          // A profile synced from another device may need a Firefox font pack here.
+          this.options.launcher.prefetchFirefoxFontPacks?.([profile]);
         } catch {
           // Transient Cloud errors: the attempt stamp keeps retries spaced out.
         }
@@ -588,11 +540,13 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   async create(profile: Profile): Promise<{ id: string }> {
     this.requireContext(false);
     const created = await this.options.cloud.createProfile({
-      payload: encodePortableProfile(profile),
+      payload: encodePortableProfile(completeProfileFingerprint(profile)),
     });
     if (created.profile.id !== profile.id) {
       throw new Error("Cloud returned a mismatched created profile");
     }
+    // This device saves a Cloud profile only when it opens it, so start its browser download now.
+    this.options.launcher.prefetchBrowserRuntimes?.([profile]);
     return { id: profile.id };
   }
 
@@ -601,7 +555,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const ids = profiles.map((profile) => profile.id);
     const imported = await this.options.cloud.importProfiles({
       destination,
-      profiles: profiles.map((profile) => encodePortableProfile(profile, profile.sessionBundle)),
+      profiles: profiles.map((profile) => encodePortableProfile(completeProfileFingerprint(profile), profile.sessionBundle)),
     });
     if (
       imported.imported !== ids.length
@@ -610,6 +564,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     ) {
       throw new Error("Cloud returned a mismatched profile import result");
     }
+    this.options.launcher.prefetchBrowserRuntimes?.(profiles);
     return imported;
   }
 
@@ -724,18 +679,24 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
       stage = "payload_restore";
       logStage("payload_restore");
-      const { profile, sessionBundle } = decodePortableProfile(opened.payload);
-      if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
-      this.options.store.upsertProfile(profile);
-      this.options.store.setTimezone(profile.id, profile.timezone);
+      const { profile: decoded, sessionBundle } = decodePortableProfile(opened.payload);
+      if (decoded.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
+      this.options.store.upsertProfile(completeProfileFingerprint(decoded));
+      this.options.store.setTimezone(decoded.id, decoded.timezone);
+      const profile = this.options.store.getProfile(profileId)!;
       this.proxyCacheVersions.set(profileId, opened.baseVersion);
 
       stage = "browser_launch";
       logStage("browser_launch");
       const { chromeArgs, startupUrls } = splitLaunchUrls(launchArgs);
       const signature = sessionBundleSignature(sessionBundle);
-      const restoreNativeSession = startupUrls.length === 0 &&
+      let restoreNativeSession = startupUrls.length === 0 &&
         this.options.launcher.matchesCloudSession(profileId, signature);
+      // Native cookies written under another Windows account are unreadable here.
+      if (restoreNativeSession && (await this.options.launcher.nativeSessionReadable?.(profileId)) === false) {
+        restoreNativeSession = false;
+        this.log(`${profileId}: local cookie key belongs to another Windows account; restoring from the Cloud copy`);
+      }
       // An interrupted restore must not leave partially replaced disk state trusted.
       this.options.launcher.recordCloudSession(profileId, null);
       const startBrowser = async () => {
@@ -863,13 +824,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         profileId,
         registrationId,
         expectedVersion: opened.baseVersion,
-        payload: encodePortableProfile(profile, sessionBundle),
+        // The stored profile carries the timezone the launch took from the proxy exit.
+        payload: encodePortableProfile(this.options.store.getProfile(profileId) ?? profile, sessionBundle),
         readyToSubmit: false,
       });
       const captureSeed = sessionCaptureSeed(sessionBundle);
       this.checkpointSignatures.set(profileId, {
         registrationId,
         signature,
+        tabs: bundleTabUrls(sessionBundle),
         origins: new Set(captureSeed.origins),
         ...(captureSeed.telegramClient ? { telegramClient: captureSeed.telegramClient } : {}),
       });
@@ -899,7 +862,9 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       }
       this.diagnosticEvents.record("open_failed");
       this.log(`${profileId}: open FAILED at ${lastLoggedStage} after ${Date.now() - openStartedAt}ms`);
-      const code = errorCode(error);
+      // payload_restore only checks the downloaded profile and stores it on this
+      // device: a failure there is the payload, never the network.
+      const code = stage === "payload_restore" ? "invalid_payload" : errorCode(error);
       const failureStage = error instanceof SessionRestoreError
         ? `session_restore/${error.operation}`
         : error instanceof BrowserLaunchError
@@ -907,9 +872,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           : stage;
       // Before registration only the local pending-sync queue is touched, so a
       // failure there is a local queue/database error whose message holds no
-      // session material and is the only clue an operator gets.
+      // session material and is the only clue an operator gets. Payload checks
+      // name the field that failed (e.g. "profile cookie 3 ..."), not session or login values.
       // Launcher identity checks name only local runtime state; restore errors may carry page detail.
-      const localDetail = error instanceof Error && (stage === "pending_sync" || identityCheckFailed)
+      const localDetail = error instanceof Error && (stage === "pending_sync" || stage === "payload_restore" || identityCheckFailed)
         ? `: ${error.message}` : "";
       const guidance = error instanceof BrowserLaunchError && error.guidance ? `: ${error.guidance}` : "";
       this.log(`${profileId}: Cloud open failed at ${failureStage} (${code}, ${safeErrorType(error)})${localDetail}${guidance}`);
@@ -1176,7 +1142,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     await this.stopHeartbeatAndWait(profileId);
     this.diagnosticEvents.record("browser_stopped");
 
-    if (!queue.finalizeOpenCheckpoint(profileId, accountId, open.registrationId)) {
+    if (!this.finalizeOpenCheckpoint(open, queue)) {
       this.diagnosticEvents.record("cleanup_retained");
       return this.closeResultForOpen(open, queue);
     }
@@ -1251,6 +1217,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const state: CloudCheckpointState = {
       registrationId: open.registrationId,
       signature: bundle ? sessionBundleSignature(bundle) : "",
+      tabs: bundleTabUrls(bundle ?? ""),
       origins: new Set(captureSeed.origins),
       ...(captureSeed.telegramClient ? { telegramClient: captureSeed.telegramClient } : {}),
     };
@@ -1310,6 +1277,25 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     return this.finishStoppedOpen(current, queue);
   }
 
+  private finalizeOpenCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue): boolean {
+    const tabs = this.options.launcher.closedFirefoxTabs?.(open.profileId, open);
+    const checkpoint = tabs === undefined ? undefined : this.pendingCapturesForOpen(open, queue)
+      .find((capture) => !capture.readyToSubmit && capture.status !== "conflict");
+    if (checkpoint) {
+      const session = { ...checkpoint.payload.session, tabs };
+      queue.enqueue({
+        accountId: open.accountId,
+        profileId: open.profileId,
+        registrationId: open.registrationId,
+        expectedVersion: checkpoint.expectedVersion,
+        payload: { ...checkpoint.payload, session },
+        readyToSubmit: false,
+      });
+      this.recordCloudSessionSignature(open.profileId, sessionBundleSignature(JSON.stringify(session)));
+    }
+    return queue.finalizeOpenCheckpoint(open.profileId, open.accountId, open.registrationId);
+  }
+
   private async finishStoppedOpen(
     open: PendingOpenSession,
     queue: PendingSyncQueue,
@@ -1317,7 +1303,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   ): Promise<boolean> {
     const captures = this.pendingCapturesForOpen(open, queue);
     if (captures.length > 0) {
-      if (!queue.finalizeOpenCheckpoint(open.profileId, open.accountId, open.registrationId)) return false;
+      if (!this.finalizeOpenCheckpoint(open, queue)) return false;
       this.clearCheckpointSignature(open);
       if (current() && this.options.accountId() === open.accountId) {
         await this.submitPending(queue, open.accountId, current);
@@ -1344,15 +1330,24 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     }
   }
 
+  /**
+   * `openTabsOnly` reads only origins with an open tab, so no temporary page opens, and keeps the
+   * saved storage of every other origin from the current checkpoint.
+   */
   private async captureSession(
     open: PendingOpenSession,
     queue: PendingSyncQueue,
     endpoint: string,
+    openTabsOnly = false,
   ): Promise<string> {
     const state = this.checkpointState(open, queue);
+    const saved = openTabsOnly ? this.pendingCapturesForOpen(open, queue)
+      .find((capture) => !capture.readyToSubmit && capture.status !== "conflict")?.payload.session : undefined;
+    if (openTabsOnly && !saved) throw new Error("Cloud checkpoint is missing before an open-tab capture");
     const captureSeed: SessionCaptureSeed = {
-      origins: [...state.origins].sort(),
+      origins: openTabsOnly ? [] : [...state.origins].sort(),
       ...(state.telegramClient ? { telegramClient: state.telegramClient } : {}),
+      ...(openTabsOnly ? { openTabsOnly } : {}),
     };
     const monitor = this.dirtyMonitors.get(open.profileId);
     const suspended = monitor?.registrationId === open.registrationId ? monitor : undefined;
@@ -1368,7 +1363,12 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         throw error;
       }
       try {
+        if (saved) bundle = keepUncapturedOrigins(bundle, sessionCaptureSeed(JSON.stringify(saved)).saved);
         const captured = parseCapturedSessionBundle(bundle);
+        if (captured.tabs === undefined) bundle = JSON.stringify({
+          ...captured,
+          tabs: this.options.launcher.closedFirefoxTabs?.(open.profileId, open) ?? state.tabs,
+        });
         for (const origin of captured.origins) state.origins.add(origin.origin);
         if (captured.telegramClient) state.telegramClient = captured.telegramClient;
       } catch (error) {
@@ -1433,13 +1433,14 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     });
     const state = this.checkpointState(open, queue);
     state.signature = signature;
+    state.tabs = bundleTabUrls(sessionBundle);
     this.checkpointSignatures.set(open.profileId, state);
     this.recordCloudSessionSignature(open.profileId, signature);
     this.diagnosticEvents.record("checkpoint_saved");
     return "saved";
   }
 
-  private async refreshCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue): Promise<void> {
+  private async refreshCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue, openTabsOnly = false): Promise<void> {
     const launch = this.options.store.getLaunch(open.profileId);
     if (!launch || !this.isExactRunningLaunch(open, launch)) return;
     try {
@@ -1453,7 +1454,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         current.cleanupMode ||
         !this.isExactRunningLaunch(current, verified)
       ) return;
-      const sessionBundle = await this.captureSession(current, queue, verified.ws);
+      const sessionBundle = await this.captureSession(current, queue, verified.ws, openTabsOnly);
       await this.options.launcher.verifyRunningIdentity(open.profileId);
       const captured = this.options.store.getLaunch(open.profileId);
       const latest = queue.getOpen(open.profileId, open.accountId);
@@ -1758,6 +1759,14 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           : `${profileId}: Cloud access ended (${lease.errorCode}); browser was retained`);
         return;
       }
+      const renewal = lease.errorCode === "version_conflict" ? await this.renewLapsedOpen(open, context.queue) : "failed";
+      if (renewal !== "failed") {
+        this.startHeartbeat(profileId);
+        this.log(renewal === "renewed"
+          ? `${profileId}: Cloud lease lapsed; the browser stays open under a fresh registration`
+          : `${profileId}: Cloud lease lapsed and Cloud could not be reached; renewal is retried`);
+        return;
+      }
       const secured = await this.captureAndStopOpen(open, context.queue, true);
       if (!secured) this.startHeartbeat(profileId);
       this.log(secured
@@ -1925,6 +1934,36 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       launch.startedAt === open.startedAt;
   }
 
+  /**
+   * A heartbeat gap longer than the Cloud lease (laptop sleep, network outage)
+   * expires the registration even when nobody else wants the profile. Take a
+   * fresh registration for the still-running browser instead of closing it.
+   * Cloud refuses the fresh open while another device holds the profile, and a
+   * different base version means someone else wrote first: both keep the
+   * capture-and-stop path. Right after a wake the network is often not back
+   * yet, so an unreachable Cloud is retried on the next heartbeat.
+   */
+  private async renewLapsedOpen(open: PendingOpenSession, queue: PendingSyncQueue): Promise<"renewed" | "retry" | "failed"> {
+    const deviceId = this.options.deviceId();
+    const launch = this.options.store.getLaunch(open.profileId);
+    if (!deviceId || open.cleanupMode || !launch || !this.isExactRunningLaunch(open, launch)) return "failed";
+    let fresh: OpenProfileResponse;
+    try {
+      fresh = await this.options.cloud.openProfile(open.profileId, { deviceId });
+    } catch (error) {
+      return error instanceof CloudApiError && error.status < 500 ? "failed" : "retry";
+    }
+    if (
+      fresh.baseVersion === open.expectedVersion &&
+      queue.replaceOpenRegistration(open.profileId, open.accountId, open.registrationId, fresh.registrationId)
+    ) {
+      this.clearCheckpointSignature(open);
+      return "renewed";
+    }
+    await this.options.cloud.abandon(fresh.registrationId).catch(() => {});
+    return "failed";
+  }
+
   private async captureAndStopOpen(
     open: PendingOpenSession,
     queue: PendingSyncQueue,
@@ -1964,7 +2003,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       startedAt: stopLaunch.startedAt,
     }).catch(() => false)) return false;
     await this.stopHeartbeatAndWait(open.profileId);
-    if (!queue.finalizeOpenCheckpoint(open.profileId, open.accountId, open.registrationId)) return false;
+    if (!this.finalizeOpenCheckpoint(open, queue)) return false;
     this.clearCheckpointSignature(open);
     if (
       submitAfterStop && current() &&
@@ -2084,7 +2123,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   }
 
   private startDirtyMonitor(profileId: string): void {
-    if (this.dirtyMonitorMs === 0 || this.dirtyMonitors.has(profileId)) return;
+    if (!this.storageCheckpoints || this.dirtyMonitors.has(profileId)) return;
     let context: { queue: PendingSyncQueue; accountId: string };
     try {
       context = this.requireContext(false);
@@ -2095,7 +2134,6 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const launch = this.options.store.getLaunch(profileId);
     if (!open || open.phase !== "running" || open.cleanupMode || !launch
       || !this.isExactRunningLaunch(open, launch)) return;
-    const checkpoint = this.checkpointState(open, context.queue);
 
     const monitor: CloudDirtyMonitor = {
       registrationId: open.registrationId,
@@ -2108,50 +2146,16 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       lastCaptureAt: 0,
     };
     this.dirtyMonitors.set(profileId, monitor);
-    const onDirty = () => this.markCheckpointDirty(profileId, monitor);
-    const onTarget = (origin: string | null) => {
-      if (this.dirtyMonitors.get(profileId) !== monitor) return;
-      if (origin) checkpoint.origins.add(origin);
-      onDirty();
-    };
-    if (launch.engine !== "firefox") {
-      try {
-        monitor.targetObserver = (this.options.observeTargets ?? observeBrowserTargets)(launch.ws, onTarget);
-      } catch {
-        // Filesystem watching and target polling remain active when observation is unavailable.
-      }
-    }
     this.startStorageWatchers(profileId, monitor);
     if (monitor.watchers.length === 0) this.diagnosticEvents.record("dirty_monitor_unavailable");
-
-    const poll = () => {
-      void this.options.launcher.pageTargetFingerprint(profileId, {
-        debugPort: monitor.debugPort,
-        startedAt: monitor.startedAt,
-      }).then((fingerprint) => {
-        if (this.dirtyMonitors.get(profileId) !== monitor || fingerprint === null) return;
-        for (const origin of targetFingerprintOrigins(fingerprint)) checkpoint.origins.add(origin);
-        if (monitor.targetFingerprint === undefined) {
-          monitor.targetFingerprint = fingerprint;
-        } else if (monitor.targetFingerprint !== fingerprint) {
-          monitor.targetFingerprint = fingerprint;
-          onDirty();
-        }
-      }).catch(() => {});
-    };
-    poll();
-    const set = this.options.setIntervalFn ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
-    monitor.pollTimer = set(poll, this.dirtyMonitorMs);
-    const timer = monitor.pollTimer;
-    if (timer && typeof timer === "object" && "unref" in timer) {
-      (timer as { unref?: () => void }).unref?.();
-    }
   }
 
   private startStorageWatchers(profileId: string, monitor: CloudDirtyMonitor): void {
-    const watchPath = this.options.watchPath ?? ((path: string, dirty: () => void) =>
-      watch(path, { recursive: true }, () => dirty())
-    );
+    const watchPath = this.options.watchPath ?? ((path: string, dirty: () => void) => {
+      // A new profile creates these folders at its first write; watching must not miss that write.
+      mkdirSync(path, { recursive: true });
+      return watch(path, { recursive: true }, () => dirty());
+    });
     const generation = ++monitor.watcherGeneration;
     for (const path of this.options.launcher.browserStorageWatchPaths(profileId)) {
       try {
@@ -2160,7 +2164,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           this.markCheckpointDirty(profileId, monitor);
         }));
       } catch {
-        // Target polling remains active when a browser storage directory is unavailable.
+        // The heartbeat checkpoint remains when a browser storage directory is unavailable.
       }
     }
   }
@@ -2178,8 +2182,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
    * session would skip the next capture as "unchanged" and the edit would only
    * sync by luck. Drop the signature — payloads are re-encoded from the store
    * at capture time, so the next checkpoint or close carries the edit — and
-   * nudge the dirty monitor so that capture happens promptly (seconds), not at
-   * the next heartbeat.
+   * nudge the dirty monitor so that capture can happen before the next
+   * heartbeat.
    */
   noteProfileEdited(profileId: string): void {
     // Blank only the signature: the entry's capture seed must survive, and a
@@ -2215,7 +2219,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       const launch = this.options.store.getLaunch(profileId);
       if (!open || open.registrationId !== monitor.registrationId || open.cleanupMode || !launch
         || launch.debugPort !== monitor.debugPort || launch.startedAt !== monitor.startedAt) return;
-      await this.refreshCheckpoint(open, queue);
+      await this.refreshCheckpoint(open, queue, true);
     }).catch(() => {}).finally(() => {
       if (this.dirtyMonitors.get(profileId) !== monitor) return;
       monitor.lastCaptureAt = Date.now();
@@ -2228,12 +2232,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const monitor = this.dirtyMonitors.get(profileId);
     if (!monitor) return;
     this.dirtyMonitors.delete(profileId);
-    if (monitor.pollTimer !== undefined) {
-      const clear = this.options.clearIntervalFn ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>));
-      clear(monitor.pollTimer);
-    }
     if (monitor.debounceTimer) clearTimeout(monitor.debounceTimer);
-    try { monitor.targetObserver?.close(); } catch {}
     this.stopStorageWatchers(monitor);
   }
 

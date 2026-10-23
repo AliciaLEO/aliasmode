@@ -4,11 +4,13 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import { ProxiesPage } from "./proxies.tsx";
-import { ProxyProviderOffer } from "./proxy-offer.tsx";
+import { CartIcon, ProxyProviderOffer, proxyOfferUrl } from "./proxy-offer.tsx";
 import { I18nProvider, availableLanguages, languageNativeName, useTranslation } from "./i18n.tsx";
 import { TrashPage } from "./trash.tsx";
 import { parsePastedProxy } from "./proxy-input.ts";
 import { ScriptRunPanel, ScriptsPage } from "./scripts.tsx";
+import { localeTimezoneMismatch } from "../profile-locale.ts";
+import { folderTree, folderScope, folderGrantPermission, type FolderInfo } from "../folders.ts";
 import { THEME_KEY, readThemeChoice, themeCookie, type ThemeChoice } from "./theme.ts";
 import {
   describeDesktopUpdateResult,
@@ -49,6 +51,7 @@ import {
   selectAppMode,
   setProxyViaSystemProxy,
   fetchProfiles,
+  serialLoader,
   fetchHealth,
   fetchLogs,
   fetchDiagnose,
@@ -82,6 +85,7 @@ import {
   updateFromFile,
   createGroup,
   renameGroup,
+  moveGroup,
   deleteGroup,
   fetchTotp,
 } from "./api.ts";
@@ -469,7 +473,7 @@ function HealthSources({ sources }: { sources: HealthSource[] }) {
   const { t } = useTranslation();
   if (sources.length === 0) return <div className="health-sources none">{t("No health nodes")}</div>;
   return (
-    <div className="health-sources" aria-label={t("Automation node freshness")}>
+    <div className="health-sources" aria-label="Automation node freshness">
       {sources.map((source) => (
         <span
           key={source.sourceId}
@@ -519,6 +523,46 @@ const PLATFORM_MARKS: Record<string, { key: string; path: string }> = {
     key: "reddit",
     path: "M12 0C5.37 0 0 5.37 0 12s5.37 12 12 12 12-5.37 12-12S18.63 0 12 0Zm6.07 6.53a1.4 1.4 0 0 1 1.4 1.4 1.4 1.4 0 0 1-.83 1.28c.02.15.03.3.03.45 0 2.87-3.44 5.2-7.67 5.2s-7.67-2.33-7.67-5.2c0-.16.01-.31.03-.46a1.4 1.4 0 1 1 1.58-2.28 7.6 7.6 0 0 1 4.1-1.31l.78-3.66a.34.34 0 0 1 .4-.26l2.6.55a1 1 0 1 1-.14.67l-2.24-.48-.7 3.3c1.5.06 2.9.5 4.05 1.2a1.4 1.4 0 0 1 1.28-.8ZM8.1 10.42a1.16 1.16 0 1 0 0 2.32 1.16 1.16 0 0 0 0-2.32Zm7.8 0a1.16 1.16 0 1 0 0 2.32 1.16 1.16 0 0 0 0-2.32Zm-7.6 4.9a.34.34 0 0 0-.24.58c.98.98 2.53 1.46 3.94 1.46s2.96-.48 3.94-1.46a.34.34 0 0 0-.48-.48c-.78.78-2.1 1.18-3.46 1.18s-2.68-.4-3.46-1.18a.34.34 0 0 0-.24-.1Z",
   },
+  "youtube.com": {
+    key: "youtube",
+    path: "M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z",
+  },
+  "threads.com": {
+    key: "threads",
+    path: "M18.263 11.097c-.03-3.486-1.92-5.586-5.111-5.586-2.13 0-3.922.963-4.863 2.499l2.062 1.438c.535-.843 1.272-1.543 2.628-1.543 1.528 0 2.318.85 2.544 2.431a15 15 0 0 0-2.236-.173c-4.125 0-6.068 1.867-6.068 4.336s1.943 3.99 4.804 3.99c3.139 0 5.013-2.115 5.781-4.735.798.361 1.348 1.204 1.348 2.47 0 3.387-3.907 5.232-7.22 5.232-4.885 0-8.077-3.207-8.077-8.424 0-6.392 4.223-10.487 9.9-10.487 3.808 0 5.69 1.671 6.97 3.914l2.108-1.475C21.44 2.078 18.331 0 13.663 0 6.227 0 1.168 5.277 1.168 12.934c0 7 4.953 11.066 10.856 11.066 4.878 0 9.809-2.846 9.809-7.716 0-2.545-1.46-4.231-3.569-5.187m-6.33 4.855c-1.077 0-2.026-.512-2.026-1.453 0-1.483 1.822-1.934 3.606-1.934.678 0 1.34.045 1.927.173-.422 1.927-1.671 3.215-3.508 3.214Z",
+  },
+  "pinterest.com": {
+    key: "pinterest",
+    path: "M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.162-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.099.12.112.225.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.172.271-.401.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.354-.629-2.758-1.379l-.749 2.848c-.269 1.045-1.004 2.352-1.498 3.146 1.123.345 2.306.535 3.55.535 6.607 0 11.985-5.365 11.985-11.987C23.97 5.39 18.592.026 11.985.026L12.017 0z",
+  },
+  "snapchat.com": {
+    key: "snapchat",
+    path: "M12.206.793c.99 0 4.347.276 5.93 3.821.529 1.193.403 3.219.299 4.847l-.003.06c-.012.18-.022.345-.03.51.075.045.203.09.401.09.3-.016.659-.12 1.033-.301.165-.088.344-.104.464-.104.182 0 .359.029.509.09.45.149.734.479.734.838.015.449-.39.839-1.213 1.168-.089.029-.209.075-.344.119-.45.135-1.139.36-1.333.81-.09.224-.061.524.12.868l.015.015c.06.136 1.526 3.475 4.791 4.014.255.044.435.27.42.509 0 .075-.015.149-.045.225-.24.569-1.273.988-3.146 1.271-.059.091-.12.375-.164.57-.029.179-.074.36-.134.553-.076.271-.27.405-.555.405h-.03c-.135 0-.313-.031-.538-.074-.36-.075-.765-.135-1.273-.135-.3 0-.599.015-.913.074-.6.104-1.123.464-1.723.884-.853.599-1.826 1.288-3.294 1.288-.06 0-.119-.015-.18-.015h-.149c-1.468 0-2.427-.675-3.279-1.288-.599-.42-1.107-.779-1.707-.884-.314-.045-.629-.074-.928-.074-.54 0-.958.089-1.272.149-.211.043-.391.074-.54.074-.374 0-.523-.224-.583-.42-.061-.192-.09-.389-.135-.567-.046-.181-.105-.494-.166-.57-1.918-.222-2.95-.642-3.189-1.226-.031-.063-.052-.15-.055-.225-.015-.243.165-.465.42-.509 3.264-.54 4.73-3.879 4.791-4.02l.016-.029c.18-.345.224-.645.119-.869-.195-.434-.884-.658-1.332-.809-.121-.029-.24-.074-.346-.119-1.107-.435-1.257-.93-1.197-1.273.09-.479.674-.793 1.168-.793.146 0 .27.029.383.074.42.194.789.3 1.104.3.234 0 .384-.06.465-.105l-.046-.569c-.098-1.626-.225-3.651.307-4.837C7.392 1.077 10.739.807 11.727.807l.419-.015h.06z",
+  },
+  "discord.com": {
+    key: "discord",
+    path: "M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z",
+  },
+  "twitch.tv": {
+    key: "twitch",
+    path: "M11.571 4.714h1.715v5.143H11.57zm4.715 0H18v5.143h-1.714zM6 0L1.714 4.286v15.428h5.143V24l4.286-4.286h3.428L22.286 12V0zm14.571 11.143l-3.428 3.428h-3.429l-3 3v-3H6.857V1.714h13.714Z",
+  },
+  "gmail.com": {
+    key: "gmail",
+    path: "M24 5.457v13.909c0 .904-.732 1.636-1.636 1.636h-3.819V11.73L12 16.64l-6.545-4.91v9.273H1.636A1.636 1.636 0 0 1 0 19.366V5.457c0-2.023 2.309-3.178 3.927-1.964L5.455 4.64 12 9.548l6.545-4.91 1.528-1.145C21.69 2.28 24 3.434 24 5.457z",
+  },
+  "amazon.com": {
+    key: "amazon",
+    path: "M.045 18.02c.072-.116.187-.124.348-.022 3.636 2.11 7.594 3.166 11.87 3.166 2.852 0 5.668-.533 8.447-1.595l.315-.14c.138-.06.234-.1.293-.13.226-.088.39-.046.525.13.12.174.09.336-.12.48-.256.19-.6.41-1.006.654-1.244.743-2.64 1.316-4.185 1.726a17.617 17.617 0 01-10.951-.577 17.88 17.88 0 01-5.43-3.35c-.1-.074-.151-.15-.151-.22 0-.047.021-.09.051-.13zm6.565-6.218c0-1.005.247-1.863.743-2.577.495-.71 1.17-1.25 2.04-1.615.796-.335 1.756-.575 2.912-.72.39-.046 1.033-.103 1.92-.174v-.37c0-.93-.105-1.558-.3-1.875-.302-.43-.78-.65-1.44-.65h-.182c-.48.046-.896.196-1.246.46-.35.27-.575.63-.675 1.096-.06.3-.206.465-.435.51l-2.52-.315c-.248-.06-.372-.18-.372-.39 0-.046.007-.09.022-.15.247-1.29.855-2.25 1.82-2.88.976-.616 2.1-.975 3.39-1.05h.54c1.65 0 2.957.434 3.888 1.29.135.15.27.3.405.48.12.165.224.314.283.45.075.134.15.33.195.57.06.254.105.42.135.51.03.104.062.3.076.615.01.313.02.493.02.553v5.28c0 .376.06.72.165 1.036.105.313.21.54.315.674l.51.674c.09.136.136.256.136.36 0 .12-.06.226-.18.314-1.2 1.05-1.86 1.62-1.963 1.71-.165.135-.375.15-.63.045a6.062 6.062 0 01-.526-.496l-.31-.347a9.391 9.391 0 01-.317-.42l-.3-.435c-.81.886-1.603 1.44-2.4 1.665-.494.15-1.093.227-1.83.227-1.11 0-2.04-.343-2.76-1.034-.72-.69-1.08-1.665-1.08-2.94l-.05-.076zm3.753-.438c0 .566.14 1.02.425 1.364.285.34.675.512 1.155.512.045 0 .106-.007.195-.02.09-.016.134-.023.166-.023.614-.16 1.08-.553 1.424-1.178.165-.28.285-.58.36-.91.09-.32.12-.59.135-.8.015-.195.015-.54.015-1.005v-.54c-.84 0-1.484.06-1.92.18-1.275.36-1.92 1.17-1.92 2.43l-.035-.02zm9.162 7.027c.03-.06.075-.11.132-.17.362-.243.714-.41 1.05-.5a8.094 8.094 0 011.612-.24c.14-.012.28 0 .41.03.65.06 1.05.168 1.172.33.063.09.099.228.099.39v.15c0 .51-.149 1.11-.424 1.8-.278.69-.664 1.248-1.156 1.68-.073.06-.14.09-.197.09-.03 0-.06 0-.09-.012-.09-.044-.107-.12-.064-.24.54-1.26.806-2.143.806-2.64 0-.15-.03-.27-.087-.344-.145-.166-.55-.257-1.224-.257-.243 0-.533.016-.87.046-.363.045-.7.09-1 .135-.09 0-.148-.014-.18-.044-.03-.03-.036-.047-.02-.077 0-.017.006-.03.02-.063v-.06z",
+  },
+  "ebay.com": {
+    key: "ebay",
+    path: "M6.056 12.132v-4.92h1.2v3.026c.59-.703 1.402-.906 2.202-.906 1.34 0 2.828.904 2.828 2.855 0 .233-.015.457-.06.668.24-.953 1.274-1.305 2.896-1.344.51-.018 1.095-.018 1.56-.018v-.135c0-.885-.556-1.244-1.53-1.244-.72 0-1.245.3-1.305.81h-1.275c.136-1.29 1.5-1.62 2.686-1.62 1.064 0 1.995.27 2.415 1.02l-.436-.84h1.41l2.055 4.125 2.055-4.126H24l-3.72 7.305h-1.346l1.07-2.04-2.33-4.38c.13.255.2.555.2.93v2.46c0 .346.01.69.04 1.005H16.8a6.543 6.543 0 01-.046-.765c-.603.734-1.32.96-2.32.96-1.48 0-2.272-.78-2.272-1.695 0-.15.015-.284.037-.405-.3 1.246-1.36 2.086-2.767 2.086-.87 0-1.694-.315-2.2-.93 0 .24-.015.494-.04.734h-1.18c.02-.39.04-.855.04-1.245v-1.05h-4.83c.065 1.095.818 1.74 1.853 1.74.718 0 1.355-.3 1.568-.93h1.24c-.24 1.29-1.61 1.725-2.79 1.725C.95 15.009 0 13.822 0 12.232c0-1.754.982-2.91 3.116-2.91 1.688 0 2.93.886 2.94 2.806v.005zm9.137.183c-1.095.034-1.77.233-1.77.95 0 .465.36.97 1.305.97 1.26 0 1.935-.69 1.935-1.814v-.13c-.45 0-.99.006-1.484.022h.012zm-6.06 1.875c1.11 0 1.876-.806 1.876-2.02s-.768-2.02-1.893-2.02c-1.11 0-1.89.806-1.89 2.02s.765 2.02 1.875 2.02h.03zm-4.35-2.514c-.044-1.125-.854-1.546-1.725-1.546-.944 0-1.694.474-1.815 1.546z",
+  },
+  "etsy.com": {
+    key: "etsy",
+    path: "M8.559 2.445c0-.325.033-.52.59-.52h7.465c1.3 0 2.02 1.11 2.54 3.193l.42 1.666h1.27c.23-4.728.43-6.784.43-6.784s-3.196.36-5.09.36H6.635L1.521.196v1.37l1.725.326c1.21.24 1.5.496 1.6 1.606 0 0 .11 3.27.11 8.64 0 5.385-.09 8.61-.09 8.61 0 .973-.39 1.333-1.59 1.573l-1.722.33V24l5.13-.165h8.55c1.935 0 6.39.165 6.39.165.105-1.17.75-6.48.855-7.064h-1.2l-1.284 2.91c-1.005 2.28-2.476 2.445-4.11 2.445h-4.906c-1.63 0-2.415-.64-2.415-2.05V12.8s3.62 0 4.79.096c.912.064 1.463.325 1.76 1.598l.39 1.695h1.41l-.09-4.278.192-4.305h-1.391l-.45 1.89c-.283 1.244-.48 1.47-1.754 1.6-1.666.17-4.815.14-4.815.14V2.45h-.05z",
+  },
 };
 
 const KNOWN_PLATFORMS: { value: string; label: string }[] = [
@@ -530,6 +574,16 @@ const KNOWN_PLATFORMS: { value: string; label: string }[] = [
   { value: "linkedin.com", label: "LinkedIn" },
   { value: "reddit.com", label: "Reddit" },
   { value: "telegram.org", label: "Telegram" },
+  { value: "youtube.com", label: "YouTube" },
+  { value: "threads.com", label: "Threads" },
+  { value: "pinterest.com", label: "Pinterest" },
+  { value: "snapchat.com", label: "Snapchat" },
+  { value: "discord.com", label: "Discord" },
+  { value: "twitch.tv", label: "Twitch" },
+  { value: "gmail.com", label: "Gmail" },
+  { value: "amazon.com", label: "Amazon" },
+  { value: "ebay.com", label: "eBay" },
+  { value: "etsy.com", label: "Etsy" },
 ];
 
 function PlatformPill({ platform }: { platform: string }) {
@@ -693,57 +747,77 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["CPU", "Automatic"],
   ["RAM", "Automatic"],
   ["Fingerprint seed", "Automatic · unique and stable"],
-  ["Timezone", "Stored · set from connection on request"],
+  ["Timezone", "Stored · set from the proxy automatically"],
   ["Canvas / WebGL / audio", "Automatic"],
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
 
 const FINGERPRINT_EDIT_WARNING = "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?";
 
+const CLOAKBROWSER_NOTE = "CloakBrowser profiles on one computer can be linked to each other. Use AliasMode Chromium or AliasMode Firefox for separate identities.";
+
+/** Chromium 155 is AliasMode Chromium where it is this computer's default engine (Windows), and a beta elsewhere. */
+function browserLabel(engine: "chromium" | "firefox", chromiumRuntime?: string, ownChromium = false): string {
+  if (engine === "firefox") return "AliasMode Firefox";
+  if (!chromiumRuntime) return "CloakBrowser";
+  return ownChromium ? "AliasMode Chromium" : "Chromium 155 beta";
+}
+
 function FingerprintSettings({
   engine,
+  chromiumRuntime,
+  ownChromium = false,
   screen,
   onScreenChange,
+  screenReadOnly = false,
   platformOs,
   onPlatformOsChange,
   timezone,
   onTimezoneChange,
   disabled = false,
   onUndo,
+  hardware,
 }: {
   engine: "chromium" | "firefox";
+  chromiumRuntime?: string;
+  ownChromium?: boolean;
   screen: string;
   onScreenChange: (value: string) => void;
+  /** A Firefox profile keeps the screen it was created with. */
+  screenReadOnly?: boolean;
   platformOs: string;
   onPlatformOsChange?: (value: string) => void;
   timezone?: string;
   onTimezoneChange?: (value: string) => void;
   disabled?: boolean;
   onUndo?: () => void;
+  hardware?: { gpu?: string; cores?: number };
 }) {
   const { t } = useTranslation();
   return (
     <details className="fingerprint-settings">
       <summary>
         <span>{t("Fingerprint settings")}</span>
-        <span className="automatic-badge">{onTimezoneChange ? "Advanced" : "Automatic"}</span>
+        <span className="automatic-badge">{onTimezoneChange ? t("Advanced") : t("Automatic")}</span>
       </summary>
       <div className="fingerprint-grid">
         <label className="fld">
           <span>{t("Browser")}</span>
-          <input value={engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly tabIndex={-1} className="ro" />
+          <input value={browserLabel(engine, chromiumRuntime, ownChromium)} readOnly tabIndex={-1} className="ro" />
         </label>
-        {engine === "chromium" && (
-          <label className="fld">
-            <span>{t("Screen")}</span>
-            <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
-          </label>
-        )}
         <label className="fld">
-          <span>Operating system</span>
+          <span>Screen</span>
+          {screenReadOnly ? (
+            <input value={screen.replace("*", "x")} readOnly tabIndex={-1} className="ro" />
+          ) : (
+            <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
+          )}
+        </label>
+        <label className="fld">
+          <span>{t("Operating system")}</span>
           {onPlatformOsChange ? (
             <select value={platformOs} disabled={disabled} onChange={(event) => onPlatformOsChange(event.target.value)}>
-              <option value="">Automatic — match this computer</option>
+              <option value="">{t("Automatic — match this computer")}</option>
               <option value="windows">Windows</option>
               <option value="macos">macOS</option>
               <option value="linux">Linux</option>
@@ -754,26 +828,30 @@ function FingerprintSettings({
         </label>
         {onTimezoneChange && (
           <label className="fld">
-            <span>Timezone</span>
-            <input value={timezone ?? ""} disabled={disabled} placeholder="Automatic · e.g. Europe/Paris" onChange={(event) => onTimezoneChange(event.target.value)} />
+            <span>{t("Timezone")}</span>
+            <input value={timezone ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. Europe/Paris")} onChange={(event) => onTimezoneChange(event.target.value)} />
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => (
-          <label className="fld" key={label}>
-            <span>{label}</span>
-            <input value={value} readOnly tabIndex={-1} className="ro" />
-          </label>
-        ))}
+        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => {
+          // A stored value is the same on every computer that opens the profile.
+          const stored = label === "GPU" ? hardware?.gpu : label === "CPU" && hardware?.cores ? `${hardware.cores} cores` : undefined;
+          return (
+            <label className="fld" key={label}>
+              <span>{t(label)}</span>
+              <input value={stored ? `Stored · ${stored}` : t(value)} title={stored} readOnly tabIndex={-1} className="ro" />
+            </label>
+          );
+        })}
         <div className="hint">{disabled
-          ? "Close the browser before changing fingerprint settings."
+          ? t("Close the browser before changing fingerprint settings.")
           : onTimezoneChange
             ? engine === "firefox"
-              ? "Only timezone can be changed. The rest of the Firefox fingerprint stays coordinated."
-              : "Screen, operating system, and timezone can be changed. CloakBrowser controls the other values."
+              ? t("Only timezone can be changed. The screen is chosen when the profile is created. The rest of the Firefox fingerprint stays coordinated.")
+              : t("Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.")
             : engine === "firefox"
-              ? "AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable."
-              : "CloakBrowser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override."}</div>
-        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>Undo fingerprint edits</button>}
+              ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
+              : t("The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
+        {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{t("Undo fingerprint edits")}</button>}
       </div>
     </details>
   );
@@ -834,7 +912,7 @@ async function readDesktopRemoteMcpCredential(): Promise<RemoteMcpCredential | n
 
 async function storeDesktopRemoteMcpCredential(value: RemoteMcpCredential): Promise<void> {
   const invoke = desktopInvoke();
-  if (!invoke) throw new Error("Remote MCP settings are available in the Windows app.");
+  if (!invoke) throw new Error("Remote MCP settings are available in the desktop app.");
   await invoke("credential_set", { key: "remote_mcp_connector", secret: JSON.stringify(value) });
 }
 
@@ -902,7 +980,7 @@ function UpdateHighlights({ version, highlights }: { version: string; highlights
   if (highlights.length === 0) return null;
   return (
     <details className="update-highlights">
-      <summary>{t("What’s new in {version}")}</summary>
+      <summary>What’s new in {version}</summary>
       <ul>{highlights.map((highlight) => <li key={highlight}>{highlight}</li>)}</ul>
     </details>
   );
@@ -912,14 +990,14 @@ function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgre
   const { t } = useTranslation();
   const percent = progress.phase === "downloading" ? progress.percent : null;
   const label = progress.phase === "preparing"
-    ? "Preparing update…"
+    ? t("Preparing update…")
     : progress.phase === "downloading"
-      ? percent === null ? "Downloading update…" : `Downloading update… ${percent}%`
+      ? percent === null ? t("Downloading update…") : t("Downloading update… {percent}%", { percent: String(percent) })
       : progress.phase === "verifying"
-        ? "Verifying update…"
+        ? t("Verifying update…")
         : progress.phase === "closingBrowsers"
-          ? "Saving and closing browsers…"
-          : "Installing and restarting…";
+          ? t("Saving and closing browsers…")
+          : t("Installing and restarting…");
   return (
     <div className="update-progress" role="status">
       <span>{label}</span>
@@ -963,7 +1041,7 @@ async function storeDesktopCloudCredentials(
 }
 
 const BLANK_FORM = {
-  name: "", engine: "chromium" as "chromium" | "firefox", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
+  name: "", engine: "chromium" as "chromium" | "firefox", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
   screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
@@ -977,18 +1055,18 @@ type ProxyCheckUiState = {
 
 const EMPTY_PROXY_CHECK: ProxyCheckUiState = { checking: false, result: null, error: null };
 
-function proxyFailureMessage(reason: ProxyCheckResult["reason"]): string {
-  if (reason === "authentication_failed") return "Proxy authentication failed.";
-  if (reason === "timeout") return "Proxy connection timed out.";
-  if (reason === "dns_failed") return "Proxy host could not be resolved.";
-  if (reason === "unreachable") return "Proxy server is unreachable.";
-  if (reason === "proxy_bypassed") return "Traffic did not use this proxy.";
-  return "Proxy connection failed.";
+function proxyFailureMessage(t: (s: string) => string, reason: ProxyCheckResult["reason"]): string {
+  if (reason === "authentication_failed") return t("Proxy authentication failed.");
+  if (reason === "timeout") return t("Proxy connection timed out.");
+  if (reason === "dns_failed") return t("Proxy host could not be resolved.");
+  if (reason === "unreachable") return t("Proxy server is unreachable.");
+  if (reason === "proxy_bypassed") return t("Traffic did not use this proxy.");
+  return t("Proxy connection failed.");
 }
 
 function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: ProxyCheckUiState }) {
   const { t } = useTranslation();
-  if (!hasProxy) return <ProxyProviderOffer />;
+  if (!hasProxy) return <ProxyProviderOffer placement="profile-dialog" />;
   if (state.error) {
     const invalid = state.error === "invalid";
     return (
@@ -996,23 +1074,29 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
         <div className={`proxy-check-result ${invalid ? "failed" : "unavailable"}`} role="status">
           <Icon name={invalid ? "alert" : "activity"} className="sm" />
           <span>{invalid
-            ? "Proxy details are invalid. Check them and try again."
-            : "Proxy check is unavailable. Try again later."}</span>
+            ? t("Proxy details are invalid. Check them and try again.")
+            : t("Proxy check is unavailable. Try again later.")}</span>
         </div>
-        {invalid && <ProxyProviderOffer replacement />}
+        {invalid
+          ? <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
+          : <ProxyProviderOffer placement="profile-dialog" />}
       </>
     );
   }
   const result = state.result;
-  if (!result) return null;
+  // A profile that already has a proxy keeps the offer, so it also shows in Edit profile.
+  if (!result) return <ProxyProviderOffer placement="profile-dialog" />;
   const location = [result.city, result.region, result.country].filter(Boolean).join(", ");
   const exit = [result.ip ? `Exit IP: ${result.ip}` : "", location].filter(Boolean).join(" · ");
   if (result.status === "working") {
     return (
-      <div className="proxy-check-result working" role="status">
-        <Icon name="check" className="sm" />
-        <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <>{t("Rotating exit IPs detected.")}</>}</span>
-      </div>
+      <>
+        <div className="proxy-check-result working" role="status">
+          <Icon name="check" className="sm" />
+          <span><strong>{t("Proxy is working.")}</strong>{exit && <> {exit}.</>}{result.rotating && <> Rotating exit IPs detected.</>}</span>
+        </div>
+        <ProxyProviderOffer placement="profile-dialog" />
+      </>
     );
   }
   if (result.status === "unstable") {
@@ -1022,7 +1106,7 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
           <Icon name="warning" className="sm" />
           <span><strong>{t("Proxy checks were mixed.")}</strong> {result.successes} of {result.attempts} succeeded.</span>
         </div>
-        <ProxyProviderOffer replacement />
+        <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
       </>
     );
   }
@@ -1031,25 +1115,56 @@ function ProxyCheckFeedback({ hasProxy, state }: { hasProxy: boolean; state: Pro
       <>
         <div className="proxy-check-result failed" role="status">
           <Icon name="alert" className="sm" />
-          <span>{proxyFailureMessage(result.reason)}</span>
+          <span>{proxyFailureMessage(t, result.reason)}</span>
         </div>
-        <ProxyProviderOffer replacement />
+        <ProxyProviderOffer placement="profile-dialog-check-failed" replacement />
       </>
     );
   }
   return (
-    <div className="proxy-check-result unavailable" role="status">
-      <Icon name="activity" className="sm" />
-      <span>{t("Proxy check is unavailable. Try again later.")}</span>
-    </div>
+    <>
+      <div className="proxy-check-result unavailable" role="status">
+        <Icon name="activity" className="sm" />
+        <span>{t("Proxy check is unavailable. Try again later.")}</span>
+      </div>
+      <ProxyProviderOffer placement="profile-dialog" />
+    </>
   );
+}
+
+function GrantControl({ label, direct, inherited, busy, onChange }: {
+  label: string; direct: string; inherited: string; busy: boolean; onChange: (permission: string) => void;
+}) {
+  const { t } = useTranslation();
+  const effective = direct === "edit" || inherited === "edit" ? "edit" : direct || inherited;
+  const permissionLabel = (value: string) => value === "edit" ? t("Edit") : value === "view" ? t("View") : t("No access");
+  return <label className="grant-control">
+    <span>{label}</span>
+    <select className="select" aria-label={label} value={direct} disabled={busy} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{inherited ? t("Inherited: {permission}", { permission: permissionLabel(inherited) }) : t("No access")}</option>
+      <option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option>
+    </select>
+    <small>{t("Effective access: {permission}", { permission: permissionLabel(effective) })}{inherited && direct ? ` · ${t("Inherited: {permission}", { permission: permissionLabel(inherited) })}` : ""}</small>
+  </label>;
 }
 
 function App() {
   const { t, language, setLanguage } = useTranslation();
   const [profiles, setProfiles] = useState<UiProfile[]>([]);
   const [registeredGroups, setRegisteredGroups] = useState<string[]>([]);
+  const [localFolders, setLocalFolders] = useState<FolderInfo[]>([]);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [sharedOnly, setSharedOnly] = useState(false);
+  const [folderMenu, setFolderMenu] = useState<string | null>(null);
+  const [folderMenuPosition, setFolderMenuPosition] = useState({ left: 0, top: 0 });
+  const [newFolderParent, setNewFolderParent] = useState<string | null>(null);
+  const [movingFolder, setMovingFolder] = useState<string | null>(null);
+  const [folderParent, setFolderParent] = useState("");
+  const [folderMoveBusy, setFolderMoveBusy] = useState(false);
+  const [folderMoveErr, setFolderMoveErr] = useState<string | null>(null);
+  const [accessTarget, setAccessTarget] = useState<{ kind: "folder" | "profile"; id: string; name: string; folder: string } | null>(null);
   const [appMode, setAppMode] = useState<AppModeConfig | null>(null);
+  const ownChromium = appMode?.defaultEngine === "chromium";
   const [modeBusy, setModeBusy] = useState(false);
   const [modeErr, setModeErr] = useState<string | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
@@ -1122,6 +1237,7 @@ function App() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState(false);
   const deleteInFlight = useRef(false);
+  const rosterLoader = useRef(serialLoader(() => loadRoster()));
   // Active profile export: null when idle, otherwise how far the server-side
   // collection has progressed ({completed: total} = file being built).
   const [exportProgress, setExportProgress] = useState<ExportProgress | null>(null);
@@ -1158,6 +1274,8 @@ function App() {
   // to Cloud with the running session — no expectedVersion handshake.
   const [editLive, setEditLive] = useState(false);
   const [editEngine, setEditEngine] = useState<"chromium" | "firefox">("chromium");
+  const [editChromiumRuntime, setEditChromiumRuntime] = useState("");
+  const [editHardware, setEditHardware] = useState<{ gpu?: string; cores?: number } | undefined>();
   const [timezoneBusy, setTimezoneBusy] = useState(false);
   const editFetchId = useRef<string | null>(null);
   const [editMobile, setEditMobile] = useState<NonNullable<EditProfile["desktopConversion"]> | null>(null);
@@ -1202,6 +1320,8 @@ function App() {
   // One source at a time: two full-height inputs stacked made it ambiguous which
   // one the Import button would actually read.
   const [bulkSource, setBulkSource] = useState<"file" | "paste">("file");
+  // After an import, offer proxies for the profiles that have none, until dismissed.
+  const [showImportOffer, setShowImportOffer] = useState(false);
   const bulkFileRef = useRef<HTMLInputElement>(null);
   const authGeneration = useRef(0);
   const remoteMcpInFlight = useRef<Promise<void> | null>(null);
@@ -1212,9 +1332,12 @@ function App() {
   const savedSessionRestoreEnabled = useRef(true);
   const desktopUpdateCheckStarted = useRef(false);
   const isCloudMode = appMode?.mode === "cloud";
+  // Profiles that need a proxy. Local mode only: a Cloud profile shows no
+  // proxy until its encrypted payload is fetched, so the count would be wrong.
+  const profilesWithoutProxy = isCloudMode ? 0 : profiles.filter((p) => !p.proxy?.trim()).length;
   const workspaceReady = appMode?.mode === "local" || (isCloudMode && cloudWorkspaceReady(cloudAuth));
   const canEditCloud = !isCloudMode || cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin" ||
-    profiles.some((profile) => profile.permission === "edit") || team?.folders.some((folder) => folder.permission === "edit") === true;
+    team?.folders.some((folder) => folder.permission === "edit" && !folder.archivedAt) === true;
   const canManageCloudFolders = cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin";
 
   // The app resolves "system" itself and stamps the result on <html>, so the
@@ -1244,6 +1367,8 @@ function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      if (accessTarget) { if (!teamBusy) setAccessTarget(null); return; }
+      if (movingFolder) { if (!folderMoveBusy) setMovingFolder(null); return; }
       if (pendingMode) { if (!modeBusy) setPendingMode(null); return; }
       if (logView || logErr) { setLogView(null); setLogErr(null); return; }
       if (showUpdate) { setShowUpdate(false); return; }
@@ -1264,11 +1389,17 @@ function App() {
     }
   };
 
-  const load = async () => {
+  // One roster request at a time: on a slow link a large roster takes longer
+  // than the poll interval, and stacked requests share the bandwidth until
+  // every one of them fails.
+  const { load, poll: pollRoster } = rosterLoader.current;
+
+  const loadRoster = async () => {
     try {
       const roster = await fetchProfiles();
       setProfiles(roster.profiles);
       setRegisteredGroups(roster.groups);
+      setLocalFolders(roster.folders ?? []);
       setHealthSources(roster.healthSources);
       setConnErr(null); // manages connectivity only; never clears an action error
     } catch (e) {
@@ -1328,7 +1459,7 @@ function App() {
   const checkDesktopUpdate = async (manual: boolean) => {
     const invoke = desktopInvoke();
     if (!invoke) {
-      if (manual) setDesktopUpdateErr("Updates are available only in the Windows desktop app.");
+      if (manual) setDesktopUpdateErr("Updates are available only in the desktop app.");
       return;
     }
     setDesktopUpdateChecking(true);
@@ -1423,7 +1554,7 @@ function App() {
     try {
       const stored = await readDesktopRemoteMcpCredential();
       if (stored === undefined) {
-        throw new Error("Remote MCP settings are available in the Windows desktop app.");
+        throw new Error("Remote MCP settings are available in the desktop app.");
       }
       if (stored?.state === "disabled") {
         setRemoteMcp({ state: "disabled" });
@@ -1959,7 +2090,7 @@ function App() {
 
   useEffect(() => {
     if (!appMode || !workspaceReady || restartRequired) return;
-    const t = setInterval(load, REFRESH_MS);
+    const t = setInterval(pollRoster, REFRESH_MS);
     return () => clearInterval(t);
   }, [appMode?.mode, restartRequired, workspaceReady]);
 
@@ -1985,15 +2116,20 @@ function App() {
     return () => { alive = false; clearInterval(timer); };
   }, [editId, isCloudMode]);
 
-  const groups = useMemo(
-    () => ["all", ...Array.from(new Set([
-      ...profiles.map((profile) => profile.group).filter(Boolean),
-      ...(isCloudMode
-        ? (team?.folders.filter((folder) => !folder.archivedAt).map((folder) => folder.name) ?? [])
-        : registeredGroups),
-    ])).sort()],
-    [profiles, isCloudMode, registeredGroups, team?.folders],
-  );
+  const folders = useMemo<FolderInfo[]>(() => {
+    if (isCloudMode) return team?.folders.filter((folder) => !folder.archivedAt) ?? [];
+    const metadata = new Map(localFolders.map((folder) => [folder.name, folder]));
+    return [...new Set([...registeredGroups, ...profiles.map((profile) => profile.group).filter(Boolean)])]
+      .map((name) => metadata.get(name) ?? { name });
+  }, [isCloudMode, team?.folders, localFolders, registeredGroups, profiles]);
+  const tree = useMemo(() => folderTree(folders), [folders]);
+  const groups = useMemo(() => ["all", ...tree.map((folder) => folder.name)], [tree]);
+  const selectedScope = useMemo(() => folderScope(folders, group), [folders, group]);
+  const sharedProfiles = useMemo(() => isCloudMode
+    ? profiles.filter((profile) => !folders.some((folder) => folder.name === profile.group)) : [], [isCloudMode, profiles, folders]);
+  const breadcrumb = tree.find((folder) => folder.name === group);
+  const selectFolder = (name: string) => { setSharedOnly(false); setGroup(name); setView("profiles"); };
+  const folderLabel = (name: string) => folders.find((folder) => folder.name === name)?.label ?? name;
 
   /**
    * Every profile's visible "No.", resolved once against the unsorted roster so
@@ -2019,7 +2155,7 @@ function App() {
 
   const filtered = useMemo(() => {
     const matched = profiles.filter((p) => {
-      if (group !== "all" && p.group !== group) return false;
+      if (sharedOnly ? !sharedProfiles.includes(p) : group !== "all" && !selectedScope.has(p.group)) return false;
       if (q) {
         const needle = q.toLowerCase();
         const no = numbering.get(p.id)?.value ?? "";
@@ -2042,12 +2178,12 @@ function App() {
       if (left > right) return sort.dir;
       return a.id.localeCompare(b.id);
     });
-  }, [profiles, group, q, sort, numbering]);
+  }, [profiles, group, sharedOnly, sharedProfiles, selectedScope, q, sort, numbering]);
 
   const profilePageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
   const visibleProfilePage = Math.min(profilePage, profilePageCount - 1);
   const visibleProfiles = filtered.slice(visibleProfilePage * pageSize, (visibleProfilePage + 1) * pageSize);
-  useEffect(() => setProfilePage(0), [q, group, pageSize]);
+  useEffect(() => setProfilePage(0), [q, group, sharedOnly, pageSize]);
 
   const editSerial = editId ? profiles.find((profile) => profile.id === editId)?.serial ?? null : null;
   const editRunning = editId ? profiles.find((profile) => profile.id === editId)?.running === true : false;
@@ -2058,6 +2194,7 @@ function App() {
 
   const pastedRecordCount = bulkText.trim() ? countPastedRecords(bulkText) : null;
 
+  const folderMenuRef = useDismiss<HTMLSpanElement>(folderMenu !== null, () => setFolderMenu(null));
   const colsRef = useDismiss<HTMLDivElement>(colsOpen, () => setColsOpen(false));
   const nodesRef = useDismiss<HTMLDivElement>(nodesOpen, () => setNodesOpen(false));
   const exportRef = useDismiss<HTMLDivElement>(exportOpen, () => setExportOpen(false));
@@ -2086,7 +2223,7 @@ function App() {
     setSort((current) => (current.key === key ? { key, dir: current.dir === 1 ? -1 : 1 } : { key, dir: 1 }));
   const refreshRoster = async () => {
     setRefreshing(true);
-    try { await load(); } finally { setRefreshing(false); }
+    try { await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]); } finally { setRefreshing(false); }
   };
   useEffect(() => {
     if (profilePage !== visibleProfilePage) setProfilePage(visibleProfilePage);
@@ -2096,16 +2233,23 @@ function App() {
   const selectedMobileCount = profiles.filter((p) => selected.has(p.id) && p.mobilePersona).length;
   const existingGroups = groups.slice(1); // drop the "all" pseudo-group
   const editableGroups = isCloudMode
-    ? (team?.folders.filter((folder) => folder.permission === "edit" && !folder.archivedAt).map((folder) => folder.name) ??
-      existingGroups.filter((name) => profiles.some((profile) => profile.group === name && profile.permission === "edit")))
+    ? existingGroups.filter((name) => team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt))
     : existingGroups;
   const selectedEditable = [...selected].every((id) => profiles.find((profile) => profile.id === id)?.permission === "edit");
   const selectedProfilesSupportChromeExtensions = [...selected].every((id) =>
     profiles.find((profile) => profile.id === id)?.engine === "chromium");
-  const countFor = (g: string) => profiles.filter((p) => p.group === g).length;
+  const folderCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    const byName = new Map(tree.map((folder) => [folder.name, folder]));
+    for (const profile of profiles) {
+      for (const name of [profile.group, ...(byName.get(profile.group)?.ancestors ?? [])]) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+    return counts;
+  }, [tree, profiles]);
+  const countFor = (g: string) => folderCounts.get(g) ?? 0;
   const canEditGroup = (name: string) => !isCloudMode ||
-    team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt) === true ||
-    profiles.some((profile) => profile.group === name && profile.permission === "edit");
+    team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt) === true;
+  const selectedMovable = !isCloudMode || [...selected].every((id) => canEditGroup(profiles.find((profile) => profile.id === id)?.group ?? ""));
   const editableDefaultGroups = groupExtensionDefaults.filter((item) => item.permission === "edit");
   const installedExtensionIds = new Set(extensions.map((item) => item.id));
   const storedGroupDefaultExts = groupExtensionDefaults.find((item) => item.name === groupDefaultName)?.extensions ?? [];
@@ -2134,7 +2278,7 @@ function App() {
   const selectedFilteredCount = filtered.filter((p) => selected.has(p.id)).length;
   const selectedOutsideFilter = selected.size - selectedFilteredCount;
   const allFilteredSelected = filtered.length > 0 && selectedFilteredCount === filtered.length && selectedOutsideFilter === 0;
-  const selectionScope = `${filtered.length.toLocaleString()} ${q ? "matching profiles" : "profiles"}${group === "all" ? "" : ` in “${group}”`}`;
+  const selectionScope = `${filtered.length.toLocaleString()} ${q ? t("matching profiles") : t("profiles")}${group === "all" ? "" : ` in “${group}”`}`;
   const selectAllFiltered = () => setSelected(new Set(filtered.map((p) => p.id)));
   const toggleAll = () =>
     setSelected((s) => {
@@ -2307,6 +2451,7 @@ function App() {
       if (r.ok) {
         closeBulk();
         await load();
+        setShowImportOffer(true);
         const issues = r.errors?.length ? ` Reported ${r.errors.length} invalid record(s); invalid proxies were quarantined for repair.` : "";
         alert(`Imported ${r.profiles} profile(s) from ${r.files} file(s).${issues}`);
       }
@@ -2332,7 +2477,7 @@ function App() {
   // cancelled draft never leaks into the next open.
   const openCreate = () => {
     resetCreateProxyCheck();
-    setForm({ ...BLANK_FORM, group: group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "" });
+    setForm({ ...BLANK_FORM, engine: appMode?.defaultEngine ?? "chromium", chromiumRuntime: appMode?.defaultChromiumRuntime ?? "", group: group !== "all" && (!isCloudMode || editableGroups.includes(group)) ? group : "" });
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
@@ -2402,6 +2547,7 @@ function App() {
       const r = await createProfile({
         name: form.name,
         engine: form.engine,
+        ...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime || "cloakbrowser" } : {}),
         group: form.group,
         platform: form.platform,
         screen: form.screen,
@@ -2454,6 +2600,8 @@ function App() {
     setEditExpectedVersion(null);
     setEditLive(false);
     setEditEngine("chromium");
+    setEditChromiumRuntime("");
+    setEditHardware(undefined);
     setTimezoneBusy(false);
     setEditErr(null);
     setEditLoading(true);
@@ -2471,10 +2619,13 @@ function App() {
           customNo: p.customNo ?? "",
           platformOs: p.platformOs ?? "",
           timezone: p.timezone,
+          locale: p.locale ?? "",
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
+        setEditChromiumRuntime(p.chromiumRuntime ?? "");
+        setEditHardware(p.hardware);
         setEditExts(p.extensions ?? []);
         setEditInitialExts(p.extensions ?? []);
         setEditMobile(p.desktopConversion ?? null);
@@ -2494,6 +2645,8 @@ function App() {
     setEditExpectedVersion(null);
     setEditLive(false);
     setEditEngine("chromium");
+    setEditChromiumRuntime("");
+    setEditHardware(undefined);
     setTimezoneBusy(false);
     setEditLoading(false);
     setEditForm({});
@@ -2542,9 +2695,9 @@ function App() {
     setTimezoneBusy(true);
     setEditErr(null);
     try {
-      const { timezone } = await refreshProfileTimezone(id);
+      const { timezone, locale } = await refreshProfileTimezone(id);
       if (editFetchId.current !== id || generation !== editProxyCheckGeneration.current) return;
-      setEditForm((form) => ({ ...form, timezone }));
+      setEditForm((form) => ({ ...form, timezone, locale }));
       setEditInitialFingerprint((initial) => ({ ...initial, timezone }));
       await load();
     } catch (error) {
@@ -2813,31 +2966,55 @@ function App() {
     setActionErr(null);
     try {
       const result = isCloudMode
-        ? await cloudWorkspaceAction("create-folder", { name })
-        : await createGroup(name);
+        ? await cloudWorkspaceAction("create-folder", { name, parentName: newFolderParent })
+        : await createGroup(name, newFolderParent);
       if (result.ok === false) {
         setActionErr(result.error || "create failed");
         return;
       }
       await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
-      setGroup(name);
+      selectFolder(result.folder?.name ?? name);
+      setCollapsedFolders((current) => new Set([...current].filter((folder) => folder !== newFolderParent)));
       setSidebarGroupName("");
       setAddingGroup(false);
     } catch (error) {
       setActionErr(error instanceof Error ? error.message : String(error));
     }
   };
-  const startRename = (g: string) => { setRenaming(g); setRenameVal(g); };
+  const startRename = (g: string) => { setRenaming(g); setRenameVal(folderLabel(g)); };
+  const remapSelectedFolder = (from: string, to: string) => {
+    if (folderScope(folders, from).has(group)) selectFolder(to + group.slice(from.length));
+  };
+  const commitFolderMove = async () => {
+    if (!movingFolder) return;
+    setFolderMoveBusy(true);
+    setFolderMoveErr(null);
+    try {
+      const result = isCloudMode
+        ? await cloudWorkspaceAction("move-folder", { name: movingFolder, parentName: folderParent || null })
+        : await moveGroup(movingFolder, folderParent || null);
+      if (result.ok === false) throw new Error(result.error || "Move failed");
+      remapSelectedFolder(movingFolder, result.folder.name);
+      setMovingFolder(null);
+      await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
+    } catch (error) {
+      setFolderMoveErr(error instanceof Error ? error.message : String(error));
+    } finally { setFolderMoveBusy(false); }
+  };
+  const openAccess = (target: NonNullable<typeof accessTarget>) => {
+    setAccessTarget(target);
+    void loadTeam();
+  };
   const commitRename = async () => {
     const from = renaming, to = renameVal.trim();
     setRenaming(null);
-    if (!from || !to || to === from) return;
+    if (!from || !to || to === folderLabel(from)) return;
     setActionErr(null);
     try {
       const r = await renameGroup(from, to);
       if (r.ok === false) setActionErr(r.error || "rename failed");
       else {
-        if (group === from) setGroup(to);
+        remapSelectedFolder(from, r.folder?.name ?? to);
         await Promise.all([load(), isCloudMode ? loadTeam() : Promise.resolve()]);
       }
     } catch (e) {
@@ -2866,7 +3043,7 @@ function App() {
   };
 
   const desktopUpdateResultSummary = desktopUpdateResult
-    ? describeDesktopUpdateResult(desktopUpdateResult)
+    ? describeDesktopUpdateResult(desktopUpdateResult, t)
     : null;
 
   if (!appMode || !workspaceReady || restartRequired) {
@@ -2874,7 +3051,7 @@ function App() {
       <>
         <main className="onboarding">
         <section className="onboarding-card" aria-labelledby="onboarding-title">
-          <div className="onboarding-brand"><AliasLoop />{t("AliasMode")}<span>{t("by Xreacher")}</span></div>
+          <div className="onboarding-brand"><AliasLoop />AliasMode<span>{t("by Xreacher")}</span></div>
           {restartRequired ? (
             <>
               <h1 id="onboarding-title">{t("Your mode is ready")}</h1>
@@ -2914,8 +3091,8 @@ function App() {
                 <p>{t("The saved session is still on this device. Reconnect and try again.")}</p>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <div className="auth-actions">
-                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>{t("Try again")}</button>
-                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>{t("Sign in instead")}</button>
+                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>Try again</button>
+                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>Sign in instead</button>
                 </div>
               </>
             ) : (
@@ -2963,7 +3140,7 @@ function App() {
             <>
               <h1 id="onboarding-title">{t("Starting AliasMode")}</h1>
               <p>{connErr ?? "Loading your configuration…"}</p>
-              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button>}
+              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>Try again</button>}
             </>
           )}
           </section>
@@ -2991,7 +3168,7 @@ function App() {
     // The Action column carries no header text: its buttons explain themselves,
     // and a floating "ACTION" label over a right-aligned cluster read as an
     // empty column. The column chooser still lists it by its registry label.
-    const label = column.key === "action" ? "" : column.key === "group" && isCloudMode ? "Folder" : column.label;
+    const label = column.key === "action" ? "" : column.key === "group" && isCloudMode ? t("Folder") : t(column.label);
     // Every column declares its width, so a wide window's extra space spreads
     // proportionally across all of them — an even layout, no dead gap.
     const style = { width: column.width } as CSSProperties;
@@ -3038,8 +3215,8 @@ function App() {
           <button
             type="button"
             className="rail-toggle tip"
-            data-tip={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            data-tip={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
+            aria-label={sidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
             aria-expanded={!sidebarCollapsed}
             onClick={toggleSidebar}
           >
@@ -3047,7 +3224,7 @@ function App() {
           </button>
         )}
         <div className="brandrow">
-          <div className="brand"><AliasLoop />{t("AliasMode")}</div>
+          <div className="brand"><AliasLoop />AliasMode</div>
           {appVersion && <span className="appversion" title={appVersion}>{appVersion}</span>}
         </div>
         <div className="newrow">
@@ -3056,29 +3233,42 @@ function App() {
           </button>
           <button
             className="btn importbtn tip"
-            data-tip="Import profiles"
-            aria-label="Import profiles"
+            data-tip={t("Import profiles")}
+            aria-label={t("Import profiles")}
             disabled={!canEditCloud}
-            title="Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports"
+            title={t("Import profiles from AdsPower, GoLogin, Multilogin, Donut, and other readable exports")}
             onClick={openBulk}
-          ><Icon name="fileImport" /><span className="navlabel">Import profiles</span></button>
+          ><Icon name="fileImport" /><span className="navlabel">{t("Import profiles")}</span></button>
         </div>
 
         <nav className="sidenav" aria-label={t("Sections")}>
           <button
             type="button"
-            className={`navitem${view === "profiles" && group === "all" ? " active" : ""}`}
+            className={`navitem${view === "profiles" && group === "all" && !sharedOnly ? " active" : ""}`}
             data-tip={t("All profiles")}
             title={t("All profiles")}
-            onClick={() => { setView("profiles"); setGroup("all"); }}
+            onClick={() => selectFolder("all")}
           >
             <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
+          {isCloudMode && sharedProfiles.length > 0 && <button type="button" className={`navitem${view === "profiles" && sharedOnly ? " active" : ""}`} title={t("Shared with me")} onClick={() => { setGroup("all"); setSharedOnly(true); setView("profiles"); }}>
+            <Icon name="user" /><span className="navlabel">{t("Shared with me")}</span><span className="cnt">{sharedProfiles.length}</span>
+          </button>}
           {!appMode?.legacyRemote && <>
-            <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => setView("proxies")}>
-              <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
-            </button>
+            <div className="navrow">
+              <button type="button" className={`navitem${view === "proxies" ? " active" : ""}`} data-tip={t("Proxies")} title={t("Proxies")} onClick={() => setView("proxies")}>
+                <Icon name="activity" /><span className="navlabel">{t("Proxies")}</span>
+              </button>
+              <a
+                className="navbuy"
+                href={proxyOfferUrl("sidebar-cart", language)}
+                target="_blank"
+                rel="noreferrer"
+                title={t("Buy proxies at the AliasMode price")}
+                aria-label={t("Buy proxies from NobleProxy at the AliasMode user price (opens externally)")}
+              ><CartIcon /></a>
+            </div>
             <button type="button" className={`navitem${view === "trash" ? " active" : ""}`} data-tip={t("Trash")} title={t("Trash")} onClick={() => setView("trash")}>
               <Icon name="trash" /><span className="navlabel">{t("Trash")}</span>
             </button>
@@ -3117,18 +3307,19 @@ function App() {
         <div className="sidesection">
           <button className="sidehead" onClick={() => setGroupsOpen((o) => !o)}>
             <span className={`chev${groupsOpen ? " open" : ""}`}><Icon name="chevronRight" className="sm" /></span>
-            <span>{isCloudMode ? "Folders" : "Groups"}</span>
+            <span>{isCloudMode ? t("Folders") : t("Groups")}</span>
             <span className="grow" />
             <span className="cnt">{existingGroups.length}</span>
           </button>
           {groupsOpen && <>
             <div className="folders">
-            {existingGroups.length === 0 && <div className="folders-empty">No {isCloudMode ? "folders" : "groups"} yet</div>}
-            {existingGroups.map((g) => (
+            {existingGroups.length === 0 && <div className="folders-empty">{isCloudMode ? t("No folders yet") : t("No groups yet")}</div>}
+            {tree.filter((folder) => !folder.ancestors.some((name) => collapsedFolders.has(name))).map(({ name: g, label, depth }) => (
               <div
                 key={g}
-                className={`folder${view === "profiles" && group === g ? " active" : ""}`}
-                onClick={() => { if (renaming !== g) { setView("profiles"); setGroup(g); } }}
+                style={{ paddingLeft: 10 + depth * 16 }}
+                className={`folder${view === "profiles" && !sharedOnly && group === g ? " active" : ""}`}
+                onClick={() => { if (renaming !== g) selectFolder(g); }}
               >
                 {renaming === g ? (
                   <input
@@ -3142,20 +3333,24 @@ function App() {
                   />
                 ) : (
                   <>
-                    <Icon name="folder" className="sm" />
-                    <span className="fname" title={g}>{g}</span>
-                    {(canEditGroup(g) || (isCloudMode && canManageCloudFolders)) && (
-                      <span className="gactions">
-                        {canEditGroup(g) && (
-                          <button title={isCloudMode ? "Rename folder" : "Rename group"} onClick={(e) => { e.stopPropagation(); startRename(g); }}>
-                            <Icon name="edit" className="sm" />
-                          </button>
-                        )}
-                        {(!isCloudMode || canManageCloudFolders) && (
-                          <button className="danger" title={isCloudMode ? "Delete folder" : "Delete group"} onClick={(e) => { e.stopPropagation(); removeGroup(g); }}>
-                            <Icon name="trash" className="sm" />
-                          </button>
-                        )}
+                    {folders.some((folder) => folder.parentName === g) ? <button className="folder-toggle" type="button" aria-label={t("Expand or collapse {folder}", { folder: g })} aria-expanded={!collapsedFolders.has(g)} onClick={(event) => {
+                      event.stopPropagation(); setCollapsedFolders((current) => { const next = new Set(current); if (next.has(g)) next.delete(g); else next.add(g); return next; });
+                    }}><Icon name={collapsedFolders.has(g) ? "chevronRight" : "chevronDown"} className="sm" /></button> : <Icon name="folder" className="sm" />}
+                    <button className="fname folder-select" title={g} onClick={() => selectFolder(g)}>{label ?? g}</button>
+                    {!appMode?.legacyRemote && (canEditGroup(g) || canManageCloudFolders) && (
+                      <span className="gactions menuwrap" ref={folderMenu === g ? folderMenuRef : undefined} onClick={(event) => event.stopPropagation()}>
+                        <button type="button" title={t("Folder actions")} aria-label={t("Actions for {folder}", { folder: g })} aria-expanded={folderMenu === g} onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setFolderMenuPosition({ left: rect.right + 8, top: Math.min(rect.top, window.innerHeight - 220) }); setFolderMenu(folderMenu === g ? null : g); }}><Icon name="more" className="sm" /></button>
+                        {folderMenu === g && <span className="popover folder-menu" style={folderMenuPosition} onClick={() => setFolderMenu(null)}>
+                          {canEditGroup(g) && <>
+                            <button className="pop-item" onClick={() => { setNewFolderParent(g); setSidebarGroupName(""); setAddingGroup(true); }}><Icon name="plus" className="sm" />{t("New subfolder")}</button>
+                            <button className="pop-item" onClick={() => startRename(g)}><Icon name="edit" className="sm" />{t("Rename")}</button>
+                          </>}
+                          {(!isCloudMode || canManageCloudFolders) && <>
+                            <button className="pop-item" onClick={() => { setMovingFolder(g); setFolderParent(folders.find((folder) => folder.name === g)?.parentName ?? ""); setFolderMoveErr(null); }}><Icon name="move" className="sm" />{t("Move to…")}</button>
+                            <button className="pop-item danger" disabled={folders.some((folder) => folder.parentName === g)} onClick={() => void removeGroup(g)}><Icon name="trash" className="sm" />{t("Delete")}</button>
+                          </>}
+                          {isCloudMode && canManageCloudFolders && <button className="pop-item" onClick={() => openAccess({ kind: "folder", id: g, name: g, folder: g })}><Icon name="user" className="sm" />{t("Manage access")}</button>}
+                        </span>}
                       </span>
                     )}
                     <span className="cnt">{countFor(g)}</span>
@@ -3165,10 +3360,11 @@ function App() {
             ))}
             </div>
             {addingGroup ? (
-              <div className="newgroup">
+              <div className="newgroup" title={newFolderParent ?? undefined}>
+                {newFolderParent && <small>{t("In {folder}", { folder: folderLabel(newFolderParent) })}</small>}
                 <input
                   autoFocus
-                  aria-label={isCloudMode ? "New folder name" : "New group name"}
+                  aria-label={isCloudMode ? t("New folder name") : t("New group name")}
                   value={sidebarGroupName}
                   onChange={(event) => setSidebarGroupName(event.target.value)}
                   onKeyDown={(event) => {
@@ -3180,8 +3376,8 @@ function App() {
                 <button type="button" title={t("Cancel")} onClick={() => { setAddingGroup(false); setSidebarGroupName(""); }}><Icon name="close" className="sm" /></button>
               </div>
             ) : (
-              <button className="newgroup" type="button" disabled={!canEditCloud} onClick={() => setAddingGroup(true)}>
-                <Icon name="plus" className="sm" />{isCloudMode ? "New folder" : "New group"}
+              <button className="newgroup" type="button" disabled={!canEditCloud || appMode?.legacyRemote} onClick={() => { setNewFolderParent(null); setAddingGroup(true); }}>
+                <Icon name="plus" className="sm" />{isCloudMode ? t("New folder") : t("New group")}
               </button>
             )}
           </>}
@@ -3190,11 +3386,11 @@ function App() {
         <div className="sidefoot">
           <a
             className="navitem"
-            href="https://t.me/aliasmode"
+            href="https://aliasmode.com/support/"
             target="_blank"
             rel="noreferrer"
             data-tip={t("Support")}
-            title={t("Support — AliasMode Telegram group")}
+            title={t("Support — chat with the AliasMode team")}
           >
             <Icon name="help" /><span className="navlabel">{t("Support")}</span>
           </a>
@@ -3205,7 +3401,9 @@ function App() {
             {/* Only the name is a link, and it points at its owner: "Developed by
                 Xreacher" goes to Xreacher, not to AliasMode. The project's own
                 links are the GitHub and Telegram marks beside it. */}
-            <span className="watermark">{t("Developed by")}<a href="https://xreacher.com/" target="_blank" rel="noreferrer" title={t("xreacher.com")}>{t("Xreacher")}</a>
+            <span className="watermark">
+              {t("Developed by")}
+              <a href="https://xreacher.com/" target="_blank" rel="noreferrer" title="xreacher.com">Xreacher</a>
             </span>
             <div className="projectlinks">
               {PROJECT_LINKS.map((link) => (
@@ -3216,13 +3414,13 @@ function App() {
                   target="_blank"
                   rel="noreferrer"
                   data-tip={link.label}
-                  aria-label={`AliasMode on ${link.label}`}
+                  aria-label={t("AliasMode on {name}", { name: link.label })}
                 >
                   <svg className="brandmark" viewBox="0 0 24 24" aria-hidden="true"><path d={link.path} /></svg>
                 </a>
               ))}
             </div>
-            <p className="footer-mark" aria-hidden="true">{t("AliasMode")}</p>
+            <p className="footer-mark" aria-hidden="true">AliasMode</p>
           </div>
         </div>
         {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
@@ -3230,10 +3428,10 @@ function App() {
 
       <div className="main">
       <header className="pagehead">
-        <h1>{PAGE_TITLES[view]}</h1>
+        <h1>{t(PAGE_TITLES[view])}</h1>
         {view === "profiles" && (
           <span className="pagesub">
-            {filtered.length === profiles.length ? `${profiles.length} total` : `${filtered.length} of ${profiles.length}`}
+            {filtered.length === profiles.length ? t("{count} total", { count: profiles.length }) : t("{filtered} of {total}", { filtered: filtered.length, total: profiles.length })}
           </span>
         )}
         <span className="spacer" />
@@ -3282,7 +3480,7 @@ function App() {
                 {COLUMNS.map((column) => (
                   <label className="pop-item" key={column.key}>
                     <input type="checkbox" checked={columnVisible(column.key)} onChange={() => toggleColumn(column.key)} />
-                    {column.label}
+                    {t(column.label)}
                   </label>
                 ))}
               </div>
@@ -3352,31 +3550,35 @@ function App() {
         <div className="update-banner">
           <Icon name="import" />
           <div className="update-copy">
-            <span role="status"><strong>AliasMode {desktopUpdate.version} is available.</strong>{t("The update will save active browsers and restart the app.")}</span>
+            <span role="status"><strong>{t("AliasMode {version} is available.", { version: desktopUpdate.version })}</strong> {t("The update will save active browsers and restart the app.")}</span>
             <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
             {desktopUpdateErr && <span className="modal-err" role="alert">{desktopUpdateErr}</span>}
           </div>
           <button className="btn primary" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void installDesktopUpdate()}>
-            {desktopUpdateInstalling ? "Updating…" : "Update now"}
+            {desktopUpdateInstalling ? t("Updating…") : t("Update now")}
           </button>
         </div>
       )}
 
       {!appMode?.legacyRemote && <>
-        <ProxiesPage key={`proxies:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
-          active={view === "proxies"} groups={[...(isCloudMode ? [] : [""]), ...groups.slice(1)]} onChanged={load} />
+        <ProxiesPage profilesWithoutProxy={profilesWithoutProxy} key={`proxies:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
+          active={view === "proxies"} groups={[...(isCloudMode ? [] : [""]), ...groups.slice(1)]} folders={folders} onChanged={load} />
         <TrashPage key={`trash:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`}
-          active={view === "trash"} onChanged={load} />
+          active={view === "trash"} onChanged={load} folderTree={folders} />
       </>}
       {view === "profiles" ? (
       <div className="workspace">
+        {(breadcrumb || sharedOnly) && <nav className="folder-breadcrumb" aria-label={t("Folder path")}>
+          <button className="btn ghost xs" onClick={() => selectFolder("all")}>{t("All profiles")}</button>
+          {sharedOnly ? <span>{t("Shared with me")}</span> : [...(breadcrumb?.ancestors ?? []), group].map((name) => <span key={name}> / <button className="btn ghost xs" onClick={() => selectFolder(name)}>{folderLabel(name)}</button></span>)}
+        </nav>}
         <div className="filterbar">
           <select
             className="select group-filter"
             aria-label={isCloudMode ? "Folder filter" : "Group filter"}
             value={group}
-            onChange={(e) => setGroup(e.target.value)}
+            onChange={(e) => selectFolder(e.target.value)}
           >
             <option value="all">All {isCloudMode ? "folders" : "groups"}</option>
             {existingGroups.map((g) => <option key={g} value={g}>{g}</option>)}
@@ -3385,7 +3587,7 @@ function App() {
             <Icon name="search" className="sm" />
             <input
               className="input search"
-              placeholder="Search by No., id, name or tag…"
+              placeholder={t("Search by No., id, name or tag…")}
               aria-label={t("Search profiles")}
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -3394,13 +3596,20 @@ function App() {
           </div>
         </div>
 
+        {showImportOffer && profilesWithoutProxy > 0 && (
+          <div className="import-offer">
+            <ProxyProviderOffer placement="import-no-proxy" missing={profilesWithoutProxy} />
+            <button type="button" className="iconbtn" aria-label={t("Dismiss")} onClick={() => setShowImportOffer(false)}><Icon name="close" className="sm" /></button>
+          </div>
+        )}
+
         {filtered.length > 0 && (
           <div className="toolbar" role="status">
             <button type="button" className="btn" disabled={deleting || allFilteredSelected} onClick={selectAllFiltered}>
-              {allFilteredSelected ? `All ${selectionScope} selected` : `Select all ${selectionScope}`}
+              {allFilteredSelected ? t("All {scope} selected", { scope: selectionScope }) : t("Select all {scope}", { scope: selectionScope })}
             </button>
-            <span className="muted">{deleting ? "Moving selected profiles…" : "Across all pages"}</span>
-            {!allFilteredSelected && selectedOutsideFilter > 0 && <span className="muted">This replaces your selection, excluding {selectedOutsideFilter} outside this view.</span>}
+            <span className="muted">{deleting ? t("Moving selected profiles…") : t("Across all pages")}</span>
+            {!allFilteredSelected && selectedOutsideFilter > 0 && <span className="muted">{t("This replaces your selection, excluding {count} outside this view.", { count: selectedOutsideFilter })}</span>}
           </div>
         )}
 
@@ -3410,14 +3619,15 @@ function App() {
         <div className="toolbar active">
           <span className="selcount">
             <Icon name="check" className="sm" />
-            {selected.size} selected
+            {t("{count} selected", { count: selected.size })}
           </span>
           <button type="button" className="btn ghost" aria-label={t("Clear selection")} onClick={() => setSelected(new Set())}>{t("Clear selection")}</button>
           <button className="btn primary tip" data-tip={t("Open selected browsers")} disabled={!selected.size} onClick={openSelected}>
-            <Icon name="play" className="sm" />Open
+            <Icon name="play" className="sm" />{t("Open")}
           </button>
           <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
-            <Icon name="power" className="sm" />{t("Close")}</button>
+            <Icon name="power" className="sm" />{t("Close")}
+          </button>
           {(!isCloudMode || selectedEditable) && <>
           <button
             className="btn"
@@ -3447,7 +3657,8 @@ function App() {
             )}
           </div>
           <button className="btn tip" data-tip={t("Export → edit → re-upload")} disabled={!selected.size || !!exportProgress} onClick={openUpdate} title={t("Export → edit → re-upload to change credentials in bulk")}>
-            <Icon name="edit" className="sm" />{t("Edit from file")}</button>
+            <Icon name="edit" className="sm" />{t("Edit from file")}
+          </button>
           <span className="vsep" />
           <div className="movewrap">
             {newMode ? (
@@ -3457,7 +3668,7 @@ function App() {
                 className="select move-group"
                 aria-label={t("Move to group")}
                 title={moveTarget || "Choose group"}
-                disabled={!selected.size}
+                disabled={!selected.size || !selectedMovable}
                 value={moveTarget}
                 onChange={(e) => (e.target.value === "__new__" ? setNewMode(true) : setMoveTarget(e.target.value))}
               >
@@ -3471,8 +3682,8 @@ function App() {
             {newMode && (
               <button className="btn ghost" onClick={() => { setNewMode(false); setNewGroup(""); }}>{t("cancel")}</button>
             )}
-            <button className="btn accent" disabled={!selected.size || (newMode ? !newGroup.trim() : !moveTarget)} onClick={moveSelected}>
-              <Icon name="move" className="sm" />Move
+            <button className="btn accent" disabled={!selected.size || !selectedMovable || (newMode ? !newGroup.trim() : !moveTarget)} onClick={moveSelected}>
+              <Icon name="move" className="sm" />{t("Move")}
             </button>
           </div>
           {!isCloudMode && extensions.length > 0 && selectedProfilesSupportChromeExtensions && (
@@ -3491,8 +3702,8 @@ function App() {
           )}
           <span className="spacer" />
           {(!isCloudMode || selectedEditable) && (
-            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? "Delete selected profiles" : "Move selected profiles to Trash"} disabled={!selected.size || deleting} onClick={deleteSelected}>
-              <Icon name="trash" className="sm" />{deleting ? "Processing…" : appMode?.legacyRemote ? "Delete" : `Move ${selected.size.toLocaleString()} to Trash`}
+            <button className="btn danger tip" data-tip={appMode?.legacyRemote ? t("Delete selected profiles") : t("Move selected profiles to Trash")} disabled={!selected.size || deleting} onClick={deleteSelected}>
+              <Icon name="trash" className="sm" />{deleting ? t("Processing…") : appMode?.legacyRemote ? t("Delete") : t("Move {count} to Trash", { count: selected.size.toLocaleString() })}
             </button>
           )}
           </>}
@@ -3529,7 +3740,7 @@ function App() {
                   </td>
                   {columnVisible("no") && (
                     <td className="col-no">
-                      <span className={`no-text${no.custom ? " custom" : ""}`} title={`${no.custom ? "Custom NO." : "Serial"} ${no.value}`}>{no.value}</span>
+                      <span className={`no-text${no.custom ? " custom" : ""}`} title={`${no.custom ? t("Custom NO.") : "Serial"} ${no.value}`}>{no.value}</span>
                     </td>
                   )}
                   {columnVisible("name") && (
@@ -3538,8 +3749,8 @@ function App() {
                         <span className="n">{p.name}<FingerprintBadge p={p} /></span>
                         <span className="sub">
                           {p.id}
-                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : "CloakBrowser · CDP, PDF, and Chrome extensions"}>
-                            {p.engine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"}
+                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime, ownChromium)} · CDP, PDF, and Chrome extensions`}>
+                            {browserLabel(p.engine, p.chromiumRuntime, ownChromium)}
                           </span>
                           {p.running && <span className="live"><StatusDot running />{t("running")}</span>}
                           {p.lockedBy && (
@@ -3584,6 +3795,7 @@ function App() {
                             <Icon name={twoFaFlash?.id === p.id ? "check" : "key"} className="sm" />
                           </button>
                         )}
+                        {isCloudMode && canManageCloudFolders && <button className="iconbtn tip" data-tip={t("Manage access")} aria-label={t("Manage access for {profile}", { profile: p.name })} onClick={() => openAccess({ kind: "profile", id: p.id, name: p.name, folder: p.group })}><Icon name="user" className="sm" /></button>}
                         {canEditRow && (
                           <button className="iconbtn tip" data-tip={t("Edit profile")} aria-label={`Edit ${p.name}`} onClick={() => openEdit(p.id)}>
                             <Icon name="edit" className="sm" />
@@ -3607,7 +3819,8 @@ function App() {
                               ><Icon name="raise" className="sm" /></button>
                             </>}
                             <button className="btn sm solid-danger" aria-label={`Close ${p.name}`} disabled={busy[p.id]} onClick={() => act(p.id, closeProfile)}>
-                              <Icon name="power" className="sm" />{t("Close")}</button>
+                              <Icon name="power" className="sm" />{t("Close")}
+                            </button>
                           </>
                         ) : p.mobilePersona ? (
                           !p.lockedBy && (!isCloudMode || p.permission === "edit") ? (
@@ -3631,7 +3844,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => act(p.id, openProfile)}
                             >
-                              <Icon name="play" className="sm" />Open
+                              <Icon name="play" className="sm" />{t("Open")}
                             </button>
                           </>
                         ) : (
@@ -3642,7 +3855,7 @@ function App() {
                             disabled={busy[p.id]}
                             onClick={() => act(p.id, openProfile)}
                           >
-                            <Icon name="play" className="sm" />Open
+                            <Icon name="play" className="sm" />{t("Open")}
                           </button>
                         )}
                       </span>
@@ -3659,10 +3872,10 @@ function App() {
                       {profiles.length === 0 ? (
                         <>
                           <b>{t("No profiles yet")}</b>
-                          <p>Create a profile or import a readable export from another browser.</p>
+                          <p>{t("Create a profile or import a readable export from another browser.")}</p>
                           <div className="empty-actions">
                             <button className="btn primary" disabled={!canEditCloud} onClick={openCreate}><Icon name="plus" className="sm" />{t("New Profile")}</button>
-                            <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />Import profiles</button>
+                            <button className="btn" disabled={!canEditCloud} onClick={openBulk}><Icon name="fileImport" className="sm" />{t("Import profiles")}</button>
                           </div>
                         </>
                       ) : (
@@ -3690,8 +3903,8 @@ function App() {
         )}
 
         <footer className="statusbar">
-          <span className="stat"><b>{profiles.length}</b>{t("profiles")}</span>
-          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b>{t("running")}</span>
+          <span className="stat"><b>{profiles.length}</b> {t("profiles")}</span>
+          <span className="stat"><StatusDot running={runningCount > 0} /><b>{runningCount}</b> {t("running")}</span>
           {diag && (
             <span className="diag" onClick={() => setShowDiag((s) => !s)}>
               Diagnose · last {diagWhen}
@@ -3706,7 +3919,7 @@ function App() {
               disabled={visibleProfilePage === 0}
               onClick={() => setProfilePage(visibleProfilePage - 1)}
             ><Icon name="chevronLeft" className="sm" /></button>
-            <span className="page-of">{t("Page")}<b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
+            <span className="page-of">{t("Page")} <b>{visibleProfilePage + 1}</b> / {profilePageCount}</span>
             <button
               type="button"
               className="iconbtn"
@@ -3715,7 +3928,7 @@ function App() {
               onClick={() => setProfilePage(visibleProfilePage + 1)}
             ><Icon name="chevronRight" className="sm" /></button>
             <select className="select" aria-label={t("Rows per page")} value={pageSize} onChange={(e) => applyPageSize(Number(e.target.value))}>
-              {PAGE_SIZES.map((size) => <option key={size} value={size}>{t("{size} / page")}</option>)}
+              {PAGE_SIZES.map((size) => <option key={size} value={size}>{t("{size} / page", { size })}</option>)}
             </select>
           </span>
         </footer>
@@ -3735,7 +3948,7 @@ function App() {
                 <input
                   className="input"
                   style={{ flex: 1 }}
-                  aria-label={t("Chrome Web Store URL or extension ID")}
+                  aria-label="Chrome Web Store URL or extension ID"
                   placeholder="https://chromewebstore.google.com/detail/…"
                   value={extSource}
                   onChange={(event) => setExtSource(event.target.value)}
@@ -3783,7 +3996,7 @@ function App() {
                             checked={groupDefaultExts.includes(item.id)}
                             onChange={() => toggleGroupDefaultExt(item.id)}
                           />
-                          <span>{item.name}{item.missing && <span className="muted">{t("· Not installed on this device")}</span>}</span>
+                          <span>{item.name}{item.missing && <span className="muted">{t(" · Not installed on this device")}</span>}</span>
                         </label>
                       ))}
                     </div>
@@ -3857,7 +4070,7 @@ function App() {
               className={`tab${settingsTab === tab.key ? " active" : ""}`}
               onClick={() => setSettingsTab(tab.key)}
             >
-              {tab.key === "team" && isCloudMode ? "Team" : tab.label}
+              {tab.key === "team" && isCloudMode ? t("Team") : t(tab.label)}
             </button>
           ))}
         </div>
@@ -3868,23 +4081,23 @@ function App() {
               <div className="identity-card">
                 <span className="identity-avatar"><Icon name="user" className="lg" /></span>
                 <span className="identity-lines">
-                  <b>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local workspace"}</b>
+                  <b>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local workspace")}</b>
                   <span>
                     {isCloudMode
-                      ? `${cloudAuth?.workspace?.role ?? "member"} · ${cloudAuth?.workspace?.name ?? "Cloud workspace"}`
-                      : "No account · profile data stays on this computer"}
+                      ? `${t(cloudAuth?.workspace?.role ?? "member")} · ${cloudAuth?.workspace?.name ?? t("Cloud workspace")}`
+                      : t("No account · profile data stays on this computer")}
                   </span>
                 </span>
-                <span className="chip">{isCloudMode ? "Cloud" : "Local"}</span>
+                <span className="chip">{isCloudMode ? t("Cloud") : t("Local")}</span>
               </div>
 <section className="settings-card">
             <header><Icon name="user" className="sm" /><h2>{t("Account")}</h2></header>
             <div className="card-body">
-            <div className="settings-row"><span>{t("Signed in as")}</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? "Cloud account" : "Local · no account"}</strong></div>
+            <div className="settings-row"><span>{t("Signed in as")}</span><strong>{isCloudMode ? cloudAuth?.user?.email ?? t("Cloud account") : t("Local · no account")}</strong></div>
             <div className="settings-row"><span>{t("Profiles stored")}</span><strong>{profiles.length}</strong></div>
             {isCloudMode && cloudAuth?.authenticated && (
               <button className="btn danger" type="button" disabled={authBusy} onClick={() => void signOut()}>
-                <Icon name="power" className="sm" />{authBusy ? "Signing out…" : "Sign out / Switch account"}
+                <Icon name="power" className="sm" />{authBusy ? t("Signing out…") : t("Sign out / Switch account")}
               </button>
             )}
             {authErr && <p className="modal-err" role="alert">{authErr}</p>}
@@ -3896,7 +4109,7 @@ function App() {
               <header>
                 <Icon name="cloud" className="sm" /><h2>{t("Remote MCP")}</h2>
                 <span className={`remote-mcp-status ${remoteMcp.state}`}>
-                  {remoteMcp.state === "active" ? "Ready" : remoteMcp.state === "disabled" ? "Disabled" : remoteMcp.state === "loading" ? "Preparing" : remoteMcp.state === "error" ? "Unavailable" : "Not ready"}
+                  {remoteMcp.state === "active" ? t("Ready") : remoteMcp.state === "disabled" ? t("Disabled") : remoteMcp.state === "loading" ? t("Preparing") : remoteMcp.state === "error" ? t("Unavailable") : t("Not ready")}
                 </span>
               </header>
               <div className="card-body">
@@ -3908,15 +4121,15 @@ function App() {
                       <span>{t("MCP server URL")}</span>
                       <span className="remote-mcp-value">
                         <input className="mono" value={remoteMcp.url} readOnly />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? "Copied" : "Copy"}</button>
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("url", remoteMcp.url!)}>{remoteMcpCopied === "url" ? t("Copied") : t("Copy")}</button>
                       </span>
                     </label>
                     <label className="fld remote-mcp-field">
                       <span>{t("Access key")}</span>
                       <span className="remote-mcp-value">
                         <input className="mono" value={remoteMcpTokenVisible ? remoteMcp.token : "••••••••••••••••••••••••"} readOnly aria-label={t("Remote MCP access key")} />
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? "Hide" : "Reveal"}</button>
-                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? "Copied" : "Copy"}</button>
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => setRemoteMcpTokenVisible((visible) => !visible)}>{remoteMcpTokenVisible ? t("Hide") : t("Reveal")}</button>
+                        <button className="btn" type="button" disabled={authBusy} onClick={() => void copyRemoteMcp("token", remoteMcp.token!)}>{remoteMcpCopied === "token" ? t("Copied") : t("Copy")}</button>
                       </span>
                     </label>
                     <div className="hint remote-mcp-guide">
@@ -3928,7 +4141,7 @@ function App() {
                       </ol>
                       <details>
                         <summary>{t("Claude Code and other clients")}</summary>
-                        <p>{t("Claude Code uses an HTTP entry in")}<code>{t(".mcp.json")}</code>{t(". Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.")}</p>
+                        <p>{t("Claude Code uses an HTTP entry in {file}. Keep the access key in an environment variable. Other bearer-capable MCP clients can use the same URL and secret header.", { file: ".mcp.json" })}</p>
                         <p>{t("Claude.ai and ChatGPT use OAuth and do not need the access key.")}</p>
                       </details>
                     </div>
@@ -3944,8 +4157,8 @@ function App() {
                     <button className="btn" type="button" disabled={authBusy} onClick={() => void enableRemoteMcp()}>{t("Enable Remote MCP")}</button>
                   </>
                 )}
-                {remoteMcp.error && <div className="modal-err" role="alert">{remoteMcp.error}</div>}
-                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>{t("Try again")}</button>}
+                {remoteMcp.error && <div className="modal-err" role="alert">{t(remoteMcp.error)}</div>}
+                {remoteMcp.state === "error" && <button className="btn" type="button" disabled={authBusy} onClick={() => void loadRemoteMcp()}>Try again</button>}
               </div>
             </section>
           )}
@@ -3954,8 +4167,8 @@ function App() {
             <header><Icon name="sun" className="sm" /><h2>{t("Appearance")}</h2></header>
             <div className="card-body">
               <p>{t("Choose how AliasMode looks. System follows your operating system setting.")}</p>
-              <label className="fld"><span>{t("Language")}</span>
-                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value as "en-US" | "zh-CN")}>
+              <label className="fld"><span>{t("language.label")}</span>
+                <select className="select" value={language} onChange={(event) => setLanguage(event.target.value)}>
                   {availableLanguages().map((lang) => (
                     <option key={lang} value={lang}>{languageNativeName(lang)}</option>
                   ))}
@@ -3971,7 +4184,7 @@ function App() {
                     className={theme === option.key ? "active" : ""}
                     onClick={() => chooseTheme(option.key)}
                   >
-                    <Icon name={option.icon} className="sm" />{option.label}
+                    <Icon name={option.icon} className="sm" />{t(option.label)}
                   </button>
                 ))}
               </div>
@@ -3980,10 +4193,10 @@ function App() {
           <section className="settings-card">
             <header><Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" /><h2>{t("Switch mode")}</h2></header>
             <div className="card-body settings-mode">
-              <p>{isCloudMode ? "Local mode keeps this installation offline from AliasMode Cloud." : "Cloud mode requires an account and does not upload Local profiles automatically."}</p>
+              <p>{isCloudMode ? t("Local mode keeps this installation offline from AliasMode Cloud.") : t("Cloud mode requires an account and does not upload Local profiles automatically.")}</p>
               <button className="btn" type="button" disabled={modeBusy || desktopUpdateInstalling} onClick={() => requestModeSwitch(isCloudMode ? "local" : "cloud")}>
                 <Icon name={isCloudMode ? "laptop" : "cloud"} className="sm" />
-                Switch to {isCloudMode ? "Local" : "Cloud"}
+                {t("Switch to {target}", { target: isCloudMode ? t("Local") : t("Cloud") })}
               </button>
             </div>
           </section>
@@ -3992,36 +4205,36 @@ function App() {
           )}
           {settingsTab === "team" && (
             <>
-              <h2 className="sect-title">{isCloudMode ? "Team and folder access" : "Workspace"}</h2>
+              <h2 className="sect-title">{isCloudMode ? t("Team and folder access") : t("Workspace")}</h2>
 <section className="settings-card">
-            <header><Icon name="folders" className="sm" /><h2>{isCloudMode ? "Team" : "Workspace"}</h2></header>
+            <header><Icon name="folders" className="sm" /><h2>{isCloudMode ? t("Team") : t("Workspace")}</h2></header>
             <div className="card-body">
             {isCloudMode ? (
               <>
-                <div className="settings-row"><span>{t("Workspace")}</span><strong>{cloudAuth?.workspace?.name ?? "Cloud workspace"}</strong></div>
-                <div className="settings-row"><span>{t("Role")}</span><strong>{cloudAuth?.workspace?.role ?? "member"}</strong></div>
+                <div className="settings-row"><span>{t("Workspace")}</span><strong>{cloudAuth?.workspace?.name ?? t("Cloud workspace")}</strong></div>
+                <div className="settings-row"><span>{t("Role")}</span><strong>{t(cloudAuth?.workspace?.role ?? "member")}</strong></div>
                 {teamBusy && !team && <p className="hint" role="status">{t("Loading team…")}</p>}
                 <h3 className="settings-subhead">{t("Members")}</h3>
                 {team?.members.map((member) => (
                   <div className="team-member" key={member.accountId}>
                     <div className="settings-row">
-                      <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || "No folder access"}</small></span>
-                      {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{member.role}</strong> : (
-                        <select className="select" aria-label={`Role for ${member.email}`} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
+                      <span>{member.email}<small> · {member.grants.map((grant) => `${grant.folderName}: ${grant.permission}`).join(", ") || t("No folder access")}</small></span>
+                      {member.role === "owner" || cloudAuth?.workspace?.role !== "owner" ? <strong>{t(member.role)}</strong> : (
+                        <select className="select" aria-label={t("Role for {email}", { email: member.email })} value={member.role} disabled={teamBusy} onChange={(event) => void runTeamAction("role", { accountId: member.accountId, role: event.target.value })}>
                           <option value="member">{t("member")}</option><option value="admin">{t("admin")}</option>
                         </select>
                       )}
                       {member.role !== "owner" && (cloudAuth?.workspace?.role === "owner" || (cloudAuth?.workspace?.role === "admin" && member.role === "member")) && (
-                        <button className="btn xs" type="button" aria-label={`Send password reset to ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("reset-password", { accountId: member.accountId }, `Password reset email sent to ${member.email}`)}>Reset password</button>
+                        <button className="btn xs" type="button" aria-label={t("Send password reset to {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("reset-password", { accountId: member.accountId }, t("Password reset email sent to {email}", { email: member.email }))}>{t("Reset password")}</button>
                       )}
                     </div>
                     {member.role === "member" && (cloudAuth?.workspace?.role === "owner" || cloudAuth?.workspace?.role === "admin") && (
                       <div className="team-grants">
                         {team.folders.filter((folder) => !folder.archivedAt).map((folder) => {
                           const permission = member.grants.find((grant) => grant.folderName === folder.name)?.permission ?? "";
-                          return <label key={folder.name}>{folder.name}<select className="select" aria-label={`${folder.name} access for ${member.email}`} value={permission} disabled={teamBusy} onChange={(event) => void runTeamAction(event.target.value ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission: event.target.value })}><option value="">{t("No access")}</option><option value="view">{t("View")}</option><option value="edit">{t("Edit")}</option></select></label>;
+                          return <GrantControl key={folder.name} label={t("{folder} access for {email}", { folder: folder.name, email: member.email })} direct={permission} inherited={folderGrantPermission(team.folders, member.grants, folder.name, false)} busy={teamBusy} onChange={(permission) => void runTeamAction(permission ? "grant" : "remove-grant", { folderName: folder.name, accountId: member.accountId, permission })} />;
                         })}
-                        <button className="btn xs danger" type="button" aria-label={`Remove ${member.email}`} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, `Removed ${member.email}`)}>{t("Remove")}</button>
+                        <button className="btn xs danger" type="button" aria-label={t("Remove {email}", { email: member.email })} disabled={teamBusy} onClick={() => void runTeamAction("remove-member", { accountId: member.accountId }, t("Removed {email}", { email: member.email }))}>{t("Remove")}</button>
                       </div>
                     )}
                   </div>
@@ -4036,26 +4249,27 @@ function App() {
                     </form>
                     <p className="hint" id="invite-team-help">{t("Invitations go to that exact verified email. New members see no folders until you grant access here.")}</p>
                     {team?.invitations.filter((invite) => !invite.acceptedAt && !invite.revokedAt).map((invite) => {
-                      const status = invite.expiresAt <= Date.now() ? "Expired" : "Pending";
+                      const statusCode = invite.expiresAt <= Date.now() ? "expired" : "pending";
+                      const status = t(statusCode === "expired" ? "Expired" : "Pending");
                       return <div className="settings-row" key={invite.id}>
                         <span>{invite.email}<small>{invite.role}</small></span>
                         <span>
-                          <span className={`team-tag ${status.toLowerCase()}`}>{status}</span>
-                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={`Resend invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, "Invitation resent")}>{t("Resend")}</button> <button className="btn xs danger" type="button" aria-label={`Revoke invitation to ${invite.email}`} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, "Invitation revoked")}>{t("Revoke")}</button></>}
+                          <span className={`team-tag ${statusCode}`}>{status}</span>
+                          {(cloudAuth?.workspace?.role === "owner" || invite.role === "member") && <> <button className="btn xs" type="button" aria-label={t("Resend invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("resend", { id: invite.id }, t("Invitation resent"))}>{t("Resend")}</button> <button className="btn xs danger" type="button" aria-label={t("Revoke invitation to {email}", { email: invite.email })} disabled={teamBusy} onClick={() => void runTeamAction("revoke", { id: invite.id }, t("Invitation revoked"))}>{t("Revoke")}</button></>}
                         </span>
                       </div>;
                     })}
                   </>
                 )}
-                {teamErr && <p className="modal-err" role="alert">{teamErr}</p>}
+                {teamErr && <p className="modal-err" role="alert">{t(teamErr)}</p>}
                 <h3 className="settings-subhead">{t("Join another workspace")}</h3>
                 <form className="team-code" onSubmit={(event) => { event.preventDefault(); void acceptInvitation(); }}>
                   <input className="input" aria-label={t("Invitation code")} placeholder={t("Paste invitation code")} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} />
                   <button className="btn primary" type="submit" disabled={authBusy || !invitationCode.trim()}>{t("Accept")}</button>
                 </form>
                 <p className="hint">{t("Paste the code from your invitation email. It works only for the email you signed in with.")}</p>
-                {authNotice && <p className="hint" role="status">{authNotice}</p>}
-                {authErr && <p className="modal-err" role="alert">{authErr}</p>}
+                {authNotice && <p className="hint" role="status">{t(authNotice)}</p>}
+                {authErr && <p className="modal-err" role="alert">{t(authErr)}</p>}
               </>
             ) : <p>{t("Local mode has no Cloud workspace.")}</p>}
             </div>
@@ -4092,27 +4306,27 @@ function App() {
                 className={`update-last-result ${desktopUpdateResultSummary.tone}`}
                 role={desktopUpdateResultSummary.tone === "success" ? "status" : "alert"}
               >
-                <strong>{desktopUpdateResultSummary.title}</strong>
-                <span>{desktopUpdateResultSummary.detail}</span>
+                <strong>{t(desktopUpdateResultSummary.title)}</strong>
+                <span>{t(desktopUpdateResultSummary.detail)}</span>
               </div>
             )}
             {desktopUpdate?.state === "upToDate" && <p role="status">{t("AliasMode is up to date.")}</p>}
             {desktopUpdate?.state === "available" && (
               <>
-                <p role="status">Version {desktopUpdate.version} is ready. Active browsers will be saved and closed.</p>
+                <p role="status">{t("Version {version} is ready. Active browsers will be saved and closed.", { version: desktopUpdate.version })}</p>
                 <UpdateHighlights version={desktopUpdate.version} highlights={desktopUpdate.highlights} />
               </>
             )}
             {!desktopUpdate && !desktopUpdateChecking && <p>{t("AliasMode checks for updates when it starts.")}</p>}
             {desktopUpdateProgress && <DesktopUpdateProgressView progress={desktopUpdateProgress} />}
-            {desktopUpdateErr && <div className="modal-err" role="alert">{desktopUpdateErr}</div>}
+            {desktopUpdateErr && <div className="modal-err" role="alert">{t(desktopUpdateErr)}</div>}
             <div className="update-actions">
               <button className="btn" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void checkDesktopUpdate(true)}>
-                <Icon name="refresh" className="sm" />{desktopUpdateChecking ? "Checking…" : "Check for updates"}
+                <Icon name="refresh" className="sm" />{desktopUpdateChecking ? t("Checking…") : t("Check for updates")}
               </button>
               {desktopUpdate?.state === "available" && (
                 <button className="btn primary" type="button" disabled={desktopUpdateChecking || desktopUpdateInstalling} onClick={() => void installDesktopUpdate()}>
-                  {desktopUpdateInstalling ? "Updating…" : "Update now"}
+                  {desktopUpdateInstalling ? t("Updating…") : t("Update now")}
                 </button>
               )}
             </div>
@@ -4124,20 +4338,20 @@ function App() {
               <header>
                 <Icon name="activity" className="sm" /><h2>{t("Recent diagnostics")}</h2>
                 <button className="btn xs" type="button" disabled={cloudEventsBusy} onClick={() => void loadCloudEvents()}>
-                  {cloudEventsBusy ? "Loading…" : "Refresh"}
+                  {cloudEventsBusy ? t("Loading…") : t("Refresh")}
                 </button>
               </header>
               <div className="card-body">
-              {cloudEventsErr && <div className="diagnostics-error" role="alert">{cloudEventsErr}</div>}
+              {cloudEventsErr && <div className="diagnostics-error" role="alert">{t(cloudEventsErr)}</div>}
               {!cloudEventsErr && cloudEvents.length === 0 && (
-                <p>{cloudEventsBusy ? "Loading recent Cloud events…" : "No Cloud lifecycle events in this run."}</p>
+                <p>{cloudEventsBusy ? t("Loading recent Cloud events…") : t("No Cloud lifecycle events in this run.")}</p>
               )}
               {cloudEvents.length > 0 && (
                 <div className="diagnostics-list" role="log" aria-label={t("Recent Cloud diagnostics")}>
                   {cloudEvents.map((event, index) => (
                     <div className={`diagnostics-row${cloudDiagnosticFailed(event.type) ? " failed" : ""}`} key={`${event.timestamp}-${index}`}>
                       <time dateTime={new Date(event.timestamp).toISOString()}>{new Date(event.timestamp).toLocaleTimeString()}</time>
-                      <span>{CLOUD_DIAGNOSTIC_LABELS[event.type]}</span>
+                      <span>{t(CLOUD_DIAGNOSTIC_LABELS[event.type])}</span>
                     </div>
                   ))}
                 </div>
@@ -4156,14 +4370,14 @@ function App() {
                 setLogErr(null);
                 fetchLogs().then(setLogView).catch((e) => setLogErr(e instanceof Error ? e.message : String(e)));
               }}><Icon name="logs" className="sm" />{t("View detailed logs")}</button>
-              {logErr && <p className="cardnote">Logs: {logErr}</p>}
-              {logDir && <p className="cardnote">File: {logDir}</p>}
+              {logErr && <p className="cardnote">{t("Logs")}: {t(logErr)}</p>}
+              {logDir && <p className="cardnote">{t("File")}: {logDir}</p>}
             </div>
           </section>
           
             </>
           )}
-          {modeErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{modeErr}</div>}
+          {modeErr && <div className="modal-err" role="alert"><Icon name="alert" className="sm" />{t(modeErr)}</div>}
         </div>
         <footer className="pagefoot">
           <span className="spacer" />
@@ -4240,12 +4454,46 @@ function App() {
             <div className="modal-foot">
               <button className="btn ghost" type="button" disabled={cookieSaving} onClick={closeCookie}>{t("Cancel")}</button>
               <button className="btn primary" type="submit" disabled={cookieSaving || !cookieForm.name || !cookieForm.domain.trim() || !cookieForm.path.startsWith("/")}>
-                {cookieSaving ? "Adding…" : "Add cookie"}
+                {cookieSaving ? t("Adding…") : t("Add cookie")}
               </button>
             </div>
           </form>
         </div>
       )}
+
+      {movingFolder && <div className="modal-backdrop" onClick={() => { if (!folderMoveBusy) setMovingFolder(null); }}>
+        <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="folder-move-title" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-head" id="folder-move-title">{t("Move {folder}", { folder: movingFolder })}</div>
+          <div className="modal-body">
+            <label className="fld"><span>{t("Parent folder")}</span><select value={folderParent} disabled={folderMoveBusy} onChange={(event) => setFolderParent(event.target.value)}>
+              <option value="">{t("Top level")}</option>
+              {tree.filter((folder) => folder.name !== movingFolder && !folder.ancestors.includes(movingFolder)).map((folder) => <option key={folder.name} value={folder.name}>{folder.name}</option>)}
+            </select></label>
+            {isCloudMode && <p className="hint">{t("Inherited access follows the new parent folder.")}</p>}
+            {folderMoveErr && <div className="modal-err" role="alert">{folderMoveErr}</div>}
+          </div>
+          <div className="modal-foot"><button className="btn ghost" disabled={folderMoveBusy} onClick={() => setMovingFolder(null)}>{t("Cancel")}</button><button className="btn primary" disabled={folderMoveBusy} onClick={() => void commitFolderMove()}>{t("Move")}</button></div>
+        </div>
+      </div>}
+
+      {accessTarget && isCloudMode && canManageCloudFolders && <div className="modal-backdrop" onClick={() => { if (!teamBusy) setAccessTarget(null); }}>
+        <div className="modal mode-confirm" role="dialog" aria-modal="true" aria-labelledby="manage-access-title" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-head" id="manage-access-title">{t("Manage access")} · {accessTarget.name}</div>
+          <div className="modal-body">
+            <p className="hint">{t("Owners and admins have access to all folders and profiles.")}</p>
+            <p className="hint">{accessTarget.kind === "folder" ? t("Folder access includes all subfolders. The strongest grant applies.") : t("Profile access shares only this profile and follows it when moved.")}</p>
+            {team?.members.filter((member) => member.role === "member").map((member) => {
+              const profile = accessTarget.kind === "profile";
+              const direct = profile ? member.profileGrants?.find((grant) => grant.profileId === accessTarget.id)?.permission ?? ""
+                : member.grants.find((grant) => grant.folderName === accessTarget.id)?.permission ?? "";
+              return <GrantControl key={member.accountId} label={member.email} direct={direct} inherited={folderGrantPermission(team.folders, member.grants, accessTarget.folder, profile)} busy={teamBusy} onChange={(permission) => void runTeamAction(profile ? permission ? "profile-grant" : "remove-profile-grant" : permission ? "grant" : "remove-grant", { ...(profile ? { profileId: accessTarget.id } : { folderName: accessTarget.id }), accountId: member.accountId, permission })} />;
+            })}
+            {team && !team.members.some((member) => member.role === "member") && <p>{t("Invite members in Settings → Team to share access.")}</p>}
+            {teamErr && <div className="modal-err" role="alert">{teamErr}</div>}
+          </div>
+          <div className="modal-foot"><button className="btn" disabled={teamBusy} onClick={() => setAccessTarget(null)}>{t("Close")}</button></div>
+        </div>
+      </div>}
 
       {showCreate && (
         /* Form dialog: a stray backdrop click must not discard typed input —
@@ -4287,7 +4535,7 @@ function App() {
               </div>
               <div className="proxy-paste-row">
                 <label className="fld grow">
-                  <span>{t("Paste proxy to autofill")}<span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
+                  <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
                   <input
                     type="password"
                     autoComplete="off"
@@ -4309,7 +4557,7 @@ function App() {
                   <span>{t("Proxy type")}</span>
                   <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
                     <option value="http">{t("http")}</option>
-                    <option value="https">{t("https")}</option>
+                    <option value="https">https</option>
                     <option value="socks5">{t("socks5")}</option>
                   </select>
                 </label>
@@ -4335,22 +4583,25 @@ function App() {
                   onClick={checkCreateProxy}
                 >
                   <Icon name="activity" className="sm" />
-                  {createProxyCheck.checking ? "Checking…" : "Check proxy"}
+                  {createProxyCheck.checking ? "Checking…" : t("Check proxy")}
                 </button>
               </div>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
+              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} ownChromium={ownChromium} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
-                    engine: "chromium", label: "Chrome", runtime: "CloakBrowser",
+                    engine: "chromium", label: "Chrome",
                     path: "M12 0C8.21 0 4.831 1.757 2.632 4.501l3.953 6.848A5.454 5.454 0 0 1 12 6.545h10.691A12 12 0 0 0 12 0zM1.931 5.47A11.943 11.943 0 0 0 0 12c0 6.012 4.42 10.991 10.189 11.864l3.953-6.847a5.45 5.45 0 0 1-6.865-2.29zm13.342 2.166a5.446 5.446 0 0 1 1.45 7.09l.002.001h-.002l-5.344 9.257c.206.01.413.016.621.016 6.627 0 12-5.373 12-12 0-1.54-.29-3.011-.818-4.364zM12 16.364a4.364 4.364 0 1 1 0-8.728 4.364 4.364 0 0 1 0 8.728Z",
                   },
                   {
-                    engine: "firefox", label: "Firefox", runtime: "AliasMode Firefox",
+                    engine: "firefox", label: "Firefox",
                     path: "M8.824 7.287c.008 0 .004 0 0 0zm-2.8-1.4c.006 0 .003 0 0 0zm16.754 2.161c-.505-1.215-1.53-2.528-2.333-2.943.654 1.283 1.033 2.57 1.177 3.53l.002.02c-1.314-3.278-3.544-4.6-5.366-7.477-.091-.147-.184-.292-.273-.446a3.545 3.545 0 01-.13-.24 2.118 2.118 0 01-.172-.46.03.03 0 00-.027-.03.038.038 0 00-.021 0l-.006.001a.037.037 0 00-.01.005L15.624 0c-2.585 1.515-3.657 4.168-3.932 5.856a6.197 6.197 0 00-2.305.587.297.297 0 00-.147.37c.057.162.24.24.396.17a5.622 5.622 0 012.008-.523l.067-.005a5.847 5.847 0 011.957.222l.095.03a5.816 5.816 0 01.616.228c.08.036.16.073.238.112l.107.055a5.835 5.835 0 01.368.211 5.953 5.953 0 012.034 2.104c-.62-.437-1.733-.868-2.803-.681 4.183 2.09 3.06 9.292-2.737 9.02a5.164 5.164 0 01-1.513-.292 4.42 4.42 0 01-.538-.232c-1.42-.735-2.593-2.121-2.74-3.806 0 0 .537-2 3.845-2 .357 0 1.38-.998 1.398-1.287-.005-.095-2.029-.9-2.817-1.677-.422-.416-.622-.616-.8-.767a3.47 3.47 0 00-.301-.227 5.388 5.388 0 01-.032-2.842c-1.195.544-2.124 1.403-2.8 2.163h-.006c-.46-.584-.428-2.51-.402-2.913-.006-.025-.343.176-.389.206-.406.29-.787.616-1.136.974-.397.403-.76.839-1.085 1.303a9.816 9.816 0 00-1.562 3.52c-.003.013-.11.487-.19 1.073-.013.09-.026.181-.037.272a7.8 7.8 0 00-.069.667l-.002.034-.023.387-.001.06C.386 18.795 5.593 24 12.016 24c5.752 0 10.527-4.176 11.463-9.661.02-.149.035-.298.052-.448.232-1.994-.025-4.09-.753-5.844z",
                   },
-                ] as const).map(({ engine, label, runtime, path }) => (
+                ] as const).map(({ engine, label, path }) => {
+                  // The help text names the engine that this computer and this form create.
+                  const runtime = browserLabel(engine, appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime, ownChromium);
+                  return (
                   <div className="browser-option" key={engine}>
                     <label className="browser-card">
                       <input type="radio" name="browser-engine" value={engine} checked={form.engine === engine} onChange={() => setF("engine", engine)} />
@@ -4359,12 +4610,28 @@ function App() {
                     </label>
                     <button type="button" className="browser-info tip" data-tip={runtime} aria-label={`${label}: ${runtime}`}><Icon name="help" className="sm" /></button>
                   </div>
-                ))}
+                  );
+                })}
               </div>
+              {form.engine === "chromium" && !appMode?.legacyRemote && !appMode?.chromiumRuntime && (
+                <label className="fld">
+                  <span>{t("Chrome version")}</span>
+                  <select value={form.chromiumRuntime} onChange={(e) => setF("chromiumRuntime", e.target.value as "" | "aliasmode")}>
+                    {appMode?.defaultChromiumRuntime
+                      ? <><option value="aliasmode">{ownChromium ? t("155 (default)") : t("155 beta")}</option><option value="">{t("146")}</option></>
+                      : <><option value="">{t("146 (default)")}</option><option value="aliasmode">{t("155 beta")}</option></>}
+                  </select>
+                  <small>{!form.chromiumRuntime
+                    ? t(CLOAKBROWSER_NOTE)
+                    : ownChromium
+                      ? t("Downloads once (about 190 MB) on each computer that opens it.")
+                      : t("Beta. Downloads once (about 190 MB) on each computer that opens it.")}</small>
+                </label>
+              )}
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>
-              <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? "Creating…" : "Create profile"}</button>
+              <button className="btn primary" disabled={creating} onClick={submitCreate}>{creating ? t("Creating…") : t("Create profile")}</button>
             </div>
           </div>
         </div>
@@ -4377,7 +4644,7 @@ function App() {
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="edit-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="edit-profile-title">
               <Icon name="edit" />{t("Edit profile")}<span className="mono muted">{editId}</span>
-              <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeEdit}><Icon name="close" className="sm" /></button>
+              <button type="button" className="modal-close" aria-label="Close" onClick={closeEdit}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
               {editErr && <div className="modal-err"><Icon name="alert" className="sm" />{editErr}</div>}
@@ -4389,20 +4656,22 @@ function App() {
                   {(editLive || (!isCloudMode && editRunning)) && (
                     <p className="hint" role="status">
                       {editLive
-                        ? "This browser is open. Changes save to this device now and sync to Cloud when it closes."
-                        : "This browser is open. Changes save now and apply the next time it launches."}
+                        ? t("This browser is open. Changes save to this device now and sync to Cloud when it closes.")
+                        : t("This browser is open. Changes save now and apply the next time it launches.")}
                     </p>
                   )}
                   {!isCloudMode && editMobile && (
                     <div className="persona-warning">
                       <strong><Icon name="warning" className="sm" />{t("Imported mobile persona cannot open safely")}</strong>
-                      <span>{t("Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.")}</span>
+                      <span>
+                        Older AliasMode opened it as a desktop browser anyway: Android became Windows; iPhone/iPad became macOS. That looked usable, but it was not coherent mobile emulation.
+                      </span>
                       <span>
                         Convert it once to {editMobile.platform === "macos" ? "macOS" : "Windows"} desktop. Cookies, login/session, proxy, timezone, credentials and fingerprint seed stay intact
-                        {editMobile.screenChanged ? `; the mobile-sized screen becomes ${editMobile.resolution}` : "; the existing desktop-sized screen stays intact"}.
+                        {editMobile.screenChanged ? `; the mobile-sized screen becomes ${editMobile.resolution}` : t("; the existing desktop-sized screen stays intact")}.
                       </span>
                       <button className="btn persona-convert" disabled={editSaving} onClick={convertEditedMobile}>
-                        {editSaving ? "Converting…" : `Convert to ${editMobile.platform === "macos" ? "macOS" : "Windows"} desktop`}
+                        {editSaving ? t("Converting…") : `Convert to ${editMobile.platform === "macos" ? "macOS" : "Windows"} desktop`}
                       </button>
                     </div>
                   )}
@@ -4428,7 +4697,9 @@ function App() {
                   <div className="fld-row">
                     <label className="fld grow">
                       <span>{t("Folder")}</span>
-                      <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                      {canEditGroup(profiles.find((profile) => profile.id === editId)?.group ?? "")
+                        ? <GroupPicker value={editForm.group ?? ""} onChange={(v) => setEF("group", v)} groups={editableGroups} allowCreate={!isCloudMode} />
+                        : <input value={editForm.group ?? ""} readOnly />}
                     </label>
                     <label className="fld grow">
                       <span>{t("Platform")}</span>
@@ -4437,9 +4708,9 @@ function App() {
                   </div>
                   {!outreachOfferDismissed && ["x.com", "linkedin.com", "telegram.org"].includes(editForm.platform ?? "") && (
                     <div className="outreach-offer hint">
-                      <span>Need outreach campaigns?</span>
-                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">Run outreach with Xreacher ↗</a>
-                      <button type="button" className="btn xs ghost" aria-label="Dismiss Xreacher offer" onClick={() => {
+                      <span>{t("Need outreach campaigns?")}</span>
+                      <a href="https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor" target="_blank" rel="noreferrer">{t("Run outreach with Xreacher ↗")}</a>
+                      <button type="button" className="btn xs ghost" aria-label={t("Dismiss Xreacher offer")} onClick={() => {
                         setOutreachOfferDismissed(true);
                         writeSetting("aliasmode.offers.xreacherDismissed", "1");
                       }}><Icon name="close" className="sm" /></button>
@@ -4447,27 +4718,28 @@ function App() {
                   )}
                   <label className="fld">
                     <span>{t("Browser")}</span>
-                    <input value={editEngine === "firefox" ? "AliasMode Firefox" : "CloakBrowser"} readOnly className="ro" />
+                    <input value={browserLabel(editEngine, editChromiumRuntime, ownChromium)} readOnly className="ro" />
                     <small>{editEngine === "firefox"
-                      ? "Native Firefox profile · no CDP, PDF, or Chrome extensions."
-                      : "CDP, PDF, and Chrome extensions are available."}</small>
+                      ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
+                      : t("CDP, PDF, and Chrome extensions are available.")}</small>
+                    {editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}
                   </label>
                   <label className="fld">
-                    <span>{t("Tags")}<span className="muted">{t("(comma-separated)")}</span></span>
-                    <input value={editForm.tags ?? ""} placeholder={t("warmup, us, priority")} onChange={(e) => setEF("tags", e.target.value)} />
+                    <span>{t("Tags")} <span className="muted">{t("(comma-separated)")}</span></span>
+                    <input value={editForm.tags ?? ""} placeholder="warmup, us, priority" onChange={(e) => setEF("tags", e.target.value)} />
                   </label>
                   <div className="fld-row">
                     <label className="fld type">
                       <span>{t("Proxy type")}</span>
                       <select value={editForm.proxyType ?? "http"} onChange={(e) => setEF("proxyType", e.target.value)}>
                         <option value="http">{t("http")}</option>
-                        <option value="https">{t("https")}</option>
+                        <option value="https">https</option>
                         <option value="socks5">{t("socks5")}</option>
                       </select>
                     </label>
                     <label className="fld grow">
-                      <span>{t("Proxy")}</span>
-                      <input value={editForm.proxy ?? ""} placeholder={t("host:port:username:password")} onChange={(e) => setEF("proxy", e.target.value)} />
+                      <span>Proxy</span>
+                      <input value={editForm.proxy ?? ""} placeholder="host:port:username:password" onChange={(e) => setEF("proxy", e.target.value)} />
                       <small>{t("Leave blank to launch on a direct connection.")}</small>
                     </label>
                   </div>
@@ -4480,7 +4752,7 @@ function App() {
                       onClick={checkEditedProxy}
                     >
                       <Icon name="activity" className="sm" />
-                      {editProxyCheck.checking ? "Checking…" : "Check proxy"}
+                      {editProxyCheck.checking ? "Checking…" : t("Check proxy")}
                     </button>
                   </div>
                   <ProxyCheckFeedback hasProxy={editHasProxy} state={editProxyCheck} />
@@ -4494,23 +4766,31 @@ function App() {
                           onClick={refreshEditedTimezone}
                         >
                           <Icon name="activity" className="sm" />
-                          {timezoneBusy ? "Looking up timezone…" : editHasProxy ? "Set timezone from proxy" : "Use current connection timezone"}
+                          {timezoneBusy ? t("Looking up timezone and language…") : editHasProxy ? t("Set timezone and language from proxy") : t("Use current connection timezone and language")}
                         </button>
                       </div>
                       <p className="hint">{editProxyChanged
-                        ? "Save proxy changes before setting the timezone."
-                        : "This action saves the timezone immediately. It applies the next time this profile opens."}</p>
+                        ? t("Save proxy changes before setting the timezone.")
+                        : t("This action saves the timezone immediately. It applies the next time this profile opens.")}</p>
                     </>
                   )}
+                  {editForm.locale && (
+                    <p className="hint">
+                      {t("Language")}: {editForm.locale}
+                      {localeTimezoneMismatch(editForm.locale, editForm.timezone ?? "") && (
+                        <><br />{t("This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.")}</>
+                      )}
+                    </p>
+                  )}
                   <div className="fld-row">
-                    <CopyField label="Username" value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
-                    <CopyField label="Password" value={editForm.password ?? ""} onChange={(value) => setEF("password", value)} />
+                    <CopyField label={t("Username")} value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
+                    <CopyField label={t("Password")} value={editForm.password ?? ""} onChange={(value) => setEF("password", value)} />
                   </div>
                   <div className="fld-row">
-                    <CopyField label="Email" value={editForm.email ?? ""} onChange={(value) => setEF("email", value)} />
-                    <CopyField label="Email password" value={editForm.emailPassword ?? ""} onChange={(value) => setEF("emailPassword", value)} />
+                    <CopyField label={t("Email")} value={editForm.email ?? ""} onChange={(value) => setEF("email", value)} />
+                    <CopyField label={t("Email password")} value={editForm.emailPassword ?? ""} onChange={(value) => setEF("emailPassword", value)} />
                   </div>
-                  <CopyField label="2FA secret" value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
+                  <CopyField label={t("2FA secret")} value={editForm.twofa ?? ""} onChange={(value) => setEF("twofa", value)} />
                   {!isCloudMode && editTotp && (
                     <div className="authrow">
                       <span className="authlabel">{t("Authenticator")}</span>
@@ -4522,11 +4802,12 @@ function App() {
                     </div>
                   )}
                   <FingerprintSettings
-                    engine={editEngine} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
+                    engine={editEngine} chromiumRuntime={editChromiumRuntime} ownChromium={ownChromium} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} screenReadOnly={editEngine === "firefox"}
                     platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
+                    hardware={editHardware}
                   />
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
@@ -4535,22 +4816,22 @@ function App() {
                         {editExtensionChoices.map((x) => (
                           <label key={x.id} className="extchk">
                             <input type="checkbox" checked={editExts.includes(x.id)} onChange={() => toggleEditExt(x.id)} />
-                            <span>{x.name}{x.missing && <span className="muted">{t("· Not installed on this device")}</span>}</span>
+                            <span>{x.name}{x.missing && <span className="muted">{t(" · Not installed on this device")}</span>}</span>
                           </label>
                         ))}
                       </div>
                     </div>
                   )}
                   <p className="formnote">
-                    Cookies and locked fingerprint values are preserved. Only editable fields change.
-                    {editEngine === "chromium" && " Extensions load when the browser opens."}
+                    {t("Cookies and locked fingerprint values are preserved. Only editable fields change.")}
+                    {editEngine === "chromium" && t(" Extensions load when the browser opens.")}
                   </p>
                 </>
               )}
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeEdit}>{t("Cancel")}</button>
-              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? "Saving…" : "Save changes"}</button>
+              <button className="btn primary" disabled={editSaving || editLoading || timezoneBusy} onClick={saveEdit}>{editSaving ? t("Saving…") : t("Save changes")}</button>
             </div>
           </div>
         </div>
@@ -4568,11 +4849,11 @@ function App() {
             <div className="modal-body">
               {bulkErr && <div className="modal-err"><Icon name="alert" className="sm" />{bulkErr}</div>}
               <ol className="steps">
-                <li>Export profiles from your previous browser as TXT, CSV, JSON, or XLSX.</li>
-                <li>Add the files below and choose a destination group.</li>
-                <li>Click Import profiles. Only data included in the export can transfer.</li>
+                <li>{t("Export profiles from your previous browser as TXT, CSV, JSON, or XLSX.")}</li>
+                <li>{t("Add the files below and choose a destination group.")}</li>
+                <li>{t("Click Import profiles. Only data included in the export can transfer.")}</li>
               </ol>
-              <p className="hint">Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.</p>
+              <p className="hint">{t("Encrypted or proprietary profile archives cannot be imported. Use a readable export instead.")}</p>
 
               <div className="segmented" role="tablist" aria-label={t("Import source")}>
                 <button
@@ -4582,7 +4863,8 @@ function App() {
                   className={bulkSource === "file" ? "active" : ""}
                   onClick={() => { setBulkSource("file"); setBulkText(""); }}
                 >
-                  <Icon name="fileImport" className="sm" />{t("From file")}</button>
+                  <Icon name="fileImport" className="sm" />{t("From file")}
+                </button>
                 <button
                   type="button"
                   role="tab"
@@ -4590,7 +4872,8 @@ function App() {
                   className={bulkSource === "paste" ? "active" : ""}
                   onClick={() => { setBulkSource("paste"); setBulkFiles([]); }}
                 >
-                  <Icon name="copy" className="sm" />{t("Paste text")}</button>
+                  <Icon name="copy" className="sm" />{t("Paste text")}
+                </button>
               </div>
 
               {bulkSource === "file" ? (
@@ -4633,8 +4916,10 @@ function App() {
                     onChange={(event) => setBulkText(event.target.value)}
                   />
                   <small>{pastedRecordCount === null
-                    ? "Paste one or more key=value records, separated by a line of asterisks."
-                    : `${pastedRecordCount} record${pastedRecordCount === 1 ? "" : "s"} detected — each one starts with its own id= line.`}</small>
+                    ? t("Paste one or more key=value records, separated by a line of asterisks.")
+                    : pastedRecordCount === 1
+                      ? t("1 record detected — each one starts with its own id= line.")
+                      : t("{count} records detected — each one starts with its own id= line.", { count: pastedRecordCount })}</small>
                 </label>
               )}
 
@@ -4649,7 +4934,7 @@ function App() {
 
               <div className="fld-row">
                 <label className="fld grow">
-                  <span>{isCloudMode ? "Destination folder" : "Assign to group"}</span>
+                  <span>{isCloudMode ? t("Destination folder") : t("Assign to group")}</span>
                   <GroupPicker value={bulkGroup} onChange={setBulkGroup} groups={isCloudMode ? editableGroups : existingGroups} allowCreate={!isCloudMode} />
                 </label>
                 <label className="fld grow">
@@ -4660,24 +4945,26 @@ function App() {
                 </label>
               </div>
               <p className="formnote">
-                Anything chosen above overrides that field on every imported record, including
-                provider exports that already carry a group.
+                {t("Anything chosen above overrides that field on every imported record, including provider exports that already carry a group.")}
               </p>
-              <p className="formnote">{t("An AliasMode export also carries")}<code>seed</code>, <code>timezone</code> and{" "}
-                <code>platform_os</code>, which recreate the exact browser fingerprint. Its{" "}
-                <code>fp_*</code>{t(" columns are a")}<b>{t("record")}</b> of the fingerprint that was measured,
-                not settings — they are checked after the browser opens, never applied to it.
+              <p className="formnote">
+                {t("An AliasMode export also carries")} <code>seed</code>{t("(seed)")}、<code>timezone</code>{t("(timezone)")}{t(" and ")}{" "}
+                <code>platform_os</code>{t("(operating system)")}{t(", which recreate the exact browser fingerprint. Its")}{" "}
+                <code>fp_*</code> {t("columns are a")} <b>{t("record")}</b>{" "}
+                {t("of the fingerprint that was measured, not settings — they are checked after the browser opens, never applied to it.")}
               </p>
             </div>
             <div className="modal-foot">
               <button className="tlink" onClick={() => downloadText("aliasmode-template.csv", CSV_TEMPLATE, "text/csv")}>
-                <Icon name="export" className="sm" />{t("CSV template")}</button>
+                <Icon name="export" className="sm" />{t("CSV template")}
+              </button>
               <button className="tlink" onClick={() => downloadText("aliasmode-example.txt", TXT_EXAMPLE, "text/plain")}>
-                <Icon name="export" className="sm" />{t(".txt example")}</button>
+                <Icon name="export" className="sm" />{t(".txt example")}
+              </button>
               <span className="spacer" />
               <button className="btn ghost" onClick={closeBulk}>{t("Cancel")}</button>
               <button className="btn primary" disabled={bulkBusy || (!bulkFiles.length && !bulkText.trim()) || (isCloudMode && !bulkGroup)} onClick={submitBulk}>
-                <Icon name="fileImport" className="sm" />{bulkBusy ? "Importing…" : "Import profiles"}
+                <Icon name="fileImport" className="sm" />{bulkBusy ? t("Importing…") : t("Import profiles")}
               </button>
             </div>
           </div>
@@ -4694,16 +4981,16 @@ function App() {
               {updateErr && <div className="modal-err"><Icon name="alert" className="sm" />{updateErr}</div>}
               {updateResult && <div className="modal-ok"><Icon name="check" className="sm" />{updateResult}</div>}
               <ol className="steps">
-                <li><b>{t("Export")}</b>{t("the profiles you want to change — that gives you a file with each profile's")}<code>{t("id")}</code>{t("(how rows are matched).")}</li>
-                <li><b>{t("Edit")}</b>{t("the columns you want (name, username, password, 2FA, proxy…). Keep the")}<code>{t("id")}</code>{t("column; delete any column you don't want to touch.")}</li>
-                {!isCloudMode && <li>{t("Add a")}<code>{t("custom_no")}</code>{t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
-                <li><b>{t("Re-upload")}</b>{t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")}<code>{t("cookie")}</code>{t("or")}<code>{t("ua")}</code>{t("column has no effect.")}</li>
+                <li><b>{t("Export")}</b> {t("the profiles you want to change — that gives you a file with each profile's")} — that gives you a file with each profile's <code>id</code> {t("(how rows are matched).")}</li>
+                <li><b>{t("Edit")}</b> {t("the columns you want (name, username, password, 2FA, proxy…). Keep the")} <code>id</code> {t("column; delete any column you don't want to touch.")}</li>
+                {!isCloudMode && <li>{t("Add a")} <code>custom_no</code> {t("column to renumber profiles in bulk — that number shows in the roster and in the launched browser's window title.")}</li>}
+                <li><b>{t("Re-upload")}</b> {t("the edited file below. IDs in the file determine which profiles change, not the current selection. Cookies &amp; fingerprints are preserved — editing a")} <code>cookie</code> or <code>ua</code> {t("column has no effect.")}</li>
                 {isCloudMode && <li>{t("Close profiles before updating. Each Cloud profile saves separately; successful updates remain saved if other profiles fail.")}</li>}
               </ol>
               <div className="updexport">
                 {selected.size > 0 ? (
                   <span>
-                    Export {selected.size} selected:&nbsp;
+                    {t("Export {count} selected:", { count: selected.size })}&nbsp;
                     <button className="tlink" onClick={() => exportSelected("csv")}><Icon name="export" className="sm" />{t("CSV")}</button>
                     &nbsp;·&nbsp;
                     <button className="tlink" onClick={() => exportSelected("txt")}><Icon name="export" className="sm" />{t(".txt")}</button>
@@ -4725,7 +5012,7 @@ function App() {
               >
                 <Icon name="export" />
                 <b>{t("Drag &amp; drop the edited file, or click to choose")}</b>
-                <div className="sub">{t("CSV,")}<code>{t(".txt")}</code>{t("or Excel")}<code>{t(".xlsx")}</code>{t("with an")}<code>{t("id")}</code>{t("column")}</div>
+                <div className="sub">CSV, <code>.txt</code> or Excel <code>.xlsx</code> with an <code>id</code> column</div>
               </div>
               <input
                 ref={updateFileRef}
@@ -4734,11 +5021,11 @@ function App() {
                 style={{ display: "none" }}
                 onChange={(e) => { if (e.target.files?.[0]) setUpdateFile(e.target.files[0]); e.target.value = ""; }}
               />
-              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />{t("Selected:")}<b>{updateFile.name}</b></div>}
+              {updateFile && <div className="bulkfiles"><Icon name="file" className="sm" />{t("Selected:")} <b>{updateFile.name}</b></div>}
             </div>
             <div className="modal-foot">
-              <button className="btn ghost" onClick={() => setShowUpdate(false)}>{t("Close")}</button>
-              <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? "Updating…" : "Update profiles"}</button>
+              <button className="btn ghost" onClick={() => setShowUpdate(false)}>Close</button>
+              <button className="btn primary" disabled={updateBusy || !updateFile} onClick={submitUpdate}>{updateBusy ? t("Updating…") : t("Update profiles")}</button>
             </div>
           </div>
         </div>
@@ -4752,5 +5039,16 @@ function App() {
   );
 }
 
-const root = createRoot(document.getElementById("root")!);
-root.render(<I18nProvider><App /></I18nProvider>);
+const rootElement = document.getElementById("root")!;
+// The desktop shell opens outside links itself, from its allowlist. Its shell plugin also listens on
+// <body>: it cancels the click and asks for a command that AliasMode does not grant, so the link does
+// nothing. Stop the click here, so every outside link takes the allowlist path.
+rootElement.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest('a[target="_blank"]')) event.stopPropagation();
+});
+const root = createRoot(rootElement);
+root.render(
+  <I18nProvider>
+    <App />
+  </I18nProvider>
+);

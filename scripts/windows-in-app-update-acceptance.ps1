@@ -254,11 +254,12 @@ function Wait-DesktopReady(
   throw "installed public desktop did not become ready"
 }
 
-function Get-InstalledBrowserProcesses([string]$InstallRoot) {
+# Browsers run from the runtimes that the app downloads into its data folder.
+function Get-InstalledBrowserProcesses([string]$DataRoot) {
   $result = [Collections.Generic.List[Diagnostics.Process]]::new()
   foreach ($record in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)) {
     if ($record.ExecutablePath -and
-        (Test-PathWithin ([string]$record.ExecutablePath) (Join-Path $InstallRoot "cloakbrowser"))) {
+        (Test-PathWithin ([string]$record.ExecutablePath) (Join-Path $DataRoot "runtimes"))) {
       $process = Get-Process -Id $record.ProcessId -ErrorAction SilentlyContinue
       if ($process) { $result.Add($process) }
     }
@@ -955,6 +956,27 @@ try {
     [Text.UTF8Encoding]::new($false)
   )
 
+  # The app downloads CloakBrowser on first use, from github.com, which the update fixture
+  # answers below. Place the pinned build in the data folder first, as a first open would.
+  Set-AcceptanceStage "seeding-cloakbrowser"
+  $cloakBrowserRoot = Join-Path (Join-Path $appDataRoot "runtimes") "cloakbrowser-146.0.7680.177.5"
+  $cloakBrowserArchive = Join-Path $runRoot "cloakbrowser-windows-x64.zip"
+  & curl.exe --fail --location --silent --show-error --retry 5 --retry-all-errors --output $cloakBrowserArchive `
+    "https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v146.0.7680.177.5/cloakbrowser-windows-x64.zip"
+  if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser download failed" }
+  if ((Get-FileHash -LiteralPath $cloakBrowserArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+      "b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe") {
+    throw "pinned CloakBrowser archive SHA-256 mismatch"
+  }
+  New-Item -ItemType Directory -Force $cloakBrowserRoot | Out-Null
+  & tar.exe -xf $cloakBrowserArchive -C $cloakBrowserRoot
+  if ($LASTEXITCODE -ne 0) { throw "pinned CloakBrowser extraction failed" }
+  Remove-Item -LiteralPath $cloakBrowserArchive -Force
+  if ((Get-FileHash -LiteralPath (Join-Path $cloakBrowserRoot "chrome.exe") -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+      "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80") {
+    throw "pinned CloakBrowser executable SHA-256 mismatch"
+  }
+
   Set-AcceptanceStage "intercepting-github"
   $portProbe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 443)
   try {
@@ -1041,7 +1063,7 @@ try {
   $profile = Invoke-RestMethod "$($oldRecord.Origin)/ui/api/profiles" `
     -Method Post `
     -ContentType "application/json" `
-    -Body '{"name":"in-app-update-preservation-sentinel"}' `
+    -Body '{"name":"in-app-update-preservation-sentinel","engine":"chromium","chromiumRuntime":"cloakbrowser"}' `
     -TimeoutSec 30 `
     -NoProxy
   if ($profile.ok -ne $true -or [string]::IsNullOrWhiteSpace([string]$profile.id)) {
@@ -1062,7 +1084,7 @@ try {
     Select-Object -ExpandProperty OwningProcess -Unique)
   if ($browserOwner.Count -ne 1) { throw "preservation browser CDP owner was not unique" }
   for ($attempt = 0; $attempt -lt 40; $attempt++) {
-    $oldBrowserProcesses = @(Get-InstalledBrowserProcesses $installRoot)
+    $oldBrowserProcesses = @(Get-InstalledBrowserProcesses $appDataRoot)
     if ($oldBrowserProcesses.Count -gt 0 -and
         @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] }).Count -eq 1) {
       break
@@ -1073,6 +1095,7 @@ try {
       @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] }).Count -ne 1) {
     throw "installed preservation browser process tree was not found"
   }
+  $oldBrowserMain = @($oldBrowserProcesses | Where-Object { $_.Id -eq $browserOwner[0] })[0]
   try {
     foreach ($browserProcess in $oldBrowserProcesses) {
       [void]$browserProcess.Handle
@@ -1124,9 +1147,9 @@ try {
     $CandidateVersion `
     "click-update-and-wait-error"
   $observations.rootMismatchRejected = $true
-  $observations.browserStayedActiveAfterRejection = @(
-    $oldBrowserProcesses | Where-Object { -not (Test-ProcessExited $_) }
-  ).Count -eq $oldBrowserProcesses.Count
+  # Chromium ends idle helpers by itself (the data decoder after 5 s, an extension worker after
+  # 30 s), so the browser that owns the profile's CDP port is the one that must stay.
+  $observations.browserStayedActiveAfterRejection = -not (Test-ProcessExited $oldBrowserMain)
   if ((Test-ProcessExited $oldRecord.App) -or
       (Test-ProcessExited $oldRecord.Sidecar) -or
       -not $observations.browserStayedActiveAfterRejection) {
@@ -1193,7 +1216,7 @@ try {
       -not $observations.oldBrowserExited) {
     throw "public $publicVersion process tree survived update handoff"
   }
-  if (@(Get-InstalledBrowserProcesses $installRoot).Count -ne 0) {
+  if (@(Get-InstalledBrowserProcesses $appDataRoot).Count -ne 0) {
     throw "installed browser process survived update handoff"
   }
   $observations.candidateReady = $true

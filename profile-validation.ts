@@ -1,7 +1,9 @@
-import { normalizeProfileEngine } from "./firefox-config.ts";
+import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import { normalizeProfileHardware } from "./fingerprint.ts";
 import type { CookieRecord, Profile } from "./types.ts";
 import { MAX_CUSTOM_NO_LENGTH, MAX_SCREEN_DIMENSION, MIN_SCREEN_HEIGHT, MIN_SCREEN_WIDTH } from "./parse.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
+import { normalizeProfileLocale } from "./profile-locale.ts";
 
 const REQUIRED_STRING_FIELDS = [
   "accId",
@@ -27,8 +29,10 @@ function assertCookie(value: unknown, index: number): asserts value is CookieRec
   for (const field of ["name", "value", "domain", "path"] as const) {
     if (typeof cookie[field] !== "string") throw new Error(`profile cookie ${index} ${field} must be a string`);
   }
-  if (!cookie.name || !cookie.domain || !cookie.path) {
-    throw new Error(`profile cookie ${index} requires non-empty name, domain, and path`);
+  // A cookie may have an empty name: `document.cookie = "value"` makes one, and
+  // the browser reports and restores it like any other.
+  if (!cookie.domain || !cookie.path) {
+    throw new Error(`profile cookie ${index} requires non-empty domain and path`);
   }
   for (const field of ["httpOnly", "secure"] as const) {
     if (cookie[field] !== undefined && typeof cookie[field] !== "boolean") {
@@ -53,7 +57,8 @@ function assertCookie(value: unknown, index: number): asserts value is CookieRec
 export function assertValidProfile(value: unknown): asserts value is Profile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profile must be an object");
   const profile = value as Record<string, unknown>;
-  normalizeProfileEngine(profile.engine, profile.firefox);
+  const engine = normalizeProfileEngine(profile.engine, profile.firefox).engine;
+  normalizeProfileHardware(profile.hardware, engine, normalizeChromiumRuntime(profile.chromiumRuntime, engine));
   assertSafeProfileId(profile.id);
 
   for (const field of REQUIRED_STRING_FIELDS) {
@@ -106,6 +111,7 @@ export function assertValidProfile(value: unknown): asserts value is Profile {
   profile.cookies.forEach(assertCookie);
   if (typeof profile.seeded !== "boolean") throw new Error("profile seeded must be boolean");
 
+  normalizeProfileLocale(profile.locale);
   const timezone = profile.timezone as string;
   if (timezone) {
     try {

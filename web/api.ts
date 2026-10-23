@@ -9,6 +9,8 @@ import type {
   ScriptSummary,
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
+import type { PythonRuntimeStatus } from "../python-runtime.ts";
+import type { FolderInfo } from "../folders.ts";
 import {
   CLOUD_DIAGNOSTIC_TYPES,
   type CloudDiagnosticEvent,
@@ -23,6 +25,8 @@ export interface UiProfile {
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox";
+  /** "aliasmode" is the opt-in Chromium 155 beta; absent is CloakBrowser. */
+  chromiumRuntime?: "aliasmode";
   group: string;
   /** Canonical account platform domain, or "" (none). */
   platform: string;
@@ -87,6 +91,7 @@ export interface UiRoster {
   profiles: UiProfile[];
   healthSources: HealthSource[];
   groups: string[];
+  folders?: FolderInfo[];
 }
 
 export interface DiagnoseReport {
@@ -104,6 +109,12 @@ export interface AppModeConfig {
   proxyViaSystemProxy?: boolean;
   restartRequired?: boolean;
   legacyRemote?: boolean;
+  /** Set when this host runs every Chromium profile on one runtime, so there is no version to choose. */
+  chromiumRuntime?: "aliasmode";
+  /** Set when this computer can run Chromium 155: the New profile dialog then starts on it. */
+  defaultChromiumRuntime?: "aliasmode";
+  /** The engine of new profiles on this computer: Chromium on Windows, Firefox on macOS and Linux. Absent in legacy Remote mode. */
+  defaultEngine?: "chromium" | "firefox";
 }
 
 export async function fetchAppMode(): Promise<AppModeConfig> {
@@ -116,18 +127,17 @@ export async function fetchAppMode(): Promise<AppModeConfig> {
   return body as AppModeConfig;
 }
 
-export type ShellLanguage = "en-US" | "zh-CN";
-
-/** Shell UI language, persisted server-side: localStorage is origin-scoped and
- *  the desktop shell serves the UI from a random loopback port each launch. */
-export async function fetchShellLanguage(): Promise<ShellLanguage> {
+/** Shell UI language (BCP47 tag), persisted server-side: localStorage is
+ *  origin-scoped and the desktop shell serves the UI from a random loopback
+ *  port each launch. */
+export async function fetchShellLanguage(): Promise<string | null> {
   const path = "/ui/api/shell-language";
   const response = await fetch(path);
   const body = await apiJson(response, path);
-  return body.language === "zh-CN" ? "zh-CN" : "en-US";
+  return typeof body.language === "string" && body.language.length > 0 ? body.language : null;
 }
 
-export async function saveShellLanguage(language: ShellLanguage): Promise<void> {
+export async function saveShellLanguage(language: string): Promise<void> {
   const path = "/ui/api/shell-language";
   const response = await fetch(path, {
     method: "POST",
@@ -341,8 +351,7 @@ export const fetchCloudConnector = (connectorId: string) => cloudConnectorAction
 export const revokeCloudConnector = (connectorId: string) => cloudConnectorAction("revoke", connectorId);
 
 export interface CloudTeamState {
-  folders: Array<{
-    name: string;
+  folders: Array<FolderInfo & {
     archivedAt: number | null;
     permission: "view" | "edit";
     extensionDefaults: string[];
@@ -350,6 +359,7 @@ export interface CloudTeamState {
   members: Array<{
     accountId: string; email: string; role: "owner" | "admin" | "member"; joinedAt: number;
     grants: Array<{ folderName: string; accountId: string; permission: "view" | "edit" }>;
+    profileGrants?: Array<{ profileId: string; accountId: string; permission: "view" | "edit" }>;
   }>;
   invitations: Array<{
     id: string; email: string; role: "admin" | "member"; expiresAt: number;
@@ -365,7 +375,7 @@ export async function fetchCloudTeam(): Promise<CloudTeamState> {
   return { folders: body.folders, members: body.members, invitations: body.invitations };
 }
 
-export async function cloudWorkspaceAction(action: string, input: Record<string, string>): Promise<any> {
+export async function cloudWorkspaceAction(action: string, input: Record<string, string | null>): Promise<any> {
   const path = "/ui/api/cloud-workspace";
   const response = await fetch(path, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -431,7 +441,22 @@ export async function fetchProfiles(): Promise<UiRoster> {
     }),
     healthSources: Array.isArray(body.healthSources) ? body.healthSources : [],
     groups: Array.isArray(body.groups) ? body.groups.filter((name: unknown) => typeof name === "string") : [],
+    ...(Array.isArray(body.folders) ? { folders: body.folders } : {}),
   };
+}
+
+/** Runs `run` one call at a time. `load` resolves after a run that started
+ *  after the call (callers waiting meanwhile share one follow-up run), so an
+ *  action still sees its own result; `poll` skips while a run is in flight. */
+export function serialLoader(run: () => Promise<void>): { load: () => Promise<void>; poll: () => void } {
+  let active: { running: Promise<void>; next: Promise<void> | null } | null = null;
+  const load = (): Promise<void> => {
+    if (active) return active.next ??= active.running.then(load, load);
+    const running = run().finally(() => { active = null; });
+    active = { running, next: null };
+    return running;
+  };
+  return { load, poll: () => { if (!active) void load().catch(() => {}); } };
 }
 
 export interface ProfileCookieInput {
@@ -654,6 +679,8 @@ export interface NewProfileInput {
   name?: string;
   /** Browser family selected for a new Local profile. */
   engine?: "chromium" | "firefox";
+  /** Chromium runtime of a new Chromium profile: Chromium 155 or CloakBrowser. */
+  chromiumRuntime?: "aliasmode" | "cloakbrowser";
   group?: string;
   platform?: string;
   proxy?: ProxyCheckInput | null;
@@ -689,6 +716,9 @@ export interface EditProfile {
   id: string;
   name: string;
   engine: "chromium" | "firefox";
+  chromiumRuntime?: "aliasmode";
+  /** Hardware the profile is set to report on every computer. Absent values are chosen by the engine. */
+  hardware?: { gpu?: string; cores?: number };
   group: string;
   platform: string;
   proxyType: string;
@@ -712,6 +742,8 @@ export interface EditProfile {
   customNo?: string;
   /** Stored timezone; blank uses the browser default. */
   timezone: string;
+  /** Stored language tag, e.g. "en-GB"; blank when unset. */
+  locale?: string;
   cookieCount: number;
   seeded: boolean;
   mobilePersona: boolean;
@@ -755,7 +787,7 @@ export async function updateProfile(id: string, set: Record<string, unknown>, ex
   return { ...body, status: r.status };
 }
 
-export async function refreshProfileTimezone(id: string): Promise<{ timezone: string }> {
+export async function refreshProfileTimezone(id: string): Promise<{ timezone: string; locale: string }> {
   const path = `/ui/api/profiles/${encodeURIComponent(id)}/timezone`;
   const response = await fetch(path, {
     method: "POST",
@@ -766,7 +798,7 @@ export async function refreshProfileTimezone(id: string): Promise<{ timezone: st
   if (!response.ok || body.ok !== true || typeof body.timezone !== "string") {
     throw new Error(body.error || "timezone lookup failed");
   }
-  return { timezone: body.timezone };
+  return { timezone: body.timezone, locale: typeof body.locale === "string" ? body.locale : "" };
 }
 
 export async function convertMobileProfile(id: string): Promise<any> {
@@ -839,11 +871,11 @@ export async function updateFromFile(files: FileList | File[]): Promise<any> {
 }
 
 // ---- Group create / rename / delete -----------------------------------------
-export async function createGroup(name: string): Promise<any> {
+export async function createGroup(name: string, parentName?: string | null): Promise<any> {
   const r = await fetch("/ui/api/groups/create", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, parentName }),
   });
   return apiJson(r, "/ui/api/groups/create");
 }
@@ -855,6 +887,16 @@ export async function renameGroup(from: string, to: string): Promise<any> {
     body: JSON.stringify({ from, to }),
   });
   return apiJson(r, "/ui/api/groups/rename");
+}
+
+export async function moveGroup(name: string, parentName: string | null): Promise<any> {
+  const path = "/ui/api/groups/move";
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, parentName }),
+  });
+  return apiJson(r, path);
 }
 
 export async function deleteGroup(name: string): Promise<any> {
@@ -994,6 +1036,23 @@ export async function startScriptRun(input: { scriptId: string; profileIds: stri
 
 export async function stopScriptRun(): Promise<ScriptRun> {
   return (await scriptRequest("/ui/api/scripts/stop", { method: "POST", body: "{}" })).run as ScriptRun;
+}
+
+function pythonRuntimeStatus(body: any): PythonRuntimeStatus | null {
+  if (body.python === null) return null;
+  if (!body.python || typeof body.python.state !== "string" || !Number.isFinite(body.python.totalBytes)) {
+    throw new Error("Python runtime returned invalid data");
+  }
+  return body.python as PythonRuntimeStatus;
+}
+
+/** The downloaded Python runtime of Python scripts; null when this app does not download one. */
+export async function fetchPythonRuntime(): Promise<PythonRuntimeStatus | null> {
+  return pythonRuntimeStatus(await scriptRequest("/ui/api/scripts/python-runtime"));
+}
+
+export async function downloadPythonRuntime(): Promise<PythonRuntimeStatus | null> {
+  return pythonRuntimeStatus(await scriptRequest("/ui/api/scripts/python-runtime", { method: "POST", body: "{}" }));
 }
 
 export async function fetchScriptLog(runId: string, offset: number): Promise<{ text: string; nextOffset: number }> {

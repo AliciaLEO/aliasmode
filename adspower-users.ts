@@ -26,6 +26,7 @@ import type { RemoteCoordinator } from "./remote.ts";
 import type { Profile } from "./types.ts";
 import { buildNewProfile, type NewProfileInput } from "./create.ts";
 import { attachTimezones } from "./geoip.ts";
+import { syncFirefoxTimezone } from "./firefox-config.ts";
 import { isValidProfileName } from "./profile-validation.ts";
 
 /** Best-effort geoip fetch, injectable for tests; defaults to real ip-api.com. */
@@ -49,7 +50,11 @@ export interface ProfileRoster {
   listGroups?(): Promise<string[]>;
   createGroup?(name: string): Promise<void>;
   createProfile?(profile: Profile): Promise<{ id: string }>;
+  updateProfile?(id: string, edits: ProfileEdits): Promise<void>;
 }
+
+/** Fields `user/update` may change: the browser name and saved account credentials. */
+export type ProfileEdits = Partial<Pick<Profile, "name" | "username" | "password" | "email" | "emailPassword" | "twofa">>;
 
 function normalizeGroup(g: unknown): string {
   const s = String(g ?? "").trim();
@@ -90,6 +95,10 @@ function inputFromCreateBody(body: any): NewProfileInput {
         }
       : null,
     screen: typeof screenRaw === "string" ? screenRaw.replace(/_/g, "x") : "",
+    // AliasMode fields. This API's contract is a CDP WebSocket, so a request that names no
+    // engine gets Chromium on every computer.
+    engine: body?.engine || "chromium",
+    ...(body?.chromium_runtime ? { chromiumRuntime: body.chromium_runtime } : {}),
   };
 }
 
@@ -98,16 +107,20 @@ function hasCredentialUpdate(body: any): boolean {
     .some((field) => typeof body?.[field] === "string");
 }
 
+function editsFromUpdateBody(body: any): ProfileEdits {
+  const edits: ProfileEdits = { name: body.name };
+  if (typeof body?.username === "string") edits.username = body.username;
+  if (typeof body?.password === "string") edits.password = body.password;
+  if (typeof body?.email === "string") edits.email = body.email;
+  if (typeof body?.email_password === "string") edits.emailPassword = body.email_password;
+  else if (typeof body?.emailPassword === "string") edits.emailPassword = body.emailPassword;
+  if (typeof body?.fakey === "string") edits.twofa = body.fakey;
+  else if (typeof body?.twofa === "string") edits.twofa = body.twofa;
+  return edits;
+}
+
 function profileFromUpdateBody(profile: Profile, body: any): Profile {
-  const updated = { ...profile, name: body.name };
-  if (typeof body?.username === "string") updated.username = body.username;
-  if (typeof body?.password === "string") updated.password = body.password;
-  if (typeof body?.email === "string") updated.email = body.email;
-  if (typeof body?.email_password === "string") updated.emailPassword = body.email_password;
-  else if (typeof body?.emailPassword === "string") updated.emailPassword = body.emailPassword;
-  if (typeof body?.fakey === "string") updated.twofa = body.fakey;
-  else if (typeof body?.twofa === "string") updated.twofa = body.twofa;
-  return updated;
+  return { ...profile, ...editsFromUpdateBody(body) };
 }
 
 /**
@@ -222,6 +235,7 @@ export async function handleUserApi(
     }
     const input = inputFromCreateBody(body);
     try {
+      if (remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
       if (remote) {
         // Hub owns id generation, fingerprint seed, and geoip timezone.
         const { id } = await remote.createProfile(input);
@@ -230,7 +244,10 @@ export async function handleUserApi(
       const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
       // Match the browser clock to the proxy's geo, exactly as /ui/api create and
       // AdsPower's automatic_timezone do. Best-effort: never fail create on geoip.
-      if (profile.proxy) await attachTimezones([profile], geoipFetch).catch(() => {});
+      if (profile.proxy) {
+        await attachTimezones([profile], geoipFetch, true).catch(() => {});
+        syncFirefoxTimezone(profile);
+      }
       if (roster?.createProfile) return ok(await roster.createProfile(profile));
       store.upsertProfile(profile);
       return ok({ id: profile.id });
@@ -283,6 +300,14 @@ export async function handleUserApi(
     const id = typeof body?.user_id === "string" ? body.user_id : "";
     if (!id) return fail("missing user_id");
     if (!isValidProfileName(body?.name)) return fail("name must be a non-empty string");
+    if (roster?.updateProfile) {
+      try {
+        await roster.updateProfile(id, editsFromUpdateBody(body));
+        return ok({});
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }
     if (remote) {
       try {
         if (!hasCredentialUpdate(body)) {

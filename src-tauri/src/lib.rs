@@ -28,7 +28,8 @@ use tauri_plugin_shell::ShellExt;
 
 const IMPORT_RESTRICTION: &str = "Windows DPAPI protects persisted browser secrets, so this import works only for the same Windows machine and account. Persisted persona fields are preserved, but runtime or browser differences can change the account-visible fingerprint.";
 
-const ALLOWED_EXTERNAL_URLS: [&str; 8] = [
+const ALLOWED_EXTERNAL_URLS: [&str; 9] = [
+    "https://aliasmode.com/support/",
     "https://aliasmode.com/terms/",
     "https://aliasmode.com/privacy/",
     "https://aliasmode.com/acceptable-use/",
@@ -53,7 +54,23 @@ fn windows_acceptance_browser_args(enabled: bool, debug_port: Option<&str>) -> O
 }
 
 fn allowed_external_url(url: &str) -> bool {
-    ALLOWED_EXTERNAL_URLS.contains(&url)
+    ALLOWED_EXTERNAL_URLS.contains(&url) || proxy_offer_url(url)
+}
+
+/// The proxy offer link can name the button that was clicked, a quantity and the app language.
+fn proxy_offer_url(url: &str) -> bool {
+    let Some(query) = url.strip_prefix("https://nobleproxy.com/t/aliasmode?") else {
+        return false;
+    };
+    query.split('&').all(|pair| {
+        pair.split_once('=').is_some_and(|(key, value)| {
+            matches!(key, "src" | "qty" | "lang")
+                && (1..=32).contains(&value.len())
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    })
 }
 
 #[allow(deprecated)]
@@ -268,6 +285,7 @@ mod tests {
     #[test]
     fn allows_only_explicit_external_pages() {
         for url in [
+            "https://aliasmode.com/support/",
             "https://aliasmode.com/terms/",
             "https://aliasmode.com/privacy/",
             "https://aliasmode.com/acceptable-use/",
@@ -276,6 +294,10 @@ mod tests {
             "https://github.com/aliasmode/aliasmode",
             "https://xreacher.com/",
             "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor",
+            "https://nobleproxy.com/t/aliasmode?src=sidebar-cart",
+            "https://nobleproxy.com/t/aliasmode?src=proxies-no-proxy&qty=12",
+            "https://nobleproxy.com/t/aliasmode?src=profile-dialog&lang=zh-CN",
+            "https://nobleproxy.com/t/aliasmode?src=import-no-proxy&qty=3&lang=ru-RU",
         ] {
             assert!(allowed_external_url(url));
         }
@@ -288,6 +310,13 @@ mod tests {
             "http://nobleproxy.com/t/aliasmode",
             "https://nobleproxy.com/t/aliasmode/",
             "https://nobleproxy.com/t/aliasmode?source=app",
+            "https://nobleproxy.com/t/aliasmode?",
+            "https://nobleproxy.com/t/aliasmode?src=",
+            "https://nobleproxy.com/t/aliasmode?src=sidebar-cart&next=https://example.com",
+            "https://nobleproxy.com/t/aliasmode?src=a%2Fb",
+            "https://nobleproxy.com/t/aliasmode?src=sidebar-cart#fragment",
+            "https://nobleproxy.com/t/aliasmode/?src=sidebar-cart",
+            "https://nobleproxy.com/t/other?src=sidebar-cart",
             "https://nobleproxy.com/t/another-campaign",
             "https://example.com/t/aliasmode",
             "https://xreacher.com/?utm_source=aliasmode&utm_medium=app&utm_campaign=outreach&utm_content=profile-editor&profile=example",
@@ -356,6 +385,12 @@ mod tests {
 }
 
 pub fn run() {
+    // WebKitGTK's DMA-BUF renderer shows an empty window with several graphics drivers
+    // (NVIDIA in particular). The dashboard needs no GPU path.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     let background = background_requested(std::env::args_os());
     let update_relaunch = update_attempt::parse_relaunch_argument(std::env::args_os().skip(1));
     let import_request = parse_cloakpit_import_args(std::env::args_os().skip(1));
@@ -428,11 +463,11 @@ pub fn run() {
             }
             fs::create_dir_all(data_dir.join("profiles"))?;
             fs::create_dir_all(data_dir.join("inbox"))?;
+            #[cfg(not(windows))]
+            credentials::set_secret_dir(&data_dir);
 
             let resource_dir = app.path().resource_dir()?;
-            let mut browser = browser::verify_browser_resource(&resource_dir).map_err(boxed)?;
             let mut firefox = browser::verify_firefox_resource(&resource_dir).map_err(boxed)?;
-            browser.executable = cli_compatible_windows_path(&browser.executable);
             firefox.executable = cli_compatible_windows_path(&firefox.executable);
             let playwright_runtime = cli_compatible_windows_path(
                 &resource_dir
@@ -448,7 +483,11 @@ pub fn run() {
                 .join("node_modules")
                 .join("playwright-core")
                 .join("package.json");
-            let node_executable = playwright_runtime.join("node").join("node.exe");
+            let node_executable = playwright_runtime.join("node").join(if cfg!(windows) {
+                "node.exe"
+            } else {
+                "node"
+            });
             let worker_script = playwright_runtime.join("worker.mjs");
             let firefox_worker_script = playwright_runtime.join("firefox-worker.mjs");
             let playwright_worker_script = playwright_runtime.join("playwright-worker.mjs");
@@ -481,7 +520,11 @@ pub fn run() {
                 let helper = std::env::current_exe()?
                     .parent()
                     .ok_or_else(|| boxed("AliasMode installation directory is unavailable"))?
-                    .join("aliasmode-mcp.exe");
+                    .join(if cfg!(windows) {
+                        "aliasmode-mcp.exe"
+                    } else {
+                        "aliasmode-mcp"
+                    });
                 if !helper.is_file() {
                     return Err(boxed("installed AliasMode agent helper is unavailable"));
                 }
@@ -492,7 +535,6 @@ pub fn run() {
             let (sidecar, port) = tauri::async_runtime::block_on(sidecar::launch_and_verify(
                 &handle,
                 &data_dir,
-                &browser,
                 &firefox,
                 &playwright_runtime,
                 &nonce,
@@ -533,6 +575,7 @@ pub fn run() {
 
             let allowed_port = port;
             let shell_handle = handle.clone();
+            let navigation_shell_handle = handle.clone();
             let url = format!("{origin}/")
                 .parse()
                 .map_err(|error| boxed(format!("invalid sidecar URL: {error}")))?;
@@ -584,6 +627,12 @@ pub fn run() {
             };
             let window = match webview_builder
                 .on_navigation(move |url| {
+                    // WKWebView asks this rule before it asks for a new window, and a refusal
+                    // here ends the click. So on macOS the allowed outside links open from here.
+                    if cfg!(target_os = "macos") && allowed_external_url(url.as_str()) {
+                        open_external_url(&navigation_shell_handle, url.as_str());
+                        return false;
+                    }
                     (url.scheme() == "http"
                         && url.host_str() == Some("127.0.0.1")
                         && url.port() == Some(allowed_port))
@@ -631,6 +680,13 @@ pub fn run() {
                 let _ = runtime.remove_owned();
             }
             if let Some(sidecar) = app.try_state::<sidecar::SidecarSupervisor>() {
+                // Cmd+Q, the Dock's Quit and a Linux desktop session end the app without
+                // a close request, so save sessions and close browsers here before the
+                // sidecar stops.
+                #[cfg(not(windows))]
+                let _ = tauri::async_runtime::block_on(shutdown::graceful_sidecar_cleanup(
+                    sidecar.inner(),
+                ));
                 let _ = sidecar.kill_owned();
             }
         }

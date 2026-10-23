@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ScriptRunPanel } from "./scripts.tsx";
+import { I18nProvider } from "./i18n.tsx";
 
 test("script run panel defaults to 10 parallel browsers without an upper limit", () => {
   const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -8,7 +9,7 @@ test("script run panel defaults to 10 parallel browsers without an upper limit",
     configurable: true, value: { __TAURI_INTERNALS__: { invoke: async () => "test-capability" } },
   });
   try {
-    const html = renderToStaticMarkup(<ScriptRunPanel open selectedProfiles={[]} onClose={() => {}} />);
+    const html = renderToStaticMarkup(<I18nProvider><ScriptRunPanel open selectedProfiles={[]} onClose={() => {}} /></I18nProvider>);
     const field = html.match(/<input[^>]*type="number"[^>]*>/)?.[0];
     expect(field).toBeDefined();
     expect(field).toContain('value="10"');

@@ -483,13 +483,44 @@ export class PendingSyncQueue {
   ): boolean {
     const current = this.getOpen(profileId, accountId);
     if (!current || current.registrationId !== registrationId) return false;
+    return this.writeOpenSecret(current, { registrationId, cleanupMode });
+  }
+
+  /** Move a running open and its unsubmitted checkpoint to a fresh Cloud registration. */
+  replaceOpenRegistration(
+    profileId: string,
+    accountId: string,
+    registrationId: string,
+    nextRegistrationId: string,
+  ): boolean {
+    const replace = this.db.transaction(() => {
+      const current = this.getOpen(profileId, accountId);
+      if (!current || current.registrationId !== registrationId || current.cleanupMode) return false;
+      const checkpoint = this.list(accountId)
+        .filter((summary) => summary.profileId === profileId && !summary.readyToSubmit && summary.status !== "conflict")
+        .map((summary) => this.get(summary.id, accountId))
+        .find((capture) => capture?.registrationId === registrationId);
+      if (!this.writeOpenSecret(current, { registrationId: nextRegistrationId })) return false;
+      if (checkpoint) {
+        this.enqueue({
+          accountId,
+          profileId,
+          registrationId: nextRegistrationId,
+          expectedVersion: checkpoint.expectedVersion,
+          payload: checkpoint.payload,
+          readyToSubmit: false,
+        });
+      }
+      return true;
+    });
+    return replace();
+  }
+
+  private writeOpenSecret(open: PendingOpenSession, secret: EncryptedPendingOpen): boolean {
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
-    cipher.setAAD(openAad(accountId, profileId, current.expectedVersion));
-    const plaintext = Buffer.from(JSON.stringify({
-      registrationId,
-      cleanupMode,
-    } satisfies EncryptedPendingOpen));
+    cipher.setAAD(openAad(open.accountId, open.profileId, open.expectedVersion));
+    const plaintext = Buffer.from(JSON.stringify(secret));
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     plaintext.fill(0);
     return this.db.query(`
@@ -501,8 +532,8 @@ export class PendingSyncQueue {
       ciphertext,
       cipher.getAuthTag(),
       Date.now(),
-      profileId,
-      accountId,
+      open.profileId,
+      open.accountId,
     ).changes === 1;
   }
 

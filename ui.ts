@@ -30,13 +30,16 @@ import {
 } from "./cloud-profile-editor.ts";
 import type { PendingSyncRuntime } from "./pending-sync.ts";
 import type { StatePaths } from "./paths.ts";
-import type { FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
+import type { ChromiumRuntime, FingerprintVerdict, Profile, CookieRecord, ProxySpec } from "./types.ts";
 import { checkProxy as runProxyCheck, type ProxyCheckResult } from "./proxy-check.ts";
 import { handleProxyToolsRequest } from "./proxy-tools.ts";
 import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
-import { buildNewProfile, type NewProfileInput } from "./create.ts";
-import { attachTimezones, lookupExitTimezone, type FetchLike } from "./geoip.ts";
+import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
+import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
+import { firefoxGraphicsRenderer } from "./firefox-config.ts";
+import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
+import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
 import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
@@ -57,7 +60,8 @@ import { addBrowserCookie } from "./session.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
-import { ScriptError, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import type { PythonRuntime } from "./python-runtime.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -72,6 +76,8 @@ export interface UiProfile {
   name: string;
   /** Browser family. Legacy profiles without a value are Chromium. */
   engine: "chromium" | "firefox";
+  /** Present only for the opt-in Chromium 155 beta. */
+  chromiumRuntime?: ChromiumRuntime;
   group: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
   platform: string;
@@ -143,6 +149,7 @@ export function listUiProfiles(store: ProfileStore): UiProfile[] {
       id: p.id,
       name: p.name,
       engine: profileEngine(p),
+      ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
       group: p.group,
       platform: p.platform ?? "",
       tags: p.tags ?? [],
@@ -337,30 +344,33 @@ function noStoreJson(body: unknown, status = 200): Response {
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-// Shell language preference. localStorage cannot persist it: the desktop shell
-// serves the UI from a random loopback port each launch, and localStorage is
-// origin-scoped (http://127.0.0.1:PORT), so it is wiped on every restart.
-// Persist to <state-root>/shell.json instead.
-export type ShellLanguage = "en-US" | "zh-CN";
+// Shell UI language preference. localStorage cannot persist it: the desktop
+// shell serves the UI from a random loopback port each launch, and localStorage
+// is origin-scoped (http://127.0.0.1:PORT), so it is wiped on every restart.
+// Persist to <state-root>/shell.json instead. The value is a BCP47 language
+// tag validated by pattern only, so adding a locale never needs backend changes.
+const SHELL_LANGUAGE_PATTERN = /^[a-z]{2,3}(-[A-Za-z]{2,8})?$/;
 
 function shellLanguagePath(paths?: StatePaths): string | null {
   if (!paths?.root) return null;
   return join(paths.root, "shell.json");
 }
 
-export function readShellLanguage(paths?: StatePaths): ShellLanguage {
+/** The saved shell language, or null when the user never chose one (the UI then follows the system language). */
+export function readShellLanguage(paths?: StatePaths): string | null {
   try {
     const file = shellLanguagePath(paths);
-    if (!file) return "en-US";
+    if (!file) return null;
     const raw = JSON.parse(readFileSync(file, "utf8")) as { language?: unknown };
-    if (raw.language === "zh-CN" || raw.language === "en-US") return raw.language;
+    if (typeof raw.language === "string" && SHELL_LANGUAGE_PATTERN.test(raw.language)) return raw.language;
   } catch {
-    // Missing or corrupt file: fall back to English.
+    // Missing or corrupt file: nothing chosen yet.
   }
-  return "en-US";
+  return null;
 }
 
-export function writeShellLanguage(paths: StatePaths | undefined, language: ShellLanguage): void {
+export function writeShellLanguage(paths: StatePaths | undefined, language: string): void {
+  if (!SHELL_LANGUAGE_PATTERN.test(language)) throw new Error(`Invalid language tag: ${language}`);
   const file = shellLanguagePath(paths);
   if (!file) throw new Error("Shell language storage is unavailable");
   mkdirSync(dirname(file), { recursive: true });
@@ -404,12 +414,26 @@ function appVersion(): Promise<string> {
  * what you can't see. Safe only because the dashboard is loopback-only (same
  * trust boundary as the `inspect` command).
  */
+/** The hardware a profile is set to report, for display. Engines choose what is absent. */
+function storedHardware(p: Profile): { gpu?: string; cores?: number } | undefined {
+  // The card the browser shows, which is Apple's for a macOS profile saved with another.
+  const gpu = p.firefox ? firefoxGraphicsRenderer(p) : undefined;
+  const cores = p.hardware?.cores ?? p.firefox?.config["navigator.hardwareConcurrency"];
+  const hardware = {
+    ...(typeof gpu === "string" && gpu ? { gpu } : {}),
+    ...(typeof cores === "number" ? { cores } : {}),
+  };
+  return Object.keys(hardware).length ? hardware : undefined;
+}
+
 function profileEditView(p: Profile) {
   const px = p.proxy;
   const proxy = px ? proxyLegacyString(px) : "";
   const conversion = isMobileUserAgent(p.ua) ? convertMobilePersonaToDesktop(p) : null;
   return {
-    id: p.id, name: p.name, engine: profileEngine(p), group: p.group, platform: p.platform ?? "",
+    id: p.id, name: p.name, engine: profileEngine(p), ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
+    ...(storedHardware(p) ? { hardware: storedHardware(p) } : {}),
+    group: p.group, platform: p.platform ?? "",
     proxyType: px?.type ?? "http", proxy,
     ...(p.proxyError ? { proxyError: p.proxyError } : {}),
     username: p.username, password: p.password,
@@ -420,6 +444,7 @@ function profileEditView(p: Profile) {
     customNo: p.customNo ?? "",
     platformOs: p.platformOs ?? "",
     timezone: p.timezone,
+    locale: p.locale ?? "",
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
     ...(conversion ? {
@@ -436,7 +461,8 @@ function fingerprintChanges(p: Profile, set: Record<string, unknown>): boolean {
   const screen = "resolution" in set ? parseStrictResolution(set.resolution) : null;
   return !!(screen && (screen.width !== p.screenWidth || screen.height !== p.screenHeight)) ||
     ("platformOs" in set && parseStrictPlatformOs(set.platformOs) !== (p.platformOs ?? "")) ||
-    ("timezone" in set && parseStrictTimezone(set.timezone) !== p.timezone);
+    ("timezone" in set && parseStrictTimezone(set.timezone) !== p.timezone) ||
+    ("locale" in set && (normalizeProfileLocale(set.locale) ?? p.locale) !== p.locale);
 }
 
 /**
@@ -469,6 +495,7 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     }
     p.platformOs = platformOs;
   }
+  if ("locale" in set) p.locale = normalizeProfileLocale(set.locale) ?? p.locale;
   if ("timezone" in set) {
     p.timezone = parseStrictTimezone(set.timezone);
     syncFirefoxTimezone(p);
@@ -512,7 +539,7 @@ function legalAcceptanceIsCurrent(legal: {
 }
 
 export interface UiRuntimeOptions {
-  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string };
+  scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
   appConfig?: AppConfigStore;
   paths?: StatePaths;
   defaultCloudUrl?: string;
@@ -564,6 +591,11 @@ export async function handleUiRequest(
       if (pathname === "/ui/api/scripts/stop" && req.method === "POST") {
         return noStoreJson({ ok: true, run: await scripts.runner.stop() });
       }
+      if (pathname === "/ui/api/scripts/python-runtime") {
+        // null: a source checkout runs Python scripts on python3 and downloads nothing.
+        if (req.method === "POST") scripts.python?.ensure().catch(() => {});
+        if (req.method === "GET" || req.method === "POST") return noStoreJson({ ok: true, python: scripts.python?.status() ?? null });
+      }
       if (pathname === "/ui/api/scripts/log" && req.method === "GET") {
         const params = new URL(req.url).searchParams;
         return noStoreJson({ ok: true, ...scripts.runner.log(params.get("runId") ?? "", Number(params.get("offset") ?? 0)) });
@@ -582,7 +614,11 @@ export async function handleUiRequest(
       if (publicMatch) {
         const id = decodeURIComponent(publicMatch[1]!);
         if (!publicMatch[2] && req.method === "GET") return noStoreJson({ ok: true, script: await scripts.library.viewPublished(id) });
-        if (publicMatch[2] && req.method === "POST") return noStoreJson({ ok: true, script: await scripts.library.importPublished(id) });
+        if (publicMatch[2] && req.method === "POST") {
+          const script = await scripts.library.importPublished(id);
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
+        }
       }
       const publicationMatch = pathname.match(/^\/ui\/api\/scripts\/([^/]+)\/publication$/);
       if (publicationMatch) {
@@ -593,9 +629,18 @@ export async function handleUiRequest(
           return noStoreJson({ ok: true, unpublished: true });
         }
       }
+      // Having or adding a Python script starts the Python runtime download in the background.
       if (pathname === "/ui/api/scripts") {
-        if (req.method === "GET") return noStoreJson({ ok: true, ...await scripts.library.info() });
-        if (req.method === "POST") return noStoreJson({ ok: true, script: await scripts.library.save(await req.json()) });
+        if (req.method === "GET") {
+          const info = await scripts.library.info();
+          prefetchPythonFor(scripts.python, info.scripts);
+          return noStoreJson({ ok: true, ...info });
+        }
+        if (req.method === "POST") {
+          const script = await scripts.library.save(await req.json());
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
+        }
       }
       const match = pathname.match(/^\/ui\/api\/scripts\/([^/]+)$/);
       if (match) {
@@ -603,7 +648,9 @@ export async function handleUiRequest(
         if (req.method === "GET") return noStoreJson({ ok: true, script: await scripts.library.get(id) });
         if (req.method === "PATCH") {
           const body = await req.json();
-          return noStoreJson({ ok: true, script: await scripts.library.save(body, id, body?.expectedRevision) });
+          const script = await scripts.library.save(body, id, body?.expectedRevision);
+          prefetchPythonFor(scripts.python, [script]);
+          return noStoreJson({ ok: true, script });
         }
         if (req.method === "DELETE") {
           const body = await req.json();
@@ -648,6 +695,9 @@ export async function handleUiRequest(
       ...config,
       ...(remote ? { legacyRemote: true } : {}),
       ...(options.runtimeMode ? { restartRequired: config.mode !== options.runtimeMode } : {}),
+      ...(hostChromiumRuntime() ? { chromiumRuntime: hostChromiumRuntime() } : {}),
+      ...(!remote && supportsChromium155Host(process.platform, process.arch) ? { defaultChromiumRuntime: "aliasmode" } : {}),
+      ...(!remote ? { defaultEngine: defaultProfileEngine() } : {}),
     });
   }
 
@@ -657,7 +707,9 @@ export async function handleUiRequest(
 
   if (pathname === "/ui/api/shell-language" && req.method === "POST") {
     const body = (await req.json().catch(() => ({}))) as { language?: unknown };
-    const language: ShellLanguage = body.language === "zh-CN" ? "zh-CN" : "en-US";
+    const language = typeof body.language === "string" && SHELL_LANGUAGE_PATTERN.test(body.language)
+      ? body.language
+      : "en-US";
     try {
       writeShellLanguage(options.paths, language);
     } catch {
@@ -1086,7 +1138,10 @@ export async function handleUiRequest(
       const body = await req.json() as Record<string, unknown>;
       const action = String(body.action ?? "");
       if (action === "invite") return Response.json(await cloud.createInvitation(String(body.email ?? ""), body.role === "admin" ? "admin" : "member"));
-      if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? "")));
+      if (action === "create-folder") return Response.json(await cloud.createFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
+      if (action === "move-folder") return Response.json(await cloud.moveFolder(String(body.name ?? ""), typeof body.parentName === "string" ? body.parentName : null));
+      if (action === "profile-grant") return Response.json(await cloud.setProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? ""), body.permission === "edit" ? "edit" : "view"));
+      if (action === "remove-profile-grant") return Response.json(await cloud.removeProfileGrant(String(body.profileId ?? ""), String(body.accountId ?? "")));
       if (action === "delete-folder") return Response.json(await cloud.deleteFolder(String(body.name ?? "")));
       if (action === "resend") return Response.json(await cloud.resendInvitation(String(body.id ?? "")));
       if (action === "revoke") return Response.json(await cloud.revokeInvitation(String(body.id ?? "")));
@@ -1191,7 +1246,7 @@ export async function handleUiRequest(
       // otherwise show "running" forever and hide the Open action. reconcileOrphans
       // probes active() per launch and drops dead rows (it never kills processes).
       await launcher.reconcileOrphans();
-      return Response.json({ profiles: listUiProfiles(store), healthSources: [], groups: store.listGroups() });
+      return Response.json({ profiles: listUiProfiles(store), healthSources: [], groups: store.listGroups(), folders: store.listFolders() });
     } catch (error) {
       // Bun renders an uncaught route exception as an HTML 500 page. The React
       // client then cannot expose the actual hub/reconciliation error and only
@@ -1207,23 +1262,23 @@ export async function handleUiRequest(
     // Create a new profile: unique id → unique seed → unique fingerprint/UA.
     try {
       const input = (await req.json()) as NewProfileInput;
+      if (remote && input.chromiumRuntime) throw new Error("Chromium 155 beta is unavailable in legacy Remote mode");
       if (remote) {
         const { id } = await remote.createProfile(input);
         return Response.json({ ok: true, id });
       }
       const profile = buildNewProfile(input, (id) => !!store.getProfile(id));
       if (!options.cloudBrowser) store.applyGroupExtensionDefaults(profile, null, false);
-      // Cloud keeps its existing server-side identity flow. Local profiles only
-      // resolve proxy geography after the operator explicitly requests it.
-      if (options.cloudBrowser && profile.proxy) {
-        await attachTimezones([profile], options.timezoneFetch).catch(() => {});
+      // Best-effort: match the browser clock to the proxy's exit location. A
+      // failed lookup keeps the host timezone.
+      if (profile.proxy) {
+        await attachTimezones([profile], options.timezoneFetch, true).catch(() => {});
         syncFirefoxTimezone(profile);
       }
-      if (options.cloudBrowser) {
-        return Response.json({ ok: true, ...await options.cloudBrowser.create(profile) });
-      }
-      store.upsertProfile(profile);
-      return Response.json({ ok: true, id: profile.id });
+      const created = options.cloudBrowser ? await options.cloudBrowser.create(profile) : undefined;
+      if (!created) store.upsertProfile(profile);
+      launcher.prefetchFirefoxFontPacks?.([profile]);
+      return Response.json({ ok: true, ...(created ?? { id: profile.id }) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 400 });
     }
@@ -1325,6 +1380,7 @@ export async function handleUiRequest(
     if (remote) return Response.json({ ok: false, error: "remote mode: import via the hub (upload in the dashboard)" }, { status: 400 });
     try {
       const r = await importInbox(store, options.paths?.inbox);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
       return Response.json({ ok: true, ...r });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
@@ -1344,8 +1400,9 @@ export async function handleUiRequest(
       }
       if (uploads.length === 0) return Response.json({ ok: false, error: "no files uploaded" }, { status: 400 });
       if (options.cloudBrowser) {
-        const prepared = await prepareImportBuffers(uploads, console.log, override);
+        const prepared = await prepareImportBuffers(uploads, console.log, override, undefined, options.timezoneFetch);
         await options.cloudBrowser.importProfiles(override.group!, prepared.imports.map(({ profile, sessionBundle }) => ({ ...profile, sessionBundle })));
+        launcher.prefetchFirefoxFontPacks?.(prepared.imports.map(({ profile }) => profile));
         return Response.json({ ok: true, ...prepared.result });
       }
       if (remote) {
@@ -1358,7 +1415,9 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: true, ...result });
       }
-      return Response.json({ ok: true, ...await importBuffers(store, uploads, console.log, override) });
+      const imported = await importBuffers(store, uploads, console.log, override, undefined, options.timezoneFetch);
+      launcher.prefetchFirefoxFontPacks?.(store.listProfiles());
+      return Response.json({ ok: true, ...imported });
     } catch (error) {
       const status = error instanceof ProfileImportError
         ? error.status
@@ -1552,6 +1611,8 @@ export async function handleUiRequest(
       const errors: Array<{ id: string; error: string }> = [];
       const pending = new Map<string, Profile>();
       const cloudPending = new Map<string, Record<string, string>>();
+      const proxyChanged = new Set<string>();
+      const applied: Array<{ id: string; set: Record<string, string> }> = [];
       for (const [, value] of form) {
         if (!(value instanceof File)) continue;
         const bytes = new Uint8Array(await value.arrayBuffer());
@@ -1578,9 +1639,10 @@ export async function handleUiRequest(
           if (!p) { notFound.push(u.id); continue; }
           try {
             const previousGroup = p.group;
-            applyEdits(p, u.set);
+            if (applyEdits(p, u.set)) proxyChanged.add(u.id);
             store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in u.set);
             pending.set(u.id, p);
+            applied.push(u);
           } catch (error) {
             errors.push({ id: u.id, error: msg(error) });
           }
@@ -1609,12 +1671,41 @@ export async function handleUiRequest(
         }
         return Response.json({ ok: errors.length === 0, updated, skipped, notFound, errors });
       }
-      const liveIds = [...pending.keys()].filter((id) => !!store.getLaunch(id));
-      if (liveIds.length > 0) {
-        return Response.json(
+      const openProfiles = () => {
+        const liveIds = [...pending.keys()].filter((id) => !!store.getLaunch(id));
+        return liveIds.length === 0 ? null : Response.json(
           { ok: false, error: `profile(s) ${liveIds.join(", ")} are currently open; no profiles were changed` },
           { status: 409 },
         );
+      };
+      const open = openProfiles();
+      if (open) return open;
+      // A new proxy gets its exit timezone. A failed lookup keeps the saved one.
+      const located = [...proxyChanged]
+        .map((id) => pending.get(id))
+        .filter((profile): profile is Profile => !!profile?.proxy)
+        .map((profile) => ({ ...profile, timezone: "" }));
+      if (located.length > 0) {
+        await attachTimezones(located, options.timezoneFetch).catch(() => {});
+        // Apply the rows again to current copies, so changes saved during the lookups are kept.
+        pending.clear();
+        for (const { id, set } of applied) {
+          const p = pending.get(id) ?? store.getProfile(id);
+          if (!p) continue;
+          const previousGroup = p.group;
+          applyEdits(p, set);
+          store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
+          pending.set(id, p);
+        }
+        for (const { id, timezone } of located) {
+          const p = pending.get(id);
+          if (p && timezone) {
+            p.timezone = timezone;
+            syncFirefoxTimezone(p);
+          }
+        }
+        const opened = openProfiles();
+        if (opened) return opened;
       }
       store.upsertProfiles([...pending.values()]);
       updated = pending.size;
@@ -1627,12 +1718,12 @@ export async function handleUiRequest(
   if (pathname === "/ui/api/groups/create" && req.method === "POST") {
     if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
     try {
-      const body = (await req.json()) as { name?: unknown };
+      const body = (await req.json()) as { name?: unknown; parentName?: unknown };
       const name = String(body.name ?? "").trim();
       if (!name) return Response.json({ ok: false, error: "group name required" }, { status: 400 });
       if (name === "all") return Response.json({ ok: false, error: "group name is reserved" }, { status: 400 });
-      store.registerGroup(name);
-      return Response.json({ ok: true, name });
+      const folder = store.createGroup(name, typeof body.parentName === "string" ? body.parentName : null);
+      return Response.json({ ok: true, name: folder.name, folder });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
     }
@@ -1648,9 +1739,27 @@ export async function handleUiRequest(
         const renamed = await options.cloudConnection!.client.renameFolder(from, to);
         return Response.json({ ok: true, moved: 0, folder: renamed.folder });
       }
-      return Response.json({ ok: true, moved: store.renameGroup(from, to) });
+      const source = store.listFolders().find((folder) => folder.name === from);
+      const moved = store.renameGroup(from, to);
+      const name = source?.parentName ? `${source.parentName}/${to}` : to;
+      return Response.json({ ok: true, moved, folder: store.listFolders().find((folder) => folder.name === name) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
+    }
+  }
+
+  if (pathname === "/ui/api/groups/move" && req.method === "POST") {
+    if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    try {
+      const body = await req.json() as { name?: unknown; parentName?: unknown };
+      if (typeof body.name !== "string" || (body.parentName !== null && typeof body.parentName !== "string")) {
+        return Response.json({ ok: false, error: "name and parentName are required" }, { status: 400 });
+      }
+      return Response.json({ ok: true, folder: store.moveGroup(body.name, body.parentName) });
+    } catch (error) {
+      return Response.json({ ok: false, error: msg(error) }, { status: 400 });
     }
   }
 
@@ -1845,8 +1954,8 @@ export async function handleUiRequest(
       if (store.getLaunch(id)) {
         return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
-      const timezone = await lookupExitTimezone(profile.proxy, options.timezoneFetch);
-      if (!timezone) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
+      const location = await lookupExitLocation(profile.proxy, options.timezoneFetch);
+      if (!location) return Response.json({ ok: false, error: "Could not determine the connection timezone. The saved timezone is unchanged." }, { status: 502 });
       const current = store.getProfile(id);
       if (!current || current.proxyError || JSON.stringify(current.proxy) !== JSON.stringify(profile.proxy)) {
         return Response.json({ ok: false, error: "Profile connection changed. Reopen Edit and try again." }, { status: 409 });
@@ -1854,10 +1963,11 @@ export async function handleUiRequest(
       if (store.getLaunch(id)) {
         return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
-      current.timezone = timezone;
+      current.timezone = location.timezone;
+      current.locale = localeForCountry(location.country) ?? localeForTimezone(location.timezone);
       syncFirefoxTimezone(current);
       store.upsertProfile(current);
-      return Response.json({ ok: true, timezone });
+      return Response.json({ ok: true, timezone: current.timezone, locale: current.locale });
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 500 });
     }
@@ -2023,7 +2133,8 @@ export async function handleUiRequest(
           }
           const liveProxyChanged = applyEdits(live, set);
           if (liveProxyChanged && live.proxy && !("timezone" in set)) {
-            await attachTimezones([live], options.timezoneFetch).catch(() => {});
+            const location = await lookupExitLocation(live.proxy, options.timezoneFetch);
+            if (location) live.timezone = location.timezone;
             syncFirefoxTimezone(live);
           } else if (liveProxyChanged && !("timezone" in set)) {
             live.timezone = "";
@@ -2057,13 +2168,31 @@ export async function handleUiRequest(
       const body = (await req.json()) as { set?: unknown };
       const set = body.set && typeof body.set === "object" ? (body.set as Record<string, unknown>) : {};
       // Account details can be edited live; fingerprint changes require a closed browser.
-      const p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
+      let p = remote ? await remote.getProfile(id).catch(() => null) : store.getProfile(id);
       if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
       if (!remote && store.getLaunch(id) && fingerprintChanges(p, set)) {
         return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
-      const previousGroup = p.group;
-      applyEdits(p, set);
+      let previousGroup = p.group;
+      const proxyChanged = applyEdits(p, set);
+      // A new proxy gets its exit timezone, like a Cloud edit. A failed lookup keeps the saved one.
+      if (!remote && proxyChanged && p.proxy && !("timezone" in set) && !store.getLaunch(id)) {
+        const location = await lookupExitLocation(p.proxy, options.timezoneFetch);
+        // Apply the edit to the current copy, so changes saved during the lookup are kept.
+        p = store.getProfile(id);
+        if (!p) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+        const running = !!store.getLaunch(id);
+        if (running && fingerprintChanges(p, set)) {
+          return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
+        }
+        previousGroup = p.group;
+        applyEdits(p, set);
+        // A browser opened during the lookup keeps the timezone it launched with.
+        if (location && !running) {
+          p.timezone = location.timezone;
+          syncFirefoxTimezone(p);
+        }
+      }
       if (!remote) store.applyGroupExtensionDefaults(p, previousGroup, "extensions" in set);
       if (remote) await remote.saveProfile(p);
       else {

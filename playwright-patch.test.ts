@@ -147,6 +147,92 @@ describe("Playwright CDP compatibility patch", () => {
     }]);
   });
 
+  test("attaching to an open tab never emulates its colour scheme, and AliasMode's helpers not its focus", async () => {
+    // A browser with one open tab, as AliasMode's helpers find it after a launch.
+    const tabMethods: string[] = [];
+    const emulatedMedia: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: (request, srv) => srv.upgrade(request) ? undefined : new Response("no", { status: 400 }),
+      websocket: {
+        message(ws, raw) {
+          const { id, method, sessionId, params } = JSON.parse(String(raw));
+          if (sessionId) tabMethods.push(method);
+          if (method === "Emulation.setEmulatedMedia") emulatedMedia.push(params);
+          const result = method === "Browser.getVersion"
+            ? { product: "Chrome/155.0.0.0", userAgent: "Chrome/155.0.0.0" }
+            : method === "Page.getFrameTree"
+              ? { frameTree: { frame: { id: "tab", loaderId: "load", url: "https://example.com/", securityOrigin: "https://example.com", mimeType: "text/html" } } }
+              : {};
+          ws.send(JSON.stringify({ id, result, ...(sessionId ? { sessionId } : {}) }));
+          if (method === "Target.setAutoAttach" && !sessionId) {
+            ws.send(JSON.stringify({ method: "Target.attachedToTarget", params: {
+              sessionId: "tab-session",
+              targetInfo: { targetId: "tab", type: "page", title: "", url: "https://example.com/", attached: true, canAccessOpener: false, browserContextId: "default" },
+              waitingForDebugger: false,
+            } }));
+          }
+        },
+      },
+    });
+    const { chromium } = require("playwright-core");
+    const switchKey = Symbol.for("aliasmode.playwrightFocusEmulation");
+    const attach = async (focusEmulation: boolean | undefined) => {
+      tabMethods.length = 0;
+      (globalThis as any)[switchKey] = focusEmulation;
+      try {
+        const browser = await chromium.connectOverCDP(`ws://127.0.0.1:${server.port}/devtools/browser/test`, { timeout: 5_000 });
+        await browser.close();
+      } finally {
+        delete (globalThis as any)[switchKey];
+      }
+      return [...tabMethods];
+    };
+    try {
+      const helper = await attach(false);
+      expect(helper).toContain("Runtime.runIfWaitingForDebugger");
+      expect(helper).not.toContain("Emulation.setFocusEmulationEnabled");
+      // Other Playwright users, such as the agent runner, keep Playwright's default.
+      expect(await attach(undefined)).toContain("Emulation.setFocusEmulationEnabled");
+      // No attach changes the colour scheme, motion, forced colours or contrast the open tab sees.
+      expect(emulatedMedia).toHaveLength(2);
+      for (const sent of emulatedMedia) {
+        expect(sent).toEqual({ media: "", features: ["prefers-color-scheme", "prefers-reduced-motion", "forced-colors", "prefers-contrast"].map((name) => ({ name, value: "" })) });
+      }
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("Firefox hides storage helpers but keeps normal pages visible", async () => {
+    const { FFBrowserContext } = require(fileURLToPath(new URL(
+      "./node_modules/playwright-core/lib/server/firefox/ffBrowser.js", import.meta.url,
+    )));
+    const sent: Array<{ method: string; params: unknown }> = [];
+    const page = {};
+    const context = Object.create(FFBrowserContext.prototype);
+    Object.assign(context, {
+      _browserContextId: "context-1",
+      _browser: {
+        session: {
+          async send(method: string, params: unknown) {
+            sent.push({ method, params });
+            return { targetId: "target-1" };
+          },
+        },
+        _ffPages: new Map([["target-1", { _page: page }]]),
+      },
+    });
+    for (const storagePage of [false, true, false]) {
+      context._creatingStorageStatePage = storagePage;
+      expect(await context.doCreateNewPage()).toBe(page);
+      expect(sent.at(-1)).toEqual({
+        method: "Browser.newPage",
+        params: { browserContextId: "context-1", ...(storagePage ? { hidden: true } : {}) },
+      });
+    }
+  });
+
   test("unfiltered cookie clearing skips the unnecessary cookie read", async () => {
     const { BrowserContext } = require(browserContextPath);
     const events: string[] = [];

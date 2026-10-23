@@ -21,13 +21,14 @@
  * and dropping AdsPower's own extension cookies.
  */
 
-import { normalizeProfileEngine } from "./firefox-config.ts";
-import type { CookieRecord, Profile, ProxySpec } from "./types.ts";
-import { deterministicSeed, parseResolution, platformFromUA } from "./fingerprint.ts";
+import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
+import type { ChromiumRuntime, CookieRecord, Profile, ProfileHardware, ProxySpec } from "./types.ts";
+import { deterministicSeed, normalizeProfileHardware, parseResolution, platformFromUA } from "./fingerprint.ts";
 import { normalizeProxyType, parseProxySpec, proxyLegacyString } from "./proxy.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { attestationFields, expectationFromRecord, FP_BLOCK_KEYS } from "./fingerprint-attestation.ts";
 import { parseCapturedSessionBundle } from "./session.ts";
+import { normalizeProfileLocale } from "./profile-locale.ts";
 
 /** Full export transport; session state never belongs in the roster profile. */
 export interface ProfileExport extends Profile {
@@ -385,11 +386,24 @@ export function recordToProfile(
     validationErrors.push(proxyError);
   }
 
+  let locale: string | undefined;
+  try { locale = normalizeProfileLocale(rec.locale); }
+  catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const fpExpected = expectationFromRecord(rec);
   const browser = parseFirefoxExport(rec, validationErrors);
+  let chromiumRuntime: ChromiumRuntime | undefined;
+  try { chromiumRuntime = normalizeChromiumRuntime(rec.chromium_runtime?.trim(), browser.engine ?? "chromium"); }
+  catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
+  let hardware: ProfileHardware | undefined;
+  try {
+    const cores = rec.hardware_cores?.trim();
+    hardware = normalizeProfileHardware(cores ? { cores: Number(cores) } : undefined, browser.engine ?? "chromium", chromiumRuntime);
+  } catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const profile: Profile = {
     id,
     ...browser,
+    ...(chromiumRuntime ? { chromiumRuntime } : {}),
+    ...(hardware ? { hardware } : {}),
     accId: (rec.acc_id ?? "").trim(),
     name: (rec.name ?? "").trim(),
     group: (rec.group ?? "").trim(),
@@ -411,6 +425,7 @@ export function recordToProfile(
     // An exported timezone is the profile's own resolved value; keep it. When
     // absent or unparseable, geoip resolves one at import exactly as before.
     timezone: parseTimezone(rec.timezone),
+    ...(locale ? { locale } : {}),
     screenWidth: width,
     screenHeight: height,
     fingerprintSeed: parseSeed(rec.seed) ?? deterministicSeed(id),
@@ -527,6 +542,7 @@ const UPDATE_KEYMAP: Record<string, string> = {
   "proxy type": "proxyType",
   resolution: "resolution",
   screen: "resolution",
+  locale: "locale",
   // Operator-chosen serial. Exports do not emit this column (that would change a
   // shape downstream tooling already parses), but an update file may add it.
   custom_no: "customNo",
@@ -685,11 +701,15 @@ function profileFields(p: ProfileExport): Record<string, string> {
     // seed was not id-derived (see marketplace.ts).
     seed: String(p.fingerprintSeed),
     timezone: p.timezone,
+    locale: p.locale ?? "",
     platform_os: platform || "",
     extensions: (p.extensions ?? []).join(","),
     tags: (p.tags ?? []).join(","),
     engine: p.engine ?? "chromium",
     firefox_config: p.firefox ? JSON.stringify(p.firefox) : "",
+    // Named for every Chromium profile: an import that names none gets the computer's default browser.
+    chromium_runtime: p.engine === "firefox" ? "" : p.chromiumRuntime ?? "cloakbrowser",
+    hardware_cores: p.hardware ? String(p.hardware.cores) : "",
     // Attested fields: a photograph of the identity, never an input to one.
     ...attestationFields(fp),
   };
@@ -699,7 +719,7 @@ function profileFields(p: ProfileExport): Record<string, string> {
  * Fields that are read back on import and change what the browser launches as.
  * Distinct from the fp_* group, which is only ever compared against.
  */
-const RESTORED_KEYS = ["seed", "timezone", "platform_os", "extensions", "tags"] as const;
+const RESTORED_KEYS = ["seed", "timezone", "locale", "platform_os", "extensions", "tags"] as const;
 
 /** Field order of the `key=value` block export. */
 const TXT_KEYS = [
@@ -725,7 +745,8 @@ const FIREFOX_XLSX_COLUMNS = [...XLSX_COLUMNS, ...FIREFOX_EXPORT_KEYS] as const;
 export function serializeAdsTxt(profiles: ProfileExport[]): string {
   const blocks = profiles.map((p) => {
     const f = profileFields(p);
-    const keys = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS] : TXT_KEYS;
+    const keys: readonly string[] = p.engine === "firefox" ? [...TXT_KEYS, ...FIREFOX_EXPORT_KEYS]
+      : [...TXT_KEYS, "chromium_runtime", ...(p.hardware ? ["hardware_cores"] : [])];
     return [...keys.map((k) => `${k}=${f[k]}`), "******************"].join("\n");
   });
   return blocks.join("\n") + (blocks.length ? "\n" : "");
@@ -737,7 +758,11 @@ export function serializeAdsTxt(profiles: ProfileExport[]): string {
  * the sheet and the .txt block stay one decision, not two.
  */
 export function serializeXlsxRows(profiles: ProfileExport[]): { headers: string[]; rows: string[][] } {
-  const columns = profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS;
+  const columns: readonly string[] = [
+    ...(profiles.some((profile) => profile.engine === "firefox") ? FIREFOX_XLSX_COLUMNS : XLSX_COLUMNS),
+    ...(profiles.some((profile) => profile.engine !== "firefox") ? ["chromium_runtime"] : []),
+    ...(profiles.some((profile) => profile.hardware) ? ["hardware_cores"] : []),
+  ];
   return {
     headers: [...columns],
     rows: profiles.map((p) => {

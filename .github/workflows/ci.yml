@@ -1,5 +1,9 @@
 name: Client CI
 
+# Pushes and pull requests run only the Ubuntu job. The Windows packaging and
+# acceptance pipeline runs on a manual dispatch from main (Actions > Client CI >
+# Run workflow) before a release. release-candidate.yml and
+# client-compatibility.yml take the installer from that dispatched run.
 on:
   push:
     branches: [main]
@@ -16,6 +20,17 @@ on:
 permissions:
   actions: read
   contents: read
+
+# The aliasmode/aliasmode-firefox build.yml run that built the Windows engine, and the release
+# whose archive the installer bundles. The release carries that run's archives, which hold no
+# fonts of other operating systems; the app downloads those as font packs when a profile needs them.
+env:
+  ALIASMODE_FIREFOX_RELEASE: aliasmode-runtime-156.0.1-beta.36-r8
+  ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256: 3062041cbc93ea0d7df7dd75415cd4d40434a9dd0340c041d7e968e754ce65c1
+  ALIASMODE_FIREFOX_BUILD_RUN_ID: "39469282880"
+  ALIASMODE_FIREFOX_BUILD_EVENT: workflow_dispatch
+  ALIASMODE_FIREFOX_BUILD_BRANCH: engine/156-render-noise
+  ALIASMODE_FIREFOX_BUILD_SHA: f9a9890a3ece90fe29fad4859ed0dd6c303aed89
 
 concurrency:
   group: >-
@@ -46,10 +61,12 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run typecheck
+      - run: bun run i18n:locales:check
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
   windows_firefox:
     name: Pinned AliasMode Firefox runtime
+    if: github.event_name == 'workflow_dispatch' || inputs.client_ci_reusable_call == true
     runs-on: windows-latest
     outputs:
       archive_sha256: ${{ steps.verify.outputs.archive_sha256 }}
@@ -61,7 +78,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
-          $run = gh api repos/aliasmode/aliasmode-firefox/actions/runs/36421765188 | ConvertFrom-Json
+          $run = gh api "repos/aliasmode/aliasmode-firefox/actions/runs/$env:ALIASMODE_FIREFOX_BUILD_RUN_ID" | ConvertFrom-Json
           if (
             $run.name -cne "Build and Release" -or
             $run.path -cne ".github/workflows/build.yml" -or
@@ -69,19 +86,22 @@ jobs:
             $run.head_repository.full_name -cne "aliasmode/aliasmode-firefox" -or
             $run.status -cne "completed" -or
             $run.conclusion -cne "success" -or
-            $run.event -cne "push" -or
-            $run.head_branch -cne "firefox-engine" -or
-            $run.head_sha -cne "013ebace6cc69c1979c7a86636139e91face6419"
+            $run.event -cne $env:ALIASMODE_FIREFOX_BUILD_EVENT -or
+            $run.head_branch -cne $env:ALIASMODE_FIREFOX_BUILD_BRANCH -or
+            $run.head_sha -cne $env:ALIASMODE_FIREFOX_BUILD_SHA
           ) {
             throw "AliasMode Firefox source build provenance is invalid"
           }
-      - uses: actions/download-artifact@v4
-        with:
-          name: AliasModeBuilds-windows-x86_64
-          path: artifacts/firefox
-          github-token: ${{ github.token }}
-          repository: aliasmode/aliasmode-firefox
-          run-id: "36421765188"
+      - name: Download the released AliasMode Firefox archive
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "artifacts/firefox" | Out-Null
+          gh release download $env:ALIASMODE_FIREFOX_RELEASE --repo aliasmode/aliasmode-firefox --pattern "aliasmode-156.0.1-beta.36-win.x86_64.zip" --dir "artifacts/firefox"
+          $sha = (Get-FileHash -LiteralPath "artifacts/firefox/aliasmode-156.0.1-beta.36-win.x86_64.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($sha -cne $env:ALIASMODE_FIREFOX_RELEASE_ARCHIVE_SHA256) { throw "released AliasMode Firefox archive SHA-256 mismatch: $sha" }
       - name: Verify owned AliasMode Firefox artifact
         id: verify
         shell: pwsh
@@ -89,7 +109,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $root = Resolve-Path ".\artifacts\firefox"
           $entries = @(Get-ChildItem -LiteralPath $root -Force)
-          $archiveName = "aliasmode-152.0.4-beta.30-win.x86_64.zip"
+          $archiveName = "aliasmode-156.0.1-beta.36-win.x86_64.zip"
           if (
             $entries.Count -ne 1 -or
             $entries[0].PSIsContainer -or
@@ -112,10 +132,10 @@ jobs:
           $stderrPath = Join-Path $env:RUNNER_TEMP "firefox-version-stderr.txt"
           $process = Start-Process -FilePath $executable -ArgumentList "--version" -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
           $version = [IO.File]::ReadAllText($stdoutPath)
-          if ($process.ExitCode -ne 0 -or $version -notmatch '152\.0\.4') {
+          if ($process.ExitCode -ne 0 -or $version -notmatch '156\.0\.1') {
             Write-Host "Firefox version probe exited $($process.ExitCode): $version"
             Write-Host ([IO.File]::ReadAllText($stderrPath))
-            throw "owned AliasMode Firefox did not report Firefox 152.0.4"
+            throw "owned AliasMode Firefox did not report Firefox 156.0.1"
           }
           "archive_sha256=$archiveSha" | Add-Content $env:GITHUB_OUTPUT
           "executable_sha256=$executableSha" | Add-Content $env:GITHUB_OUTPUT
@@ -206,13 +226,8 @@ jobs:
           ) -join "`n"
           $externalIdentity = @(
             "node-win-x64=22.23.2:1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97"
-            "cloakbrowser-wrapper=0.4.11"
-            "cloakbrowser-platform=windows-x64"
-            "cloakbrowser-version=146.0.7680.177.5"
-            "cloakbrowser-archive-sha256=b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe"
-            "cloakbrowser-executable-sha256=03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80"
-            "aliasmode-firefox-source=aliasmode/aliasmode-firefox@013ebace6cc69c1979c7a86636139e91face6419"
-            "aliasmode-firefox-version=152.0.4-beta.30"
+            "aliasmode-firefox-source=aliasmode/aliasmode-firefox@$env:ALIASMODE_FIREFOX_BUILD_SHA"
+            "aliasmode-firefox-version=156.0.1-beta.36"
             "aliasmode-firefox-archive-sha256=$env:FIREFOX_ARCHIVE_SHA256"
             "aliasmode-firefox-executable-sha256=$env:FIREFOX_EXECUTABLE_SHA256"
           ) -join "`n"
@@ -353,8 +368,9 @@ jobs:
               $sizeReport.deltaBytes -ne ($fullSize - $slimSize) -or $sizeReport.deltaBytes -lt 100MB) {
             throw "cached candidate installer size report is inconsistent"
           }
+          # The installer carries no CloakBrowser; the app downloads it on first use.
           $metadata = Get-Content (Join-Path $candidate "browser.json") -Raw | ConvertFrom-Json
-          if ($metadata.executable -cne "chrome.exe" -or [string]$metadata.sha256 -notmatch '^[a-f0-9]{64}$') {
+          if ($null -ne $metadata.executable -or [string]$metadata.firefox.sha256 -notmatch '^[a-f0-9]{64}$') {
             throw "cached candidate browser metadata is invalid"
           }
       - name: Upload cached Windows candidate
@@ -386,11 +402,6 @@ jobs:
           shared-key: windows_full
           workspaces: src-tauri -> target
           cache-on-failure: true
-      - name: Cache pinned CloakBrowser
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target/cloakbrowser-cache
-          key: cloakbrowser-windows-x64-v1-146.0.7680.177.5-b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe-03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-firefox-windows-x64
@@ -402,7 +413,7 @@ jobs:
           WINDOWS_PRODUCT_KEY: ${{ needs.windows_cache.outputs.product_key }}
           WINDOWS_SOURCE: ${{ needs.windows_cache.outputs.source }}
           WINDOWS_VERSION: ${{ needs.windows_cache.outputs.version }}
-          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-152.0.4-beta.30-win.x86_64.zip
+          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-156.0.1-beta.36-win.x86_64.zip
           ALIASMODE_FIREFOX_ARCHIVE_SHA256: ${{ needs.windows_cache.outputs.firefox_archive_sha256 }}
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
@@ -533,11 +544,6 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
-      - name: Cache pinned CloakBrowser
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target/cloakbrowser-cache
-          key: cloakbrowser-windows-x64-v1-146.0.7680.177.5-b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe-03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.21
@@ -550,7 +556,7 @@ jobs:
         shell: pwsh
         env:
           EXPECTED_BASELINE_SHA: ${{ needs.windows_cache.outputs.baseline_bun_sha }}
-          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-152.0.4-beta.30-win.x86_64.zip
+          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-156.0.1-beta.36-win.x86_64.zip
           ALIASMODE_FIREFOX_ARCHIVE_SHA256: ${{ needs.windows_cache.outputs.firefox_archive_sha256 }}
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
@@ -636,11 +642,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
           cache-on-failure: true
-      - name: Cache pinned CloakBrowser
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target/cloakbrowser-cache
-          key: cloakbrowser-windows-x64-v1-146.0.7680.177.5-b213795cb32c3169f766c74ce1d0275fc89d3df256de39c04da7fb4c23b7fdbe-03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80
       - uses: actions/download-artifact@v4
         with:
           name: aliasmode-firefox-windows-x64
@@ -650,7 +651,7 @@ jobs:
         shell: pwsh
         env:
           EXPECTED_BASELINE_SHA: ${{ needs.windows_cache.outputs.baseline_bun_sha }}
-          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-152.0.4-beta.30-win.x86_64.zip
+          ALIASMODE_FIREFOX_ARCHIVE: ${{ github.workspace }}\artifacts\firefox\aliasmode-156.0.1-beta.36-win.x86_64.zip
           ALIASMODE_FIREFOX_ARCHIVE_SHA256: ${{ needs.windows_cache.outputs.firefox_archive_sha256 }}
           ALIASMODE_FIREFOX_EXECUTABLE_SHA256: ${{ needs.windows_cache.outputs.firefox_executable_sha256 }}
         run: |
@@ -835,7 +836,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $metadata = Get-Content ".\src-tauri\generated\browser.json" -Raw | ConvertFrom-Json
           if (
-            $metadata.firefox.version -cne "152.0.4-beta.30" -or
+            $metadata.firefox.version -cne "156.0.1-beta.36" -or
             [string]$metadata.firefox.sha256 -notmatch '^[a-f0-9]{64}$' -or
             [string]$metadata.firefox.archiveSha256 -notmatch '^[a-f0-9]{64}$' -or
             [string]::IsNullOrWhiteSpace([string]$metadata.firefox.executable)
@@ -851,10 +852,10 @@ jobs:
           $stderrPath = Join-Path $env:RUNNER_TEMP "firefox-version-stderr.txt"
           $process = Start-Process -FilePath $firefox.Path -ArgumentList "--version" -Wait -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
           $version = [IO.File]::ReadAllText($stdoutPath)
-          if ($process.ExitCode -ne 0 -or $version -notmatch '152\.0\.4') {
+          if ($process.ExitCode -ne 0 -or $version -notmatch '156\.0\.1') {
             Write-Host "Firefox version probe exited $($process.ExitCode): $version"
             Write-Host ([IO.File]::ReadAllText($stderrPath))
-            throw "owned AliasMode Firefox did not report Firefox 152.0.4"
+            throw "owned AliasMode Firefox did not report Firefox 156.0.1"
           }
       - name: Prove packaged Firefox Launcher persistence and portable handoff
         shell: pwsh
@@ -874,10 +875,28 @@ jobs:
           $smoke = Join-Path $env:RUNNER_TEMP "aliasmode-sidecar-smoke"
           New-Item -ItemType Directory -Force $smoke | Out-Null
           Copy-Item ".\src-tauri\binaries\aliasmode-sidecar-x86_64-pc-windows-msvc.exe" "$smoke\aliasmode-sidecar.exe"
-          $metadata = Get-Content ".\src-tauri\generated\browser.json" | ConvertFrom-Json
-          $browserPath = Resolve-Path (Join-Path ".\src-tauri\resources\cloakbrowser" $metadata.executable)
           $env:ALIASMODE_PLAYWRIGHT_RUNTIME = (Resolve-Path ".\src-tauri\resources\playwright").Path
-          $browser = Start-Process -PassThru $browserPath -ArgumentList @(
+          $env:ALIASMODE_SESSION_LAUNCH = "0"
+          foreach ($name in @("CLOAKBROWSER_BINARY_PATH", "CLOAKBROWSER_BINARY_SHA256")) {
+            [Environment]::SetEnvironmentVariable($name, $null, "Process")
+          }
+          # No CloakBrowser is bundled: the first Cloud profile downloads the pinned build on first use.
+          Push-Location $smoke
+          try {
+            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --headless --state-root "$smoke\cloud-state"
+            if ($LASTEXITCODE -ne 0) { throw "Cloud launcher smoke exited with code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+          $browserPath = Get-Item -LiteralPath "$smoke\cloud-state\runtimes\cloakbrowser-146.0.7680.177.5\chrome.exe"
+          $browserSha256 = (Get-FileHash -LiteralPath $browserPath.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($browserSha256 -cne "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80") {
+            throw "downloaded CloakBrowser does not match its pin"
+          }
+          if (@(Get-ChildItem -LiteralPath "$smoke\cloud-state\runtimes" -Force | Where-Object Name -Like ".*").Count -ne 0) {
+            throw "CloakBrowser download left a partial or temporary file"
+          }
+          $browser = Start-Process -PassThru $browserPath.FullName -ArgumentList @(
             "--headless=new",
             "--disable-gpu",
             "--no-first-run",
@@ -909,15 +928,19 @@ jobs:
               Wait-Process -Id $browser.Id -ErrorAction SilentlyContinue
             }
           }
-          $env:CLOAKBROWSER_BINARY_PATH = $browserPath.Path
-          $env:CLOAKBROWSER_BINARY_SHA256 = $metadata.sha256
-          $env:ALIASMODE_SESSION_LAUNCH = "0"
+          # Later runs reuse that download instead of fetching it again.
+          $env:CLOAKBROWSER_BINARY_PATH = $browserPath.FullName
+          $env:CLOAKBROWSER_BINARY_SHA256 = $browserSha256
           Push-Location $smoke
           try {
-            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --headless --state-root "$smoke\cloud-state"
-            if ($LASTEXITCODE -ne 0) { throw "Cloud launcher smoke exited with code $LASTEXITCODE" }
             & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --proxy-mismatch --headless --state-root "$smoke\proxy-mismatch-state"
             if ($LASTEXITCODE -ne 0) { throw "deterministic proxy mismatch smoke exited with code $LASTEXITCODE" }
+            # A Cloud V3 payload must download and open the Chromium 155 beta, not CloakBrowser.
+            & ".\aliasmode-sidecar.exe" __cloud-launcher-smoke --chromium-runtime aliasmode --headless --state-root "$smoke\cloud-beta-state"
+            if ($LASTEXITCODE -ne 0) { throw "Cloud Chromium 155 beta smoke exited with code $LASTEXITCODE" }
+            if (-not (Test-Path -LiteralPath "$smoke\cloud-beta-state\runtimes\chromium-155.0.8059.85-aliasmode.2\155.0.8059.85.manifest" -PathType Leaf)) {
+              throw "Cloud Chromium 155 beta smoke did not install the beta runtime"
+            }
           } finally {
             Pop-Location
           }
@@ -936,11 +959,12 @@ jobs:
             Write-Host "Authenticated Cloud proxy smoke skipped: no temporary test proxy configured"
             exit 0
           }
-          $metadata = Get-Content ".\src-tauri\generated\browser.json" | ConvertFrom-Json
-          $browserPath = Resolve-Path (Join-Path ".\src-tauri\resources\cloakbrowser" $metadata.executable)
+          $runtimes = Join-Path $env:RUNNER_TEMP "aliasmode-live-runtimes"
+          $browserPath = (& bun -e "import { ensureCloakBrowser } from './aliasmode-chromium.ts'; console.log(await ensureCloakBrowser(process.argv[1]))" $runtimes | Select-Object -Last 1)
+          if ($LASTEXITCODE -ne 0) { throw "CloakBrowser download failed" }
           $env:ALIASMODE_PLAYWRIGHT_RUNTIME = (Resolve-Path ".\src-tauri\resources\playwright").Path
-          $env:ALIASMODE_LIVE_BROWSER = $browserPath.Path
-          $env:ALIASMODE_LIVE_BROWSER_SHA256 = $metadata.sha256
+          $env:ALIASMODE_LIVE_BROWSER = $browserPath
+          $env:ALIASMODE_LIVE_BROWSER_SHA256 = "03f53661a5c47e7b0a661bee2bce8a0d302b7a60834c328df417561fa0636d80"
           $env:ALIASMODE_LIVE_HEADFUL = "1"
           bun test --silent proxy-live.test.ts -t "real Cloud lifecycle"
           if ($LASTEXITCODE -ne 0) { throw "authenticated Cloud proxy smoke exited with code $LASTEXITCODE" }
@@ -1029,8 +1053,9 @@ jobs:
             ForEach-Object { "$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant())  $(Split-Path $_ -Leaf)" } |
             Set-Content (Join-Path $candidate "SHA256SUMS.txt") -Encoding utf8
 
+          # The installer carries no CloakBrowser; the app downloads it on first use.
           $metadata = Get-Content (Join-Path $candidate "browser.json") -Raw | ConvertFrom-Json
-          if ($metadata.executable -cne "chrome.exe" -or [string]$metadata.sha256 -notmatch '^[a-f0-9]{64}$') {
+          if ($null -ne $metadata.executable -or [string]$metadata.firefox.sha256 -notmatch '^[a-f0-9]{64}$') {
             throw "candidate browser metadata is invalid"
           }
           $requiredNames = @($fullName, $slimName, "browser.json", "SHA256SUMS.txt", "size-report.json") | Sort-Object
@@ -1228,7 +1253,7 @@ jobs:
     if: >-
       ${{
         always() &&
-        github.event_name == 'push' &&
+        github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/main' &&
         needs.windows_cache.result == 'success' &&
         needs.windows_cache.outputs.cache_hit == 'false' &&
@@ -1298,6 +1323,7 @@ jobs:
     steps:
       - name: Enforce Windows DAG result
         env:
+          WINDOWS_PIPELINE: ${{ github.event_name == 'workflow_dispatch' || inputs.client_ci_reusable_call == true }}
           FIREFOX_RESULT: ${{ needs.windows_firefox.result }}
           CACHE_HIT: ${{ needs.windows_cache.outputs.cache_hit }}
           CACHE_RESULT: ${{ needs.windows_cache.result }}
@@ -1321,6 +1347,15 @@ jobs:
               exit 1
             fi
           }
+
+          if [[ "$WINDOWS_PIPELINE" != "true" ]]; then
+            # A push or pull request: no Windows job may have run.
+            for result in "$FIREFOX_RESULT" "$CACHE_RESULT" "$SUCCESSOR_RESULT" "$PREPARE_RESULT" "$FULL_RESULT" "$SLIM_RESULT" "$SOURCE_RESULT" "$CANDIDATE_RESULT" "$RUNTIME_RESULT" "$BROWSER_RESULT" "$CLOUD_RESULT"; do
+              require_result "Windows pipeline job" "$result" skipped
+            done
+            echo "The Windows pipeline runs only on a manual dispatch. Run Client CI on main before a release."
+            exit 0
+          fi
 
           require_result windows_firefox "$FIREFOX_RESULT" success
           require_result windows_cache "$CACHE_RESULT" success

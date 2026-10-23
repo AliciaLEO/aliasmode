@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { LifecycleAdmissionController } from "./lifecycle-admission.ts";
 import { ProfileStore } from "./store.ts";
 import { buildNewProfile } from "./create.ts";
+import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import {
   serveAutomationApi,
   serveDashboard,
@@ -21,13 +22,18 @@ test("profile identity cards do not fetch egress IP automatically", () => {
 
 test("identity cards load stored Chromium and Firefox metadata without egress lookup", async () => {
   const store = new ProfileStore(":memory:");
-  const chromium = buildNewProfile({ engine: "chromium", name: "Chromium card" }, () => false);
+  const chromium = buildNewProfile({ chromiumRuntime: "cloakbrowser", name: "Chromium card" }, () => false);
   const firefox = buildNewProfile({ engine: "firefox", name: "Firefox card" }, (id) => id === chromium.id);
-  store.upsertProfiles([chromium, firefox]);
+  const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode", name: "Chromium 155 card" }, (id) => id === chromium.id || id === firefox.id);
+  store.upsertProfiles([chromium, firefox, chromium155]);
   const server = serveDashboard({ port: 0, launcher: {} as any, store, log: () => {} });
 
   try {
-    for (const [profile, browser] of [[chromium, "CloakBrowser"], [firefox, "AliasMode Firefox"]] as const) {
+    for (const [profile, browser] of [
+      [chromium, "CloakBrowser"],
+      [firefox, "AliasMode Firefox"],
+      [chromium155, process.platform === "win32" ? "AliasMode Chromium" : "Chromium 155 beta"],
+    ] as const) {
       const response = await fetch(`http://127.0.0.1:${server.port}/card?id=${profile.id}`);
       expect(response.status).toBe(200);
       const card = await response.text();
@@ -299,8 +305,6 @@ test("Cloud automation API routes browser control through the Cloud lifecycle", 
     expect(calls).toEqual(['open:k1:["--flag"]', "close:k1"]);
     expect(localStarts).toBe(0);
 
-    const blocked = await fetch(`${origin}/api/v1/user/update`, { method: "POST" });
-    expect(blocked.status).toBe(503);
     const destructive = await fetch(`${origin}/api/v1/user/delete`, { method: "POST" });
     expect(destructive.status).toBe(503);
   } finally {
@@ -440,6 +444,59 @@ test("Cloud automation API stays closed when the Cloud lifecycle is unavailable"
   try {
     const response = await fetch(`http://127.0.0.1:${server.port}/api/v1/browser/start?user_id=k1`);
     expect(response.status).toBe(503);
+  } finally {
+    await server.stop(true);
+    store.close();
+  }
+});
+
+test("Cloud user/update renames and saves credentials on open and closed profiles", async () => {
+  const store = new ProfileStore(":memory:");
+  const open = buildNewProfile({ name: "open-old", username: "old", password: "old-pw" }, () => false);
+  const closed = buildNewProfile(
+    { name: "closed-old", username: "old", password: "old-pw", twofa: "SEED" },
+    (id) => id === open.id,
+  );
+  store.upsertProfile(open);
+  const committed: any[] = [];
+  const updates: any[] = [];
+  const payload = encodePortableProfile(closed);
+  const server = serveAutomationApi({
+    port: 0, launcher: {} as any, store,
+    appConfig: { read: () => ({ mode: "cloud" }) } as any,
+    cloudConnection: { client: {
+      getProfile: async () => ({ ok: true, profile: { id: closed.id, version: 3, activeOpens: [] }, payload }),
+      updateProfile: async (id: string, request: any) => {
+        updates.push({ id, ...request });
+        return { ok: true };
+      },
+    } } as any,
+    cloudBrowser: {
+      canEditLive: (id: string) => id === open.id,
+      commitLiveEdit: async (profile: any) => {
+        committed.push(profile);
+        return true;
+      },
+    } as any,
+    log: () => {},
+  });
+  const update = (body: unknown) => fetch(`http://127.0.0.1:${server.port}/api/v1/user/update`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }).then((response) => response.json());
+  try {
+    expect(await update({ user_id: open.id, name: "newname", username: "newname", password: "new-pw" }))
+      .toMatchObject({ code: 0 });
+    expect(committed).toMatchObject([{ id: open.id, name: "newname", username: "newname", password: "new-pw" }]);
+
+    expect(await update({ user_id: closed.id, name: "closed-new", username: "closed-new" }))
+      .toMatchObject({ code: 0 });
+    expect(updates).toMatchObject([{ id: closed.id, expectedVersion: 3 }]);
+    expect(decodePortableProfile(updates[0].payload).profile).toMatchObject({
+      name: "closed-new",
+      username: "closed-new",
+      password: "old-pw",
+      twofa: "SEED",
+    });
   } finally {
     await server.stop(true);
     store.close();

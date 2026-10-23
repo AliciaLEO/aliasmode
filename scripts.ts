@@ -8,6 +8,7 @@ import type { CloudConnectionRuntime } from "./cloud-connection.ts";
 import { CloudClient } from "./cloud-client.ts";
 import type { ScriptInput, ScriptLanguage, ScriptRecord, ScriptSummary, PublishedScript, PublishScriptInput, PublishedScriptsQuery, ListPublishedScriptsResponse } from "./contracts/cloud-v1.ts";
 import { resolvePlaywrightRuntime, type PlaywrightRuntimeLayout } from "./playwright-runtime.ts";
+import { PYTHON_RUNTIME_FAILED, type PythonRuntime } from "./python-runtime.ts";
 
 export class ScriptError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -164,7 +165,11 @@ interface RunnerInput {
   inputs: Record<string, unknown>;
   credentials: Record<string, string> | null;
 }
-export type ScriptExecution = (options: { scriptPath: string; language: ScriptLanguage; input: RunnerInput; logFd: number; signal: AbortSignal }) => Promise<void>;
+export type ScriptExecution = (options: {
+  scriptPath: string; language: ScriptLanguage; input: RunnerInput; logFd: number; signal: AbortSignal;
+  /** The interpreter of the downloaded Python runtime; packaged Python scripts need it. */
+  python?: string;
+}) => Promise<void>;
 
 interface ScriptRunner {
   executable: string;
@@ -174,6 +179,7 @@ interface ScriptRunner {
 export interface ScriptRuntimeVerificationOptions {
   runtime?: PlaywrightRuntimeLayout;
   env?: NodeJS.ProcessEnv;
+  python?: string;
 }
 
 function scriptRunnerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -185,17 +191,26 @@ function scriptRunnerEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJ
 }
 
 function supportsSourceScripts(): boolean {
-  return (process.platform === "darwin" && process.arch === "arm64") || (process.platform === "linux" && process.arch === "x64");
+  return process.platform === "darwin" || (process.platform === "linux" && process.arch === "x64");
 }
 
-export function resolveScriptRunner(language: ScriptLanguage, runtime = resolvePlaywrightRuntime()): ScriptRunner {
+/** Start the Python runtime download in the background when one of these scripts is Python. */
+export function prefetchPythonFor(python: PythonRuntime | undefined, scripts: ReadonlyArray<{ language: ScriptLanguage }>): void {
+  if (python && scripts.some((script) => script.language === "python")) python.prefetch();
+}
+
+const PYTHON_NOT_READY = "The Python runtime is not ready. Run the script again to download it.";
+
+/** The desktop app runs Python scripts on the downloaded runtime (`python`), a source checkout on python3. */
+export function resolveScriptRunner(language: ScriptLanguage, runtime = resolvePlaywrightRuntime(), python?: string): ScriptRunner {
   if (runtime.kind === "source" && !supportsSourceScripts()) {
     throw new ScriptError("Scripts require the packaged desktop runtime", 503);
   }
+  if (runtime.kind === "packaged" && language === "python" && !python) throw new ScriptError(PYTHON_NOT_READY, 503);
   return {
     executable: runtime.kind === "source"
       ? language === "python" ? "python3" : runtime.nodeExecutable
-      : language === "python" ? join(runtime.root, "python", "python.exe") : runtime.nodeExecutable,
+      : language === "python" ? python! : runtime.nodeExecutable,
     runner: join(runtime.root, "agent", language === "python" ? "script-runner.py" : "script-runner.mjs"),
   };
 }
@@ -211,9 +226,9 @@ async function sourceCommandAvailable(executable: string, args: string[], runtim
 
 export async function verifyScriptRuntime(language: ScriptLanguage, options: ScriptRuntimeVerificationOptions = {}): Promise<ScriptRunner> {
   const runtime = options.runtime ?? resolvePlaywrightRuntime();
-  const resolved = resolveScriptRunner(language, runtime);
+  const resolved = resolveScriptRunner(language, runtime, options.python);
   if (!existsSync(resolved.executable) && runtime.kind === "packaged") {
-    throw new ScriptError("The script runtime is missing; update AliasMode", 503);
+    throw new ScriptError(language === "python" ? PYTHON_NOT_READY : "The script runtime is missing; update AliasMode", 503);
   }
   if (!existsSync(resolved.runner)) {
     throw new ScriptError(runtime.kind === "source"
@@ -234,11 +249,12 @@ export async function verifyScriptRuntime(language: ScriptLanguage, options: Scr
   return resolved;
 }
 
-export const executeScript: ScriptExecution = async ({ scriptPath, language, input, logFd, signal }) => {
+export const executeScript: ScriptExecution = async ({ scriptPath, language, input, logFd, signal, python }) => {
   signal.throwIfAborted();
-  const { executable, runner } = await verifyScriptRuntime(language);
+  const { executable, runner } = await verifyScriptRuntime(language, { python });
   signal.throwIfAborted();
-  const child = spawn(executable, [...(language === "python" ? ["-u", "-X", "utf8"] : []), runner, scriptPath], {
+  const pythonArgs = ["-u", "-X", "utf8"];
+  const child = spawn(executable, [...(language === "python" ? pythonArgs : []), runner, scriptPath], {
     windowsHide: true, detached: process.platform !== "win32", env: scriptRunnerEnvironment(), stdio: ["pipe", logFd, logFd],
   });
   let termination: Promise<void> | undefined;
@@ -286,7 +302,11 @@ export class ScriptSupervisor {
   private active?: ActiveRun;
   private closing = false;
   private pauses = 0;
-  constructor(private readonly options: AgentControlDeps & { root: string; library: ScriptLibrary; execute?: ScriptExecution }) {}
+  constructor(private readonly options: AgentControlDeps & {
+    root: string; library: ScriptLibrary; execute?: ScriptExecution;
+    /** The downloaded Python runtime of the desktop app; a source checkout runs python3. */
+    python?: PythonRuntime;
+  }) {}
 
   pause(): () => void {
     this.pauses++;
@@ -364,14 +384,52 @@ export class ScriptSupervisor {
     } finally { closeSync(fd); }
   }
 
+  /**
+   * Wait for the downloaded Python runtime before a Python script opens any profile. The
+   * first run downloads it and writes the progress to the run log; Stop ends the wait.
+   */
+  private async preparePython(fd: number, signal: AbortSignal): Promise<string | undefined> {
+    const python = this.options.python;
+    if (!python) return undefined;
+    if (python.installed()) return python.executable;
+    writeFileSync(fd, `Downloading the Python runtime for Python scripts (${Math.round(python.totalBytes / 1e6)} MB, once)\n`);
+    let reported = -1;
+    const unsubscribe = python.onProgress(({ receivedBytes, totalBytes }) => {
+      const percent = Math.floor(receivedBytes * 10 / totalBytes) * 10;
+      if (percent <= reported) return;
+      reported = percent;
+      writeFileSync(fd, `Python runtime download: ${percent}%\n`);
+    });
+    let abort = () => {};
+    try {
+      const executable = await Promise.race([
+        python.ensure(),
+        new Promise<never>((_, reject) => {
+          abort = () => reject(signal.reason);
+          signal.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
+      writeFileSync(fd, "Python runtime ready\n");
+      return executable;
+    } catch (error) {
+      signal.throwIfAborted();
+      writeFileSync(fd, `Python runtime download failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      throw new ScriptError(PYTHON_RUNTIME_FAILED, 503);
+    } finally {
+      unsubscribe();
+      signal.removeEventListener("abort", abort);
+    }
+  }
+
   private async run(run: ActiveRun, request: RunRequest & { concurrency: number }): Promise<void> {
     const signal = run.abort.signal;
     const fd = openSync(run.logPath, "a");
     try {
       const script = await this.options.library.get(request.scriptId);
       this.options.library.assertScope(run.scope);
-      if (!this.options.execute) await verifyScriptRuntime(script.language);
       run.view.scriptName = script.name;
+      const python = script.language === "python" ? await this.preparePython(fd, signal) : undefined;
+      if (!this.options.execute) await verifyScriptRuntime(script.language, { python });
       const path = join(run.directory, script.language === "python" ? "script.py" : "script.mjs");
       writeFileSync(path, script.source, { mode: 0o600 });
       const runProfile = async (item: ScriptRun["profiles"][number]) => {
@@ -418,12 +476,12 @@ export class ScriptSupervisor {
             const { endpoint } = await callFirefoxOwner<{ endpoint?: unknown }>(launch.firefoxOwner, "playwright-endpoint", {}, { signal });
             if (typeof endpoint !== "string" || !endpoint) throw new ScriptError("Firefox browser endpoint is unavailable", 503);
             await (this.options.execute ?? executeScript)({
-              scriptPath: path, language: script.language, logFd: fd, signal,
+              scriptPath: path, language: script.language, logFd: fd, signal, python,
               input: { endpoint, engine: "firefox", ...input },
             });
           } else {
             await (this.options.execute ?? executeScript)({
-              scriptPath: path, language: script.language, logFd: fd, signal,
+              scriptPath: path, language: script.language, logFd: fd, signal, python,
               input: { endpoint: opened.ws!, ...input },
             });
           }

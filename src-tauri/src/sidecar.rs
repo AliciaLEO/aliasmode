@@ -1,8 +1,4 @@
-use crate::{
-    browser::{BrowserRuntime, FirefoxRuntime},
-    credentials,
-    runtime_descriptor::RuntimeDescriptorState,
-};
+use crate::{browser::FirefoxRuntime, credentials, runtime_descriptor::RuntimeDescriptorState};
 use reqwest::{redirect::Policy, Client};
 use serde::Deserialize;
 use std::{
@@ -390,14 +386,13 @@ fn should_present_unexpected_exit(shutting_down: bool) -> bool {
 pub async fn launch_and_verify(
     app: &AppHandle,
     data_dir: &Path,
-    browser: &BrowserRuntime,
     firefox: &FirefoxRuntime,
     playwright_runtime: &Path,
     nonce: &str,
     agent_nonce: &str,
     background: bool,
 ) -> Result<(SidecarSupervisor, u16), String> {
-    let command = scrubbed_sidecar_command(app)?
+    let mut command = scrubbed_sidecar_command(app)?
         .args(command_args(data_dir))
         .current_dir(data_dir)
         .env("ALIASMODE_DESKTOP_NONCE", nonce)
@@ -405,10 +400,19 @@ pub async fn launch_and_verify(
         .env("ALIASMODE_BACKGROUND", if background { "1" } else { "0" })
         .env("ALIASMODE_DESKTOP_VERSION", VERSION)
         .env("ALIASMODE_PLAYWRIGHT_RUNTIME", playwright_runtime)
-        .env("CLOAKBROWSER_BINARY_PATH", &browser.executable)
-        .env("CLOAKBROWSER_BINARY_SHA256", &browser.sha256)
         .env("ALIASMODE_FIREFOX_BINARY_PATH", &firefox.executable)
         .env("ALIASMODE_FIREFOX_BINARY_SHA256", &firefox.sha256);
+    // Chromium 155 on Windows draws pages at the primary display's scale, as Chrome does there.
+    // New profiles get a screen no smaller than that display.
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let size = monitor.size();
+        command = command
+            .env("ALIASMODE_HOST_SCALE", monitor.scale_factor().to_string())
+            .env(
+                "ALIASMODE_HOST_SCREEN",
+                format!("{}x{}", size.width, size.height),
+            );
+    }
 
     let (mut events, child) = command.spawn().map_err(|error| error.to_string())?;
     let pid = child.pid();

@@ -6,15 +6,17 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const CLOAKBROWSER_WRAPPER_VERSION: &str = "0.4.11";
-const FIREFOX_VERSION: &str = "152.0.4-beta.30";
+const FIREFOX_VERSION: &str = "156.0.1-beta.36";
+const FIREFOX_EXECUTABLE_NAME: &str = if cfg!(windows) {
+    "aliasmode.exe"
+} else {
+    "aliasmode"
+};
 
+/// No installer carries CloakBrowser: the sidecar downloads it on first use.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrowserMetadata {
-    executable: String,
-    sha256: String,
-    wrapper_version: String,
     firefox: FirefoxMetadata,
 }
 
@@ -25,12 +27,6 @@ struct FirefoxMetadata {
     sha256: String,
     version: String,
     archive_sha256: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct BrowserRuntime {
-    pub executable: PathBuf,
-    pub sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +51,7 @@ fn safe_relative_executable(value: &str) -> Result<PathBuf, String> {
             )
         })
     {
-        return Err("packaged CloakBrowser executable path is unsafe".to_owned());
+        return Err("packaged browser executable path is unsafe".to_owned());
     }
     Ok(path.to_owned())
 }
@@ -105,27 +101,12 @@ fn verify_resource(
     Ok((executable, actual))
 }
 
-pub fn verify_browser_resource(resource_dir: &Path) -> Result<BrowserRuntime, String> {
-    let metadata = embedded_metadata()?;
-    if metadata.wrapper_version != CLOAKBROWSER_WRAPPER_VERSION || !is_sha256(&metadata.sha256) {
-        return Err("packaged CloakBrowser metadata is not approved".to_owned());
-    }
-    let (executable, sha256) = verify_resource(
-        resource_dir,
-        "cloakbrowser",
-        &metadata.executable,
-        &metadata.sha256,
-        "CloakBrowser",
-    )?;
-    Ok(BrowserRuntime { executable, sha256 })
-}
-
 pub fn verify_firefox_resource(resource_dir: &Path) -> Result<FirefoxRuntime, String> {
     let metadata = embedded_metadata()?;
     if metadata.firefox.version != FIREFOX_VERSION
         || Path::new(&metadata.firefox.executable)
             .file_name()
-            .is_none_or(|name| name != "aliasmode.exe")
+            .is_none_or(|name| name != FIREFOX_EXECUTABLE_NAME)
         || !is_sha256(&metadata.firefox.sha256)
         || !is_sha256(&metadata.firefox.archive_sha256)
     {
@@ -150,7 +131,14 @@ fn is_sha256(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_sha256, safe_relative_executable};
+    use super::{is_sha256, safe_relative_executable, BrowserMetadata};
+
+    #[test]
+    fn reads_firefox_metadata() {
+        let firefox = r#""firefox":{"executable":"aliasmode","sha256":"aa","version":"1","archiveSha256":"bb"}"#;
+        let metadata: BrowserMetadata = serde_json::from_str(&format!("{{{firefox}}}")).unwrap();
+        assert_eq!(metadata.firefox.executable, "aliasmode");
+    }
 
     #[test]
     fn validates_hash_shape() {

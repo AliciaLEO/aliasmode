@@ -13,7 +13,7 @@
  *   --fingerprint-screen-width=N / --fingerprint-screen-height=N
  */
 
-import type { Profile } from "./types.ts";
+import type { Profile, ProfileEngine, ProfileHardware } from "./types.ts";
 import { proxyUrl } from "./proxy.ts";
 
 /** FNV-1a 32-bit hash → positive integer. Stable across runs and platforms. */
@@ -26,6 +26,56 @@ export function deterministicSeed(profileId: string): number {
   }
   // Keep it well clear of 0 so a seed is always "set".
   return h === 0 ? 1 : h;
+}
+
+/** One well-mixed fraction in [0, 1) from a profile seed (Mulberry32). */
+export function seedFraction(seed: number): number {
+  let mixed = (seed + 0x6d2b79f5) >>> 0;
+  mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+  mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+  return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+}
+
+// Logical processor counts of current desktop and laptop computers; repeats set the odds.
+const CORE_COUNTS = [8, 8, 8, 12, 12, 12, 16, 16, 20, 24] as const;
+
+/** Choose the hardware that a new CloakBrowser profile reports on every computer. */
+export function generateProfileHardware(seed: number): ProfileHardware {
+  // The extra constant keeps this draw apart from other values drawn from the same seed.
+  return { cores: CORE_COUNTS[Math.floor(seedFraction(seed ^ 0x9e3779b9) * CORE_COUNTS.length)]! };
+}
+
+/** Validate stored hardware. Only CloakBrowser profiles carry it; the other engines choose their own. */
+export function normalizeProfileHardware(value: unknown, engine: ProfileEngine, chromiumRuntime: unknown): ProfileHardware | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const cores = typeof value === "object" && !Array.isArray(value) ? (value as { cores?: unknown }).cores : undefined;
+  if (typeof cores !== "number" || !Number.isInteger(cores) || cores < 1 || cores > 256
+    || Object.keys(value as object).length !== 1) {
+    throw new Error("unsupported profile hardware");
+  }
+  if (engine !== "chromium" || chromiumRuntime) throw new Error("only CloakBrowser profiles carry stored hardware");
+  return { cores };
+}
+
+/** Default launch window as fractions of the profile's screen: a tall two-thirds-width window. */
+export const DEFAULT_WINDOW_WIDTH_SCALE = 0.65;
+export const DEFAULT_WINDOW_HEIGHT_SCALE = 0.9;
+
+/**
+ * The OS window size for a screen. The floors stop a small screen (e.g. 1024 -> 666px)
+ * from opening as an unusable sliver. The window is never larger than the screen, which
+ * Chromium 155 refuses; a scaled display can make the screen smaller than the floors.
+ */
+export function launchWindowSize(
+  screenWidth: number,
+  screenHeight: number,
+  widthScale = DEFAULT_WINDOW_WIDTH_SCALE,
+  heightScale = DEFAULT_WINDOW_HEIGHT_SCALE,
+): [number, number] {
+  return [
+    Math.min(screenWidth, Math.max(800, Math.round(screenWidth * widthScale))),
+    Math.min(screenHeight, Math.max(480, Math.round(screenHeight * heightScale))),
+  ];
 }
 
 /** Parse AdsPower "1680*1050" (or "1680x1050") → width/height; default 1920x1080. */
@@ -171,9 +221,19 @@ export function deriveFingerprintFlags(profile: Profile): string[] {
   // forced old version beside a newer kernel is not.
   // Match the browser clock to the proxy's geolocation (resolved at import).
   if (profile.timezone) flags.push(`--fingerprint-timezone=${profile.timezone}`);
+  if (profile.locale) flags.push(`--fingerprint-locale=${profile.locale}`);
   // CloakBrowser's default ~500 MB storage quota is the classic incognito
   // signal, so Google treats the profile as private. Report a real-disk size.
-  flags.push(`--fingerprint-storage-quota=${100_000 + (profile.fingerprintSeed % 400_000)}`);
+  // The Chromium 155 runtime derives a real-disk quota from its own profile.
+  if (!profile.chromiumRuntime) flags.push(`--fingerprint-storage-quota=${100_000 + (profile.fingerprintSeed % 400_000)}`);
+  // Without this flag CloakBrowser reports 8 cores for every profile.
+  if (!profile.chromiumRuntime && profile.hardware) {
+    flags.push(`--fingerprint-hardware-concurrency=${profile.hardware.cores}`);
+  }
+  // Without this flag every Chromium 155 profile on one computer draws the same canvas
+  // and WebGL image, so a site can link them. The noise comes from the profile seed,
+  // so each profile keeps its own image on every launch.
+  if (profile.chromiumRuntime) flags.push("--fingerprint-noise");
   return flags;
 }
 

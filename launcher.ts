@@ -25,24 +25,47 @@ import {
   statSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
-import { dlopen } from "bun:ffi";
-import type { CookieRecord, LaunchInfo, Profile } from "./types.ts";
+import { dlopen, ptr } from "bun:ffi";
+import type { CookieRecord, LaunchInfo, Profile, ProxySpec } from "./types.ts";
 import type { ProfileStore } from "./store.ts";
+import { lookupProxyExitLocation, type ExitLocation } from "./geoip.ts";
 import type { AutofillBridge } from "./autofill-bridge.ts";
 import { AUTOFILL_EXTENSION_REVISION, autofillExtensionDir } from "./autofill-extension.ts";
 import { allocatePort } from "./ports.ts";
-import { deriveFingerprintFlags, isMobileUserAgent, platformFromUA, proxyServerFlag } from "./fingerprint.ts";
+import {
+  DEFAULT_WINDOW_HEIGHT_SCALE, DEFAULT_WINDOW_WIDTH_SCALE, deriveFingerprintFlags, isMobileUserAgent, launchWindowSize,
+  platformFromUA, proxyServerFlag,
+} from "./fingerprint.ts";
 export { isMobileUserAgent } from "./fingerprint.ts";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
+import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
+import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
 import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
-import { FIREFOX_RUNTIME_VERSION } from "./firefox-config.ts";
+import { isDeepStrictEqual } from "node:util";
+import {
+  completeProfileFingerprint, FIREFOX_RUNTIME_VERSION, firefoxLaunchConfig, firefoxPersonaOs, firefoxStartupPrefs, intelMacGraphicsVendor,
+  type MacGraphicsVendor, syncFirefoxTimezone,
+} from "./firefox-config.ts";
+import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
+import {
+  ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
+  ALIASMODE_CHROMIUM_WEBRTC_IP,
+  ALIASMODE_CHROMIUM_WINDOW_LABEL,
+  chromiumDeviceScale,
+  cloakBrowserExecutableSha256,
+  ensureAliasmodeChromium,
+  ensureCloakBrowser,
+  hostDisplayScale,
+  pruneBrowserRuntimes,
+  supportsChromium155Host,
+} from "./aliasmode-chromium.ts";
 
 // Chromium ignores inline user:pass@ on --proxy-server. Rather than an MV3 extension answering
 // onAuthRequired (whose service worker can't answer reliably during a page-load burst), the browser
@@ -77,15 +100,85 @@ function writeFirefoxStartupPage(userDataDir: string, restoreLastSession: boolea
   const path = join(userDataDir, "user.js");
   const existing = existsSync(path) ? readFileSync(path, "utf8") : "";
   const preserved = existing
-    .replace(/^user_pref\("browser\.startup\.page",\s*\d+\);\s*$/gm, "")
+    .replace(/^user_pref\("browser\.(?:startup\.page|sessionstore\.privacy_level)",\s*\d+\);\s*$/gm, "")
     .trimEnd();
-  writeFileSync(path, `${preserved}${preserved ? "\n" : ""}user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`);
+  // The engine default (2) never saves session cookies, so a restored session came back
+  // without them. Stock Firefox (0) keeps them, as Chromium does with --restore-last-session.
+  writeFileSync(
+    path,
+    `${preserved}${preserved ? "\n" : ""}user_pref("browser.sessionstore.privacy_level", 0);\n` +
+      `user_pref("browser.startup.page", ${restoreLastSession ? 3 : 0});\n`,
+  );
+}
+
+/** Firefox's mozLz4 file: "mozLz40\0", the decoded size, then one LZ4 block. */
+export function decodeMozLz4(file: Buffer): Buffer {
+  if (file.length < 12 || file.toString("latin1", 0, 8) !== "mozLz40\0") throw new Error("not a mozLz4 file");
+  const out = Buffer.alloc(file.readUInt32LE(8));
+  let input = 12;
+  let output = 0;
+  const length = (value: number) => {
+    if (value < 15) return value;
+    let byte: number;
+    do { byte = file[input++]!; value += byte; } while (byte === 255);
+    return value;
+  };
+  while (input < file.length) {
+    const token = file[input++]!;
+    const literals = length(token >> 4);
+    if (input + literals > file.length || output + literals > out.length) throw new Error("corrupt mozLz4 block");
+    file.copy(out, output, input, input + literals);
+    input += literals;
+    output += literals;
+    if (input >= file.length) break;
+    const offset = file.readUInt16LE(input);
+    input += 2;
+    const match = length(token & 15) + 4;
+    if (offset === 0 || offset > output || output + match > out.length) throw new Error("corrupt mozLz4 block");
+    for (const end = output + match; output < end; output++) out[output] = out[output - offset]!;
+  }
+  return out.subarray(0, output);
+}
+
+const FIREFOX_SESSION_FILES = [
+  "sessionstore.jsonlz4",
+  "sessionstore-backups/recovery.jsonlz4",
+  "sessionstore-backups/recovery.baklz4",
+  "sessionstore-backups/previous.jsonlz4",
+];
+
+/**
+ * Whether Firefox's native restore would reopen a web page, read from the first session file in
+ * Firefox's own order; null when none is readable. A window that ended because its last tab closed
+ * (a script closing every page does this) comes back only as an empty new-tab page. The Playwright
+ * launch never sees that page, so every later open waited for the owner until it timed out.
+ */
+function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
+  for (const file of FIREFOX_SESSION_FILES) {
+    let session: any;
+    try { session = JSON.parse(decodeMozLz4(readFileSync(join(userDataDir, file))).toString("utf8")); } catch { continue; }
+    const windows: any[] = Array.isArray(session?.windows) ? session.windows : [];
+    return windows.some((window) => !window?._maybeDontRestoreTabs && Array.isArray(window.tabs) && window.tabs.some((tab: any) => {
+      const entries: any[] = Array.isArray(tab?.entries) ? tab.entries : [];
+      return !!canonicalUserPageUrl(entries[(Number(tab.index) || entries.length) - 1]?.url);
+    }));
+  }
+  return null;
 }
 
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
-  return (platform === "darwin" && arch === "arm64")
+  return (platform === "darwin" && (arch === "arm64" || arch === "x64"))
     || (platform === "linux" && arch === "x64")
     || (platform === "win32" && arch === "x64");
+}
+
+async function readMacGraphicsVendor(): Promise<MacGraphicsVendor | undefined> {
+  try {
+    const child = Bun.spawn(["/usr/sbin/system_profiler", "SPDisplaysDataType", "-json"], { stdout: "pipe", stderr: "ignore", timeout: 15_000 });
+    return intelMacGraphicsVendor(await new Response(child.stdout).text());
+  } catch {
+    return undefined;
+  }
 }
 
 function firefoxHelperBinaryPaths(binaryPath: string): string[] {
@@ -97,6 +190,13 @@ function firefoxHelperBinaryPaths(binaryPath: string): string[] {
     helper("gpu-helper.app", "AliasMode GPU Helper"),
     helper("media-plugin-helper.app", "AliasMode Media Plugin Helper"),
   ];
+}
+
+/** Which pinned executable a profile launches. */
+type BinaryKind = "chromium" | "firefox" | "aliasmode";
+
+function binaryKind(profile: Profile): BinaryKind {
+  return profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "chromium";
 }
 
 export type BrowserLaunchFailure =
@@ -117,8 +217,13 @@ const PREFLIGHT_GUIDANCE = {
   persona_unsupported: "This profile's user agent has no recognized desktop platform. Check its saved browser identity.",
   firefox_configuration: "The saved Firefox configuration is missing or incompatible with this runtime. Use a matching AliasMode runtime and profile export.",
   firefox_extensions: "This Firefox profile contains Chrome extensions. Remove them before opening it.",
-  firefox_host: "Firefox requires Apple Silicon macOS, Linux x64, or Windows x64.",
+  firefox_host: "Firefox requires macOS, Linux x64, or Windows x64.",
   firefox_arguments: "Firefox profiles cannot use Chromium launch arguments.",
+  firefox_fonts_download: "The fonts for this profile's operating system could not be downloaded. Check your internet connection, then open the profile again.",
+  cloakbrowser_download: "CloakBrowser could not be downloaded. Check your internet connection, then open the profile again.",
+  chromium155_host: "Chromium 155 beta requires Windows x64, Apple Silicon macOS, or Linux x64.",
+  chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
+  chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
 } as const;
 
@@ -284,6 +389,16 @@ export function platformHomeUrl(platform: string | undefined, telegramClient: "a
   if (p === "reddit" || p === "reddit.com" || p === "www.reddit.com") return "https://www.reddit.com/";
   if (isTelegramPlatform(p)) return `https://web.telegram.org/${telegramClient}/`;
   if (p === "linkedin.com" || p === "linkedin") return "https://www.linkedin.com/feed/";
+  if (p === "youtube.com" || p === "youtube") return "https://www.youtube.com/";
+  if (p === "threads.com" || p === "threads.net" || p === "threads") return "https://www.threads.com/";
+  if (p === "pinterest.com" || p === "pinterest") return "https://www.pinterest.com/";
+  if (p === "snapchat.com" || p === "snapchat") return "https://www.snapchat.com/web";
+  if (p === "discord.com" || p === "discord") return "https://discord.com/app";
+  if (p === "twitch.tv" || p === "twitch") return "https://www.twitch.tv/";
+  if (p === "gmail.com" || p === "gmail") return "https://mail.google.com/";
+  if (p === "amazon.com" || p === "amazon") return "https://www.amazon.com/";
+  if (p === "ebay.com" || p === "ebay") return "https://www.ebay.com/";
+  if (p === "etsy.com" || p === "etsy") return "https://www.etsy.com/";
   return null;
 }
 
@@ -300,6 +415,18 @@ export interface LauncherOptions {
   expectedBinarySha256?: string;
   firefoxBinaryPath?: string;
   expectedFirefoxBinarySha256?: string;
+  /** Install root for the downloaded Chromium 155 beta. Defaults beside dataRoot. */
+  chromiumRuntimeRoot?: string;
+  /** Injectable Chromium 155 installer for tests. Returns chrome.exe. */
+  ensureAliasmodeChromium?: (root: string) => Promise<string>;
+  /** Installs the pinned CloakBrowser build, which the desktop apps download on first use. */
+  ensureDownloadedCloakBrowser?: (root: string) => Promise<string>;
+  /** True when Linux blocks the user namespace of Chrome's sandbox (see linuxChromiumSandboxBlocked). */
+  chromiumSandboxBlocked?: () => boolean;
+  /** The GPU vendor of this Intel Mac. Read once from system_profiler by default. */
+  macGraphicsVendor?: () => Promise<MacGraphicsVendor | undefined>;
+  /** Installs a Firefox font pack under the runtimes root. Returns the folder of its fonts. */
+  ensureFirefoxFontPack?: (root: string, pack: FirefoxFontPack) => Promise<string>;
   /** Injectable owner transport for deterministic Firefox lifecycle tests. */
   firefoxRuntime?: {
     reserve: typeof reserveFirefoxOwner;
@@ -339,9 +466,15 @@ export interface LauncherOptions {
   enforceHostCompatibility?: boolean;
   /** Injectable host tuple for compatibility-policy tests. */
   hostPlatform?: NodeJS.Platform;
+  /** Injectable Windows DPAPI check for cookie-key tests. Defaults to PowerShell. */
+  dpapiKeysReadable?: (keys: string[]) => Promise<boolean[] | null>;
   hostArch?: string;
+  /** Scale of the host's primary display, such as 1.25 at 125%. Defaults to hostDisplayScale(). */
+  hostScale?: number;
   /** Label the window with the profile name + serial so operators can identify it. */
   labelWindow?: WindowLabeler;
+  /** Keep a Chromium 155 window no larger than the profile's screen. Injectable for tests. */
+  watchWindowFit?: typeof watchWindowFit;
   /** Cross-platform kill-by-pid for the no-handle (post-restart) path. Injectable for tests. */
   killPid?: (pid: number) => Promise<void>;
   /** Linux-only dedicated process-group signal. Injectable for tests. */
@@ -387,6 +520,12 @@ export interface LauncherOptions {
    * defaults to the real CDP probe. Never allowed to fail a launch.
    */
   captureFingerprint?: (ws: string) => Promise<FingerprintSample | null>;
+  /**
+   * Where a profile's proxy exits. Its timezone becomes the profile's at each launch, and AliasMode
+   * Firefox and Chromium 155 on Windows show its IP as WebRTC's public address. null keeps the saved
+   * timezone and WebRTC as they were. Defaults to a short lookup through the proxy; tests inject it.
+   */
+  lookupExitLocation?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
   readSession?: typeof readSessionInSubprocess;
   applySession?: typeof applySessionToEndpoint;
   /** Budget for the graceful close above before falling through to the force-kill. */
@@ -610,10 +749,25 @@ const RESETTABLE_SESSION_STORES = [
 export class Launcher {
   private store: ProfileStore;
   private autofill?: AutofillBridge;
+  private dpapiKeysReadable: (keys: string[]) => Promise<boolean[] | null>;
+  /** DPAPI answers per encrypted cookie key, so reopening a profile does not respawn PowerShell. */
+  private readonly cookieKeyReadable = new Map<string, boolean>();
   private binaryPath: string;
   private expectedBinarySha256: string;
   private firefoxBinaryPath: string;
   private expectedFirefoxBinarySha256: string;
+  private chromiumRuntimeRoot: string;
+  private ensureAliasmodeChromiumFn: (root: string) => Promise<string>;
+  private ensureDownloadedCloakBrowserFn: (root: string) => Promise<string>;
+  /** Runtimes whose background download started in this run. */
+  private runtimePrefetches = new Set<string>();
+  private runtimesPruned = false;
+  private chromiumSandboxBlockedFn: () => boolean;
+  private macGraphicsVendorFn: () => Promise<MacGraphicsVendor | undefined>;
+  private ensureFirefoxFontPackFn: (root: string, pack: FirefoxFontPack) => Promise<string>;
+  /** Packs whose background download failed in this run; a launch still retries them. */
+  private fontPackPrefetchFailed = new Set<string>();
+  private fontPacksPruned = false;
   private firefoxRuntime: NonNullable<LauncherOptions["firefoxRuntime"]>;
   private unsafeDisableIdentityGates: boolean;
   private verifiedBinaryCache?: { key: string; path: string; sha256: string };
@@ -633,14 +787,18 @@ export class Launcher {
   private ensureCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
+  private lookupExitLocationFn?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
   private readSessionFn: typeof readSessionInSubprocess;
   private applySessionFn: typeof applySessionToEndpoint;
   private navigateFn: LaunchNavigator;
   private enforceHostCompatibility: boolean;
   private hostPlatform: NodeJS.Platform;
   private hostArch: string;
+  private hostScale: number;
   private labelWindowFn: WindowLabeler;
   private skipDefaultWindowLabel: boolean;
+  private watchWindowFitFn?: typeof watchWindowFit;
+  private windowFits = new Map<string, { stop(): void }>();
   private killPidFn: (pid: number) => Promise<void>;
   private killProcessGroupFn: (processGroupId: number) => Promise<void>;
   private readProcessSnapshotFn?: () => Promise<HostProcessSnapshot | null>;
@@ -699,6 +857,7 @@ export class Launcher {
   constructor(opts: LauncherOptions) {
     this.store = opts.store;
     this.viaSystemProxy = opts.viaSystemProxy ?? false;
+    this.dpapiKeysReadable = opts.dpapiKeysReadable ?? ((keys) => dpapiKeysReadable(keys, 15_000));
     this.autofill = opts.autofill;
     this.binaryPath = opts.binaryPath ?? defaultBinaryPath();
     this.unsafeDisableIdentityGates = opts.unsafeDisableIdentityGates ?? false;
@@ -716,13 +875,21 @@ export class Launcher {
       if (launch.engine === "firefox" && launch.firefoxOwner) firefoxEndpoint(launch.firefoxOwner);
     }
     this.dataRoot = opts.dataRoot ?? DEFAULT_DATA_ROOT;
+    this.chromiumRuntimeRoot = opts.chromiumRuntimeRoot ?? join(dirname(resolve(this.dataRoot)), "runtimes");
+    this.ensureAliasmodeChromiumFn = opts.ensureAliasmodeChromium ?? ((root) => ensureAliasmodeChromium(root));
+    this.ensureDownloadedCloakBrowserFn = opts.ensureDownloadedCloakBrowser
+      ?? ((root) => ensureCloakBrowser(root, this.hostPlatform, this.hostArch));
+    this.chromiumSandboxBlockedFn = opts.chromiumSandboxBlocked ?? (() => false);
+    let macGraphicsVendor: Promise<MacGraphicsVendor | undefined> | undefined;
+    this.macGraphicsVendorFn = opts.macGraphicsVendor ?? (() => macGraphicsVendor ??= readMacGraphicsVendor());
+    this.ensureFirefoxFontPackFn = opts.ensureFirefoxFontPack ?? ((root, pack) => ensureFirefoxFontPack(root, pack));
     this.headless = opts.headless ?? false;
     this.portRange = opts.portRange ?? { start: 9333, end: 9999 };
     this.portProbeFn = opts.portProbe;
     this.baseArgs = opts.baseArgs ?? [];
     // Clamp to a sane range so a stray config can't produce a 0-size or oversized window.
-    this.windowWidthScale = Math.min(1.0, Math.max(0.2, opts.windowWidthScale ?? 0.65));
-    this.windowHeightScale = Math.min(1.0, Math.max(0.2, opts.windowHeightScale ?? 0.9));
+    this.windowWidthScale = Math.min(1.0, Math.max(0.2, opts.windowWidthScale ?? DEFAULT_WINDOW_WIDTH_SCALE));
+    this.windowHeightScale = Math.min(1.0, Math.max(0.2, opts.windowHeightScale ?? DEFAULT_WINDOW_HEIGHT_SCALE));
     // Wrapped in an arrow so the helper's diagnostics reach THIS launcher's log
     // (this.log is assigned below; the call happens long after construction).
     this.spawnFn = opts.spawn
@@ -736,6 +903,7 @@ export class Launcher {
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
+    this.lookupExitLocationFn = opts.lookupExitLocation ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitLocation(proxy));
     this.readSessionFn = opts.readSession ?? readSessionInSubprocess;
     this.applySessionFn = opts.applySession ?? applySessionToEndpoint;
     this.navigateFn = opts.navigate ?? defaultNavigate;
@@ -744,8 +912,10 @@ export class Launcher {
     this.enforceHostCompatibility = opts.enforceHostCompatibility ?? !this.unsafeDisableIdentityGates;
     this.hostPlatform = opts.hostPlatform ?? process.platform;
     this.hostArch = opts.hostArch ?? process.arch;
+    this.hostScale = opts.hostScale ?? hostDisplayScale();
     this.labelWindowFn = opts.labelWindow ?? defaultLabelWindow;
     this.skipDefaultWindowLabel = this.unsafeDisableIdentityGates && opts.labelWindow === undefined;
+    this.watchWindowFitFn = opts.watchWindowFit ?? (this.unsafeDisableIdentityGates ? undefined : watchWindowFit);
     this.killPidFn = opts.killPid ?? killByPid;
     this.killProcessGroupFn = opts.killProcessGroup ?? killProcessGroup;
     this.readProcessSnapshotFn = opts.readProcessSnapshot
@@ -787,8 +957,73 @@ export class Launcher {
     return dir;
   }
 
+  /** The font pack this Firefox profile needs on this computer, if any. */
+  private firefoxFontPack(profile: Profile): FirefoxFontPack | undefined {
+    return profile.engine === "firefox" && profile.firefox
+      ? firefoxFontPackFor(firefoxPersonaOs(profile), this.hostPlatform)
+      : undefined;
+  }
+
+  /**
+   * Download in the background the font packs these profiles need, so their first open
+   * does not wait. The first call also removes packs that are no longer pinned.
+   */
+  prefetchFirefoxFontPacks(profiles: readonly Profile[]): void {
+    if (!this.fontPacksPruned) {
+      this.fontPacksPruned = true;
+      pruneFirefoxFontPacks(this.chromiumRuntimeRoot);
+    }
+    const packs = new Set(profiles.flatMap((profile) => this.firefoxFontPack(profile) ?? []));
+    for (const pack of packs) {
+      if (this.fontPackPrefetchFailed.has(pack.sha256)) continue;
+      this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, pack).catch((error) => {
+        this.fontPackPrefetchFailed.add(pack.sha256);
+        this.log(`Firefox ${pack.os} font pack download failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+  }
+
+  /**
+   * Download in the background the browser runtimes and Firefox font packs these profiles
+   * need, so their first open does not wait. The first call also removes runtimes and packs
+   * that are no longer pinned. A download that failed here is not started again in this run;
+   * opening a profile still tries it.
+   */
+  prefetchBrowserRuntimes(profiles: readonly Profile[]): void {
+    this.prefetchFirefoxFontPacks(profiles);
+    if (!this.runtimesPruned) {
+      this.runtimesPruned = true;
+      const inUse = this.store.listLaunches().flatMap((launch) => launch.binaryPath ? [launch.binaryPath] : []);
+      pruneBrowserRuntimes(this.chromiumRuntimeRoot, inUse, this.hostPlatform, this.hostArch);
+    }
+    const chromium = profiles.filter((profile) => (profile.engine ?? "chromium") === "chromium");
+    if (chromium.some((profile) => !profile.chromiumRuntime) && this.downloadsCloakBrowser()) {
+      this.prefetchRuntime("CloakBrowser", this.ensureDownloadedCloakBrowserFn);
+    }
+    if (chromium.some((profile) => profile.chromiumRuntime) && supportsChromium155Host(this.hostPlatform, this.hostArch)) {
+      this.prefetchRuntime("Chromium 155 beta", this.ensureAliasmodeChromiumFn);
+    }
+  }
+
+  private prefetchRuntime(label: string, ensure: (root: string) => Promise<string>): void {
+    if (this.runtimePrefetches.has(label)) return;
+    this.runtimePrefetches.add(label);
+    ensure(this.chromiumRuntimeRoot).catch((error) => {
+      this.log(`${label} download failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+
+  /** The desktop apps ship no CloakBrowser; they download the pinned build on first use. */
+  private downloadsCloakBrowser(): boolean {
+    return !!cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch) && !this.binaryPath;
+  }
+
   /** Validate the deployment pin without reading the configured binary. */
-  private approvedBinarySha256(engine: "chromium" | "firefox" = "chromium"): string {
+  private approvedBinarySha256(engine: BinaryKind = "chromium"): string {
+    if (engine === "aliasmode") return ALIASMODE_CHROMIUM_EXECUTABLE_SHA256;
+    if (engine === "chromium" && this.downloadsCloakBrowser()) {
+      return cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch)!;
+    }
     const expected = engine === "firefox" ? this.expectedFirefoxBinarySha256 : this.expectedBinarySha256;
     if (this.unsafeDisableIdentityGates) {
       return /^[a-f0-9]{64}$/.test(expected) ? expected : "0".repeat(64);
@@ -800,9 +1035,24 @@ export class Launcher {
   }
 
   /** Hash and canonicalize the exact executable before every fresh generation. */
-  private async verifyConfiguredBinary(forceHash = false, engine: "chromium" | "firefox" = "chromium"): Promise<{ path: string; sha256: string }> {
+  private async verifyConfiguredBinary(forceHash = false, engine: BinaryKind = "chromium"): Promise<{ path: string; sha256: string }> {
     const expected = this.approvedBinarySha256(engine);
-    const binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
+    let binaryPath = engine === "firefox" ? this.firefoxBinaryPath : this.binaryPath;
+    if (engine === "aliasmode") {
+      try {
+        binaryPath = await this.ensureAliasmodeChromiumFn(this.chromiumRuntimeRoot);
+      } catch (error) {
+        this.log(`Chromium 155 beta install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "chromium155_download");
+      }
+    } else if (engine === "chromium" && this.downloadsCloakBrowser()) {
+      try {
+        binaryPath = await this.ensureDownloadedCloakBrowserFn(this.chromiumRuntimeRoot);
+      } catch (error) {
+        this.log(`CloakBrowser install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "cloakbrowser_download");
+      }
+    }
     if (this.unsafeDisableIdentityGates) return { path: binaryPath, sha256: expected };
     if (!binaryPath) throw new Error(`${engine} binary path is not configured`);
 
@@ -878,8 +1128,13 @@ export class Launcher {
       proxy: profile.proxy,
       ...(profile.proxy ? { proxyWebRtcPolicy: webRtcPolicy(profile) } : { webRtcPolicy: webRtcPolicy(profile) }),
       timezone: profile.timezone,
+      ...(profile.locale ? { locale: profile.locale } : {}),
       screen: [profile.screenWidth, profile.screenHeight],
+      // Only when not 1, so the digest of every other launch does not change.
+      ...(this.deviceScale(profile) !== 1 ? { deviceScale: this.deviceScale(profile) } : {}),
       fingerprintSeed: profile.fingerprintSeed,
+      // Only when present, so the digest of a profile without stored hardware does not change.
+      ...(profile.hardware ? { hardware: profile.hardware } : {}),
       extensions,
       ...(autofill ? { autofill: AUTOFILL_EXTENSION_REVISION } : {}),
     });
@@ -922,7 +1177,12 @@ export class Launcher {
       }
       return;
     }
+    // Checked before the runtime download: Chrome would stop at once with "No usable sandbox".
+    if (this.chromiumSandboxBlockedFn()) throw new BrowserLaunchError("preflight", "chromium_sandbox");
     if (!this.enforceHostCompatibility) return;
+    if (profile.chromiumRuntime && !supportsChromium155Host(this.hostPlatform, this.hostArch)) {
+      throw new BrowserLaunchError("preflight", "chromium155_host");
+    }
     if (isMobileUserAgent(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_mobile");
     }
@@ -934,6 +1194,17 @@ export class Launcher {
     if (profile.ua.trim() && !platformFromUA(profile.ua)) {
       throw new BrowserLaunchError("preflight", "persona_unsupported");
     }
+  }
+
+  /**
+   * The proxy exit IP that AliasMode Firefox and Chromium 155 on Windows show as WebRTC's public
+   * address. Without an answer WebRTC stays as before: on the proxy, with no public address.
+   */
+  private webRtcExitIp(profile: Profile, exit: ExitLocation | null): string | undefined {
+    if (!profile.proxy || !this.lookupExitLocationFn) return undefined;
+    const ip = exit?.ip;
+    this.log(ip ? `${profile.id}: proxy exit IP found for WebRTC` : `${profile.id}: proxy exit IP not found; WebRTC keeps no public address`);
+    return ip;
   }
 
   /**
@@ -949,6 +1220,7 @@ export class Launcher {
     relayPort?: number,
     headless = this.headless,
     restoreLastSession = false,
+    webRtcIp?: string,
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
     const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
@@ -959,8 +1231,9 @@ export class Launcher {
     // above, so it doesn't change the fingerprint (it just looks like a normal
     // non-maximized window, which real users have). The WIDTH floor (800) stops a profile
     // that drew a small seed resolution (e.g. 1366 -> 683px) from opening as an unusable sliver.
-    const winW = Math.max(800, Math.round(profile.screenWidth * this.windowWidthScale));
-    const winH = Math.max(480, Math.round(profile.screenHeight * this.windowHeightScale));
+    // Chromium 155 on a scaled Windows display measures both in CSS pixels; see pageScreen.
+    const screen = this.pageScreen(profile);
+    const [winW, winH] = launchWindowSize(screen.screenWidth, screen.screenHeight, this.windowWidthScale, this.windowHeightScale);
     const args = [
       `--remote-debugging-port=${port}`,
       `--remote-debugging-address=127.0.0.1`,
@@ -969,23 +1242,50 @@ export class Launcher {
       `--window-position=0,0`,
       `--no-first-run`,
       `--no-default-browser-check`,
-      // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus, and a
-      // minimized/occluded Chromium window is treated as backgrounded — it throttles JS timers and
-      // deprioritizes the renderer. That makes the CDP-driven login crawl and blow the 180s reconnect
-      // timeout (the operator saw browsers "only work when clicked" — focusing them un-throttles).
-      // These keep an unfocused window at full speed; they touch only internal scheduling, not any
-      // JS-visible surface, so the fingerprint is unchanged.
+      // The session launcher opens the window MINIMIZED (/MIN) so it doesn't steal focus, and
+      // Chromium treats a minimized window as backgrounded. This keeps its renderer at normal process
+      // priority for the CDP-driven login; a page cannot read that priority. Timer throttling and
+      // window occlusion stay as in Chrome: turning them off let a hidden tab run 10 ms timers ~98
+      // times a second instead of once, and kept a covered window "visible", which pages can measure.
+      // CDP commands, network loads and the fingerprint probe do not wait on page timers.
+      // --disable-background-mode lets Chromium exit when its last window closes.
       `--disable-background-mode`,
-      `--disable-background-timer-throttling`,
-      `--disable-backgrounding-occluded-windows`,
       `--disable-renderer-backgrounding`,
       // Cap the per-profile HTTP disk cache. Chromium otherwise sizes it from free disk,
       // and across thousands of Cloud profiles that reached 166 GB on one operator's
       // machine. Cookies/site data are separate stores; this only trims asset caching.
       `--disk-cache-size=${20 * 1024 * 1024}`,
-      ...deriveFingerprintFlags(profile),
+      ...deriveFingerprintFlags(screen),
     ];
+    // Chromium builds with different signatures share one "Chromium Safe Storage" Keychain item,
+    // and macOS stops the second build with a password prompt. The runtimes that the app
+    // downloads on macOS keep their cookie key out of the Keychain instead.
+    if (this.hostPlatform === "darwin" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
+      args.push("--use-mock-keychain");
+    }
+    // On Linux they would share the desktop keyring item the same way, and a locked or missing
+    // keyring stops the browser with a password dialog.
+    if (this.hostPlatform === "linux" && (profile.chromiumRuntime || this.downloadsCloakBrowser())) {
+      args.push("--password-store=basic");
+    }
+    // Chrome blocks WebGL on a Windows computer with no graphics card, and in most remote desktop
+    // sessions. Chromium 155 then shows no card at all. With the blocklist ignored, it shows the
+    // card that the profile seed selects, with WebGL 2 and WebGPU to match.
+    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push("--ignore-gpu-blocklist");
+    // Chromium 155 draws pages at this scale. Without it, Windows stretches pages drawn at 100%
+    // on a 125% or 150% display and they look blurry. A build without the host-scale patch
+    // still draws at the profile's 100%, so it gets 1.
+    if (this.hostPlatform === "win32" && profile.chromiumRuntime) args.push(`--force-device-scale-factor=${this.deviceScale(profile)}`);
+    // The engine shows the label in the native window title and leaves page titles alone.
+    if (this.nativeWindowLabel(profile)) {
+      const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profile.id));
+      // Windows drops trailing spaces from switch values, so the engine adds the space itself.
+      args.push(`--aliasmode-window-label=${buildWindowLabel(profile.name, displayNo).trimEnd()}`);
+    }
     args.push(`--force-webrtc-ip-handling-policy=${webRtcPolicy(profile)}`);
+    // The engine sends no WebRTC packet behind the proxy, and shows a page the proxy's exit IP as
+    // its public address, as a browser at that exit would, in place of no candidate at all.
+    if (webRtcIp && this.chromiumWebRtcIp(profile)) args.push(`--fingerprint-webrtc-ip=${webRtcIp}`);
     // We launch the raw stealth chromium binary, which behaves like stock
     // Chromium: the PRESENCE of --headless (any value, even "false") turns
     // headless ON. So headful = omit the flag entirely; headless = pass it.
@@ -1049,6 +1349,7 @@ export class Launcher {
       profile.proxy,
       profile.proxyError ?? null,
       profile.timezone,
+      profile.locale,
       profile.platform,
       profile.extensions,
       profile.screenWidth,
@@ -1062,6 +1363,55 @@ export class Launcher {
       launch.binarySha256,
       launch.personaDigest,
     ]);
+  }
+
+  /** Chromium 155 on Windows draws pages at the primary display's scale; every other launch at 1. */
+  private deviceScale(profile: Profile): number {
+    return chromiumDeviceScale(this.hostPlatform, profile.chromiumRuntime, this.hostScale);
+  }
+
+  /**
+   * The profile with its screen in CSS pixels. At a display scale of 1.25, Chrome reports a
+   * 1920x1080 screen as 1536x864, and the window and window-fit use the same size.
+   */
+  private pageScreen(profile: Profile): Profile {
+    const scale = this.deviceScale(profile);
+    if (scale === 1) return profile;
+    return { ...profile, screenWidth: Math.round(profile.screenWidth / scale), screenHeight: Math.round(profile.screenHeight / scale) };
+  }
+
+  /**
+   * Chromium 155 on Windows shows --fingerprint-webrtc-ip behind the HTTP proxy it always gets.
+   * Upstream's Mac and Linux builds open no WebRTC UDP socket there, so the switch shows nothing.
+   */
+  private chromiumWebRtcIp(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
+  }
+
+  /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
+  private nativeWindowLabel(profile: Profile): boolean {
+    return this.hostPlatform === "win32" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
+  }
+
+  private startWindowFit(profile: Profile, ws: string, sample: FingerprintSample | null): void {
+    const profileId = profile.id;
+    this.windowFits.get(profileId)?.stop();
+    const fit = this.watchWindowFitFn!(ws, claimedScreenArea(this.pageScreen(profile), sample), {
+      scale: this.deviceScale(profile),
+      log: (msg) => this.log(`${profileId}: ${msg}`),
+      onClose: () => { if (this.windowFits.get(profileId) === fit) this.windowFits.delete(profileId); },
+    });
+    this.windowFits.set(profileId, fit);
+  }
+
+  /** A browser adopted from before an app restart gets the same window watch as a fresh launch. */
+  private async watchSurvivorWindow(profileId: string): Promise<void> {
+    if (!this.watchWindowFitFn || this.windowFits.has(profileId)) return;
+    const profile = this.store.getProfile(profileId);
+    const launch = this.store.getLaunch(profileId);
+    if (!profile?.chromiumRuntime || !launch || launch.headless || launch.engine === "firefox") return;
+    const ws = await this.probeLaunchCdp(launch);
+    if (ws && !this.windowFits.has(profileId)) this.startWindowFit(profile, ws, null);
   }
 
   private markIdentityCertified(profileId: string): void {
@@ -1262,7 +1612,7 @@ export class Launcher {
       }
       this.assertHostCompatibility(profile);
       if (profile.engine === "firefox" && chromeArgs.length) throw new BrowserLaunchError("preflight", "firefox_arguments");
-      approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+      approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
     } catch (error) {
       return await this.rejectUnsafeExistingLaunch(profileId, "host/persona verification", error);
     }
@@ -1274,6 +1624,7 @@ export class Launcher {
     // which recovers this run without ever double-launching the profile.
     const pendingSession = opts.restoreLocalSession === false ? null : this.store.getPendingSessionBundle(profileId);
     let existing = this.store.getLaunch(profileId);
+    const hadLaunch = !!existing;
     if (existing && pendingSession) {
       return await this.rejectUnsafeExistingLaunch(profileId, "pending session restore", new SessionRestoreError("origin_storage", "failed"));
     }
@@ -1369,16 +1720,23 @@ export class Launcher {
               return await this.rejectUnsafeExistingLaunch(profileId, "live-browser relay restoration", error);
             }
           }
+          let nativeSessionRestored = false;
+          if (profile.engine === "firefox" && !await this.hasPageTargets(profileId)) {
+            const tabs = opts.restoreLastSession === false ? [] : this.closedFirefoxTabs(profileId, existing) ?? [];
+            await this.navigate(currentWs, startupUrls.length ? startupUrls : tabs, true);
+            nativeSessionRestored = !startupUrls.length && tabs.length > 0;
+          }
           this.log(
             trackedProc
               ? `profile ${profileId} already running on port ${existing.debugPort}`
               : `profile ${profileId} already running on port ${existing.debugPort} (reattached after restart)`,
           );
           this.liveReserved.add(existing.debugPort);
+          void this.watchSurvivorWindow(profileId);
           return {
             ws: currentWs,
             port: existing.debugPort,
-            nativeSessionRestored: false,
+            nativeSessionRestored,
           };
         }
       }
@@ -1414,16 +1772,42 @@ export class Launcher {
       }
     }
 
-    if (profile.engine === "firefox") {
-      return this.startFreshFirefox(profile, startupUrls, opts, pendingSession);
+    if (hadLaunch) {
+      // Clearing a stopped legacy launch completes its saved locale and fonts.
+      const current = this.store.getProfile(profileId);
+      if (!isDeepStrictEqual(current, completeProfileFingerprint(profile))) {
+        throw new Error(`profile ${profileId} changed during closed-profile migration; launch aborted`);
+      }
+      profile = current!;
+      profileSnapshot = JSON.stringify(profile);
     }
+    // The proxy exit is looked up once per launch. A missing or stale saved timezone (an import
+    // whose lookup failed, a rotating proxy that moved) becomes the exit's before any engine reads
+    // the profile, so pages see the timezone of the IP they come from. Without an answer the saved
+    // timezone stays. The exit IP is WebRTC's public address below.
+    const exit = profile.proxy && this.lookupExitLocationFn
+      ? await this.lookupExitLocationFn(profile.proxy).catch(() => null)
+      : null;
+    if (exit?.timezone && exit.timezone !== profile.timezone) {
+      const updated = { ...this.requireUnchangedProfile(profileId, profileSnapshot, "proxy exit lookup"), timezone: exit.timezone };
+      syncFirefoxTimezone(updated);
+      this.store.upsertProfile(updated);
+      profile = this.store.getProfile(profileId)!;
+      profileSnapshot = JSON.stringify(profile);
+      this.log(`profile ${profileId} timezone set to ${exit.timezone} from its proxy exit`);
+    }
+    if (profile.engine === "firefox") {
+      return this.startFreshFirefox(profile, startupUrls, opts, pendingSession, exit);
+    }
+    const webRtcIp = this.chromiumWebRtcIp(profile) ? this.webRtcExitIp(profile, exit) : undefined;
 
     // A fresh generation is never spawned until the configured executable has
     // been canonicalized and matched byte-for-byte against the deployment pin.
     let verifiedBinary: { path: string; sha256: string };
     try {
-      verifiedBinary = await this.verifyConfiguredBinary();
-    } catch {
+      verifiedBinary = await this.verifyConfiguredBinary(false, binaryKind(profile));
+    } catch (error) {
+      if (error instanceof BrowserLaunchError) throw error;
       throw new BrowserLaunchError("binary_verification");
     }
     const launchBinaryPath = verifiedBinary.path;
@@ -1520,7 +1904,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -1532,7 +1916,7 @@ export class Launcher {
       // replacement cannot inherit the approval measured at launch start.
       let spawnVerifiedBinary: { path: string; sha256: string };
       try {
-        spawnVerifiedBinary = await this.verifyConfiguredBinary(true);
+        spawnVerifiedBinary = await this.verifyConfiguredBinary(true, binaryKind(profile));
       } catch {
         throw new BrowserLaunchError("binary_verification");
       }
@@ -1590,9 +1974,10 @@ export class Launcher {
       // injection and any navigation, so the probe runs on a blank page rather
       // than an account one: reading canvas and WebGL inside a live x.com tab
       // is exactly the behaviour a detection script watches for.
+      let sample: FingerprintSample | null = null;
       const capturedFingerprint = await recordCapture({
         profile,
-        capture: () => this.captureFingerprintFn(ws),
+        capture: async () => (sample = await this.captureFingerprintFn(ws)),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
         log: (msg) => this.log(msg),
         // Mirrors buildArgs exactly: aliasmode forces the policy whenever the
@@ -1643,8 +2028,12 @@ export class Launcher {
       // Label the window so the operator can tell which account this browser is
       // among many open profiles (the cue AdsPower's panel gave). Registered
       // before navigation so the title script is in place when the platform page
-      // loads. Strictly best-effort — never fail or stall a launch on it.
-      if (!this.skipDefaultWindowLabel) {
+      // loads. Strictly best-effort — never fail or stall a launch on it. Chromium 155 on
+      // Windows got the label as a launch switch, so its pages get no title script. On Mac no
+      // Chromium build has such a switch, and a title script is visible to pages, so Chromium 155
+      // and CloakBrowser windows there go unlabeled.
+      const pageLabelHidden = this.hostPlatform === "darwin";
+      if (!this.skipDefaultWindowLabel && !this.nativeWindowLabel(profile) && !pageLabelHidden) {
         try {
           const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
           await this.labelWindowFn(ws, buildWindowLabel(profile.name, displayNo));
@@ -1779,6 +2168,11 @@ export class Launcher {
       this.store.recordLaunch(info);
       this.markIdentityCertified(profileId);
       if (pendingSession) this.store.markSessionRestored(profileId, pendingSession);
+      // A page sees the real window against the profile's screen, so a window maximized on a
+      // larger display would be bigger than that screen. Keep the window no larger than it.
+      if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
+        this.startWindowFit(profile, ws, sample);
+      }
       return { ws, port, nativeSessionRestored };
     } catch (err) {
       // Roll back partial state so a failed start can't leak a zombie — including the relay, which
@@ -1873,13 +2267,28 @@ export class Launcher {
     startupUrls: string[],
     opts: LaunchStartOptions,
     pendingSession: string | null,
+    exit: ExitLocation | null,
   ): Promise<LaunchStartResult> {
     const profileId = profile.id;
     const headless = opts.headless ?? this.headless;
     let snapshot = JSON.stringify(profile);
+    const webRtcIp = this.webRtcExitIp(profile, exit);
     let binary: { path: string; sha256: string };
     try { binary = await this.verifyConfiguredBinary(true, "firefox"); }
     catch { throw new BrowserLaunchError("binary_verification"); }
+    // A profile of another OS never opens without that OS's fonts: it would show this
+    // computer's font list. The first open waits for the download when no prefetch did it.
+    const fontPack = this.firefoxFontPack(profile);
+    let fontsDir: string | undefined;
+    if (fontPack) {
+      try {
+        fontsDir = await this.ensureFirefoxFontPackFn(this.chromiumRuntimeRoot, fontPack);
+        this.fontPackPrefetchFailed.delete(fontPack.sha256);
+      } catch (error) {
+        this.log(`Firefox ${fontPack.os} font pack install failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new BrowserLaunchError("preflight", "firefox_fonts_download");
+      }
+    }
     const userDataDir = this.userDataDir(profileId);
     const runtime = resolvePlaywrightRuntime();
     const ownerBinaryPath = this.unsafeDisableIdentityGates
@@ -1903,10 +2312,16 @@ export class Launcher {
       }
     }
     mkdirSync(userDataDir, { recursive: true });
-    const restoreLastSession = !pendingSession && opts.restoreLastSession !== false && [
+    const closedTabs = !pendingSession && opts.restoreLastSession !== false ? this.closedFirefoxTabs(profileId) : undefined;
+    const restoreLastSession = !pendingSession && opts.restoreLastSession !== false &&
+      !(this.hostPlatform === "darwin" && closedTabs !== undefined) && [
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
-    ].some((file) => existsSync(join(userDataDir, file)));
+    ].some((file) => existsSync(join(userDataDir, file))) && firefoxSessionRestoresPage(userDataDir) !== false;
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
+    // A macOS profile on an Intel Mac shows a card of that Mac's GPU vendor (firefoxLaunchConfig).
+    const intelMac = this.hostPlatform === "darwin" && this.hostArch === "x64" && firefoxPersonaOs(profile) === "macos"
+      ? { vendor: await this.macGraphicsVendorFn() }
+      : undefined;
     let reserved = false;
     try {
       if (needsProxyRelay(profile)) {
@@ -1926,9 +2341,19 @@ export class Launcher {
       const proxy = launch.relayPort
         ? { server: `http://127.0.0.1:${launch.relayPort}` }
         : profile.proxy ? { server: `${profile.proxy.type}://${profile.proxy.host}:${profile.proxy.port}` } : undefined;
+      // The engine shows the label in the native window title and adds the " — " separator itself,
+      // so no page script edits document.title.
+      const windowLabel = this.skipDefaultWindowLabel
+        ? undefined
+        : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: profile.firefox!.config, proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac), proxy, headless,
+        prefs: {
+          ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
+          ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
+        },
+        sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,
       }, {
         reservation,
@@ -1955,7 +2380,9 @@ export class Launcher {
         await sleep(50);
         startupStatus = await this.firefoxStatus(launch);
       }
-      const nativeSessionRestored = restoreLastSession && startupStatus.pageTargets.some((target) => canonicalUserPageUrl(target.url));
+      let nativeSessionRestored = restoreLastSession && startupStatus.pageTargets.some((target) => canonicalUserPageUrl(target.url));
+      // The capture comes before the tabs: it can then use the empty first window, and no extra
+      // window opens and closes in front of the user.
       const captured = await recordCapture({
         profile, capture: () => this.captureFingerprintFn(launch.ws),
         save: (id, observed, verdict) => this.store.saveObservedFingerprint(id, observed, verdict),
@@ -1965,9 +2392,9 @@ export class Launcher {
         profile = this.store.getProfile(profileId)!;
         snapshot = JSON.stringify(profile);
       }
-      if (!this.skipDefaultWindowLabel) {
-        const displayNo = profileDisplayNo(profile.customNo, this.store.getSerial(profileId));
-        await this.labelWindowFn(launch.ws, buildWindowLabel(profile.name, displayNo)).catch(() => {});
+      if (!nativeSessionRestored && closedTabs !== undefined) {
+        await this.navigate(launch.ws, closedTabs, true);
+        nativeSessionRestored = closedTabs.length > 0;
       }
       if (pendingSession) {
         const home = platformHomeUrl(profile.platform, bundleTelegramClient(pendingSession));
@@ -1985,7 +2412,7 @@ export class Launcher {
         if (opts.autoNavigate ?? true) {
           const savedTabs = opts.restoreLastSession === false ? [] : bundleTabUrls(this.store.getSessionBundle(profileId) ?? "");
           const home = platformHomeUrl(profile.platform);
-          const urls = startupUrls.length ? startupUrls : nativeSessionRestored ? [] : savedTabs.length ? savedTabs : home ? [home] : [];
+          const urls = startupUrls.length ? startupUrls : nativeSessionRestored ? [] : closedTabs ?? (savedTabs.length ? savedTabs : home ? [home] : []);
           await this.navigate(launch.ws, urls).catch(() => {
             this.log(`${profileId}: startup navigation failed; open the site manually`);
           });
@@ -2296,6 +2723,24 @@ export class Launcher {
     }
   }
 
+  /**
+   * False only when Windows proves this account cannot decrypt the profile's
+   * cookie key (written under another Windows account), so its native session
+   * would open logged out. Unknown or non-Chromium state keeps native reuse.
+   */
+  public async nativeSessionReadable(profileId: string): Promise<boolean> {
+    const base = this.containedUserDataDir(profileId, "nativeSessionReadable");
+    if (!base) return true;
+    const key = localStateDpapiKey(join(base, "Local State"));
+    if (!key) return true;
+    const cached = this.cookieKeyReadable.get(key);
+    if (cached !== undefined) return cached;
+    const readable = (await this.dpapiKeysReadable([key]))?.[0];
+    if (readable === undefined) return true;
+    this.cookieKeyReadable.set(key, readable);
+    return readable;
+  }
+
   /** Record the Cloud session authorized to reuse this profile's native state. */
   public recordCloudSession(profileId: string, signature: string | null): void {
     const base = this.containedUserDataDir(profileId, "recordCloudSession");
@@ -2384,6 +2829,7 @@ export class Launcher {
     // Delete durable ownership first. If SQLite refuses the write, leave every
     // in-memory resource intact so a later retry still knows what it owns.
     this.store.clearLaunch(profileId);
+    this.windowFits.get(profileId)?.stop();
     if (launch.firefoxOwner) forgetFirefoxOwner(launch.firefoxOwner);
     this.autofill?.retire(profileId, launch);
     this.liveReserved.delete(launch.debugPort);
@@ -2612,6 +3058,7 @@ export class Launcher {
   }
 
   private async confirmPersistedLaunchStopped(profileId: string, launch: LaunchInfo): Promise<boolean> {
+    if (launch.engine === "firefox") return this.confirmLaunchStopped(profileId, launch);
     if (this.hostPlatform !== "linux" || !this.readProcessSnapshotFn) return true;
     const proof = this.persistedGroupProof(launch);
     return !!proof && await this.confirmLaunchStopped(profileId, launch, proof);
@@ -2762,6 +3209,8 @@ export class Launcher {
           if (closed) {
             if (await this.confirmLaunchStopped(profileId, launch, linuxProof ?? undefined, true)) {
               if (this.forgetLaunch(profileId, launch)) return true;
+              // A dashboard poll may have forgotten this same closed launch first.
+              if (!this.store.getLaunch(profileId)) return true;
               this.log(`stop ${profileId}: launch generation changed after graceful close; leaving the replacement owned`);
               return false;
             }
@@ -2794,7 +3243,7 @@ export class Launcher {
             teardownConfirmed = await this.confirmLaunchStopped(profileId, launch, undefined, true);
           }
         } else if (forceState.process === "dead") {
-          if (requiresLinuxProof && !linuxProof) {
+          if (requiresLinuxProof && !linuxProof && launch.engine !== "firefox") {
             this.log(`stop ${profileId}: pre-patch Linux tree cannot be anchored after its root disappeared; retaining ownership`);
           } else {
             teardownConfirmed = await this.confirmLaunchStopped(profileId, launch, linuxProof ?? undefined);
@@ -2811,8 +3260,11 @@ export class Launcher {
 
     if (teardownConfirmed) {
       if (launch && !this.forgetLaunch(profileId, launch)) {
-        teardownConfirmed = false;
-        this.log(`stop ${profileId}: launch generation changed during teardown; leaving the replacement owned`);
+        // A dashboard poll may have forgotten this same dead launch first.
+        if (this.store.getLaunch(profileId)) {
+          teardownConfirmed = false;
+          this.log(`stop ${profileId}: launch generation changed during teardown; leaving the replacement owned`);
+        }
       }
       else {
         this.closeRelay(profileId);
@@ -2847,42 +3299,9 @@ export class Launcher {
     }
   }
 
-  /** In-memory page target fingerprint for dirty-session detection; null means the probe was uncertain or stale. */
-  async pageTargetFingerprint(
-    profileId: string,
-    expected: { debugPort: number; startedAt: number },
-  ): Promise<string | null> {
-    const launch = this.store.getLaunch(profileId);
-    if (!launch || launch.debugPort !== expected.debugPort || launch.startedAt !== expected.startedAt) return null;
-    try {
-      if (launch.engine === "firefox") {
-        const status = await this.firefoxStatus(launch);
-        const targets = status.pageTargets.flatMap((target) => {
-          const url = canonicalUserPageUrl(target.url);
-          return url ? [{ id: target.id, url }] : [];
-        }).sort((left, right) => left.id.localeCompare(right.id) || left.url.localeCompare(right.url));
-        return JSON.stringify(targets);
-      }
-      const response = await this.fetchFn(`http://127.0.0.1:${launch.debugPort}/json/list`);
-      if (!response.ok) return null;
-      const raw = await response.json();
-      if (!Array.isArray(raw)) return null;
-      const targets = raw.flatMap((target) => {
-        if (target?.type !== "page" || typeof target.id !== "string" || typeof target.url !== "string") return [];
-        const url = canonicalUserPageUrl(target.url);
-        return url ? [{ id: target.id, url }] : [];
-      }).sort((left, right) => left.id.localeCompare(right.id) || left.url.localeCompare(right.url));
-      const current = this.store.getLaunch(profileId);
-      if (!current || current.debugPort !== expected.debugPort || current.startedAt !== expected.startedAt) return null;
-      return JSON.stringify(targets);
-    } catch {
-      return null;
-    }
-  }
-
   browserStorageWatchPaths(profileId: string): string[] {
     const root = this.store.getLaunch(profileId)?.userDataDir ?? this.userDataDir(profileId);
-    if (this.store.getProfile(profileId)?.engine === "firefox") return [root, join(root, "storage", "default")];
+    if (this.store.getProfile(profileId)?.engine === "firefox") return [join(root, "storage", "default")];
     return [
       join(root, "Default", "Network"),
       join(root, "Default", "Local Storage", "leveldb"),
@@ -2898,6 +3317,19 @@ export class Launcher {
       || this.store.getLaunch(profileId) !== null;
   }
 
+  /** Native-close URLs; Cloud capture accepts only the exact launch generation. */
+  closedFirefoxTabs(profileId: string, launch?: { debugPort: number | null; startedAt: number | null }): string[] | undefined {
+    if (this.store.getProfile(profileId)?.engine !== "firefox") return undefined;
+    try {
+      const saved = JSON.parse(readFileSync(join(this.userDataDir(profileId), "aliasmode-session-tabs.json"), "utf8"));
+      if (typeof saved.generation !== "string" || !Array.isArray(saved.tabs) || saved.tabs.some((url: unknown) => typeof url !== "string")) return undefined;
+      if (launch && saved.generation !== `${launch.debugPort}:${launch.startedAt}`) return undefined;
+      return bundleTabUrls(JSON.stringify({ tabs: saved.tabs }));
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Best-effort Local export/managed-close snapshot. Never opens a browser. */
   async captureLocalSession(profileId: string): Promise<boolean> {
     const launch = this.store.getLaunch(profileId);
@@ -2908,10 +3340,12 @@ export class Launcher {
       && !this.store.getPendingSessionBundle(profileId);
     try {
       if (!unchanged() || !await this.certifiedActive(profileId) || !unchanged()) return false;
-      const bundle = await this.readSessionFn(launch.ws, {
-        captureSeed: sessionCaptureSeed(this.store.getSessionBundle(profileId) ?? ""),
+      const previous = this.store.getSessionBundle(profileId) ?? "";
+      let bundle = await this.readSessionFn(launch.ws, {
+        captureSeed: sessionCaptureSeed(previous),
       });
-      parseCapturedSessionBundle(bundle);
+      const captured = parseCapturedSessionBundle(bundle);
+      if (captured.tabs === undefined) bundle = JSON.stringify({ ...captured, tabs: this.closedFirefoxTabs(profileId, launch) ?? bundleTabUrls(previous) });
       if (!unchanged() || !await this.active(profileId) || !unchanged()) return false;
       this.store.saveSessionBundle(profileId, bundle);
       return true;
@@ -3005,7 +3439,7 @@ export class Launcher {
     if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
     const snapshot = JSON.stringify(profile);
     this.assertHostCompatibility(profile);
-    const approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+    const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
     if (!(await this.active(profileId))) throw new Error(`cannot verify survivor ${profileId}: browser identity/CDP is unavailable`);
 
     const launch = this.store.getLaunch(profileId);
@@ -3023,6 +3457,7 @@ export class Launcher {
     profile = this.requireUnchangedProfile(profileId, snapshot, "survivor CDP verification");
     if (!profile.proxy) {
       this.markIdentityCertified(profileId);
+      void this.watchSurvivorWindow(profileId);
       return;
     }
     let current = this.store.getLaunch(profileId);
@@ -3037,6 +3472,7 @@ export class Launcher {
     }
     this.markIdentityCertified(profileId);
     this.log(`survivor identity verified for ${profileId}: host persona + relay restored`);
+    void this.watchSurvivorWindow(profileId);
   }
 
   /** Return a proven durable survivor-policy mismatch, or null for transport uncertainty. */
@@ -3045,7 +3481,7 @@ export class Launcher {
       const profile = this.store.getProfile(profileId);
       if (!profile) throw new Error(`cannot verify survivor ${profileId}: profile is missing`);
       this.assertHostCompatibility(profile);
-      const approvedBinarySha256 = this.approvedBinarySha256(profile.engine);
+      const approvedBinarySha256 = this.approvedBinarySha256(binaryKind(profile));
       const launch = this.store.getLaunch(profileId);
       if (!launch || `${launch.debugPort}:${launch.startedAt}` !== generation) return null;
       this.assertStoredLaunchPersona(profile, launch, approvedBinarySha256);
@@ -3144,7 +3580,10 @@ export class Launcher {
         stopped++;
         return;
       }
-      if (await this.certifiedActive(launch.profileId)) certified++;
+      if (await this.certifiedActive(launch.profileId)) {
+        certified++;
+        void this.watchSurvivorWindow(launch.profileId);
+      }
       else stopped++;
     };
     const CONCURRENCY = 8;
@@ -3831,39 +4270,156 @@ function readLinuxProcessRecord(pid: number): HostProcessRecord | null {
   }
 }
 
+// 64-bit PROCESSENTRY32W: th32ProcessID at 8, th32ParentProcessID at 32, szExeFile[260] at 44.
+const WINDOWS_PROCESS_ENTRY_SIZE = 568;
+const WINDOWS_INVALID_HANDLE = 0xFFFF_FFFF_FFFF_FFFFn;
+const WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const WINDOWS_PROCESS_COMMAND_LINE_INFORMATION = 60;
+// UNICODE_STRING header plus the longest possible command line (65534 bytes).
+const windowsCommandLineBuffer = new Uint8Array(16 + 65_536);
+const windowsImagePathBuffer = new Uint16Array(32_768);
+const windowsImagePathLength = new Uint32Array(1);
+const windowsProcessApi = process.platform === "win32" ? (() => {
+  try {
+    return {
+      kernel32: dlopen("kernel32.dll", {
+        CreateToolhelp32Snapshot: { args: ["u32", "u32"], returns: "u64" },
+        Process32FirstW: { args: ["u64", "ptr"], returns: "i32" },
+        Process32NextW: { args: ["u64", "ptr"], returns: "i32" },
+        OpenProcess: { args: ["u32", "i32", "u32"], returns: "u64" },
+        QueryFullProcessImageNameW: { args: ["u64", "u32", "ptr", "ptr"], returns: "i32" },
+        CloseHandle: { args: ["u64"], returns: "i32" },
+      }).symbols,
+      ntdll: dlopen("ntdll.dll", {
+        NtQueryInformationProcess: { args: ["u64", "u32", "ptr", "u32", "ptr"], returns: "i32" },
+      }).symbols,
+    };
+  } catch {
+    return null;
+  }
+})() : null;
+
+/** Read pid, parent pid and image name from one 64-bit PROCESSENTRY32W. */
+export function parseWindowsProcessEntry(entry: Uint8Array): { pid: number; parentPid: number; processName: string } {
+  const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
+  const name = Buffer.from(entry.buffer, entry.byteOffset + 44, 520).toString("utf16le");
+  const end = name.indexOf("\0");
+  return {
+    pid: view.getUint32(8, true),
+    parentPid: view.getUint32(32, true),
+    processName: end < 0 ? name : name.slice(0, end),
+  };
+}
+
+/**
+ * Decode the UNICODE_STRING that ProcessCommandLineInformation writes at the
+ * start of `buffer`. Like WMI, stop at the first NUL that some processes write.
+ */
+export function decodeWindowsCommandLine(buffer: Uint8Array, bufferAddress: number): string | null {
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const length = view.getUint16(0, true);
+  if (length === 0) return "";
+  const offset = Number(view.getBigUint64(8, true)) - bufferAddress;
+  if (!Number.isSafeInteger(offset) || offset < 16 || offset + length > buffer.byteLength) return null;
+  const text = Buffer.from(buffer.buffer, buffer.byteOffset + offset, length).toString("utf16le");
+  const end = text.indexOf("\0");
+  return end < 0 ? text : text.slice(0, end);
+}
+
+/**
+ * Native Windows process snapshot with the WMI scan's fields. A process that
+ * cannot be opened keeps a null path and an empty command line, as in WMI.
+ * Throws only when the snapshot itself fails. No IPC, so it cannot hang like WMI.
+ */
+export function readWindowsProcessSnapshotNative(): HostProcessSnapshot {
+  if (!windowsProcessApi) throw new Error("Windows process API is unavailable");
+  const { kernel32, ntdll } = windowsProcessApi;
+  const snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0) as bigint; // TH32CS_SNAPPROCESS
+  if (snapshot === 0n || snapshot === WINDOWS_INVALID_HANDLE) throw new Error("CreateToolhelp32Snapshot failed");
+  const entry = new Uint8Array(WINDOWS_PROCESS_ENTRY_SIZE);
+  new DataView(entry.buffer).setUint32(0, WINDOWS_PROCESS_ENTRY_SIZE, true);
+  const records: HostProcessRecord[] = [];
+  try {
+    for (let more = kernel32.Process32FirstW(snapshot, entry); more; more = kernel32.Process32NextW(snapshot, entry)) {
+      const { pid, parentPid, processName } = parseWindowsProcessEntry(entry);
+      if (pid <= 0) continue;
+      let executablePath: string | null = null;
+      let commandLine = "";
+      const handle = kernel32.OpenProcess(WINDOWS_PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) as bigint;
+      if (handle !== 0n) {
+        try {
+          windowsImagePathLength[0] = windowsImagePathBuffer.length;
+          if (kernel32.QueryFullProcessImageNameW(handle, 0, windowsImagePathBuffer, windowsImagePathLength)) {
+            executablePath = Buffer.from(windowsImagePathBuffer.buffer, 0, windowsImagePathLength[0]! * 2).toString("utf16le") || null;
+          }
+          const status = ntdll.NtQueryInformationProcess(
+            handle, WINDOWS_PROCESS_COMMAND_LINE_INFORMATION,
+            windowsCommandLineBuffer, windowsCommandLineBuffer.byteLength, null,
+          );
+          if (status === 0) commandLine = decodeWindowsCommandLine(windowsCommandLineBuffer, ptr(windowsCommandLineBuffer)) ?? "";
+        } finally {
+          kernel32.CloseHandle(handle);
+        }
+      }
+      records.push({ pid, parentPid, processName: processName || undefined, executablePath, commandLine });
+    }
+  } finally {
+    kernel32.CloseHandle(snapshot);
+  }
+  if (records.length === 0) throw new Error("Windows process snapshot was empty");
+  return { records, incomplete: false };
+}
+
+/** WMI fallback for the native scan, bounded by WINDOWS_PROCESS_SCAN_TIMEOUT_MS. */
+export async function readWindowsProcessSnapshotWmi(): Promise<HostProcessSnapshot | null> {
+  try {
+    const script = [
+      "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
+      "ConvertTo-Json -Compress",
+    ].join(" | ");
+    // The full path also works when PATH has no PowerShell folder.
+    const powershell = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const child = Bun.spawn(
+      [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+      { stdout: "pipe", stderr: "ignore" },
+    );
+    const result = await readSnapshotChildBounded(
+      child as unknown as { stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): unknown },
+      WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
+    );
+    if (!result || result.exitCode !== 0) {
+      // A failed scan stops every saved profile with browser_launch/profile_directory. The log shows why.
+      console.log(`[aliasmode] Windows process scan failed: ${result ? `exit code ${result.exitCode}` : "timed out"}`);
+      return null;
+    }
+    const parsed = result.raw.trim() ? JSON.parse(result.raw) : [];
+    const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
+    const records: HostProcessRecord[] = [];
+    for (const row of rows) {
+      const pid = Number(row.ProcessId);
+      if (!Number.isFinite(pid) || pid <= 0) continue;
+      records.push({
+        pid,
+        processName: typeof row?.Name === "string" && row.Name ? row.Name : undefined,
+        executablePath: typeof row?.ExecutablePath === "string" && row.ExecutablePath ? row.ExecutablePath : null,
+        commandLine: typeof row?.CommandLine === "string" ? row.CommandLine : "",
+      });
+    }
+    return { records, incomplete: false };
+  } catch (error) {
+    console.log(`[aliasmode] Windows process scan failed: ${(error as { code?: string })?.code ?? String(error)}`);
+    return null;
+  }
+}
+
 export async function readHostProcessSnapshot(): Promise<HostProcessSnapshot | null> {
   if (IS_WINDOWS) {
     try {
-      const script = [
-        "Get-CimInstance -Query 'SELECT ProcessId, Name, ExecutablePath, CommandLine FROM Win32_Process' -OperationTimeoutSec 50 -ErrorAction Stop",
-        "ConvertTo-Json -Compress",
-      ].join(" | ");
-      const child = Bun.spawn(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-        { stdout: "pipe", stderr: "ignore" },
-      );
-      const result = await readSnapshotChildBounded(
-        child as unknown as { stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): unknown },
-        WINDOWS_PROCESS_SCAN_TIMEOUT_MS,
-      );
-      if (!result || result.exitCode !== 0) return null;
-      const parsed = result.raw.trim() ? JSON.parse(result.raw) : [];
-      const rows = Array.isArray(parsed) ? parsed : parsed ? [parsed] : [];
-      const records: HostProcessRecord[] = [];
-      for (const row of rows) {
-        const pid = Number(row.ProcessId);
-        if (!Number.isFinite(pid) || pid <= 0) continue;
-        records.push({
-          pid,
-          processName: typeof row?.Name === "string" && row.Name ? row.Name : undefined,
-          executablePath: typeof row?.ExecutablePath === "string" && row.ExecutablePath ? row.ExecutablePath : null,
-          commandLine: typeof row?.CommandLine === "string" ? row.CommandLine : "",
-        });
-      }
-      return { records, incomplete: false };
-    } catch {
-      return null;
+      return readWindowsProcessSnapshotNative();
+    } catch (error) {
+      console.log(`[aliasmode] Windows native process scan failed (${String(error)}); using WMI`);
     }
+    return await readWindowsProcessSnapshotWmi();
   }
 
   if (process.platform === "linux") {

@@ -2,7 +2,9 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { TrashProfileView } from "../proxy-tools-types.ts";
 import { filterTrash, TrashPage } from "./trash.tsx";
+import { I18nProvider } from "./i18n.tsx";
 import { proxyResultPage } from "./proxies.tsx";
+import { folderScope } from "../folders.ts";
 
 const profiles: TrashProfileView[] = Array.from({ length: 8000 }, (_, i) => ({
   id: `p${i}`, name: `Profile ${i}`, group: i % 9 ? `Folder ${i % 9}` : "",
@@ -30,9 +32,15 @@ test("Trash folder scope includes every profile across pages and remains indepen
   expect(filterTrash(profiles, [], "")).toEqual([]);
 });
 
+test("Trash parent scope includes explicit descendants but not literal slash roots", () => {
+  const folders = [{ name: "Parent" }, { name: "Parent/Child", parentName: "Parent" }, { name: "Parent/Literal" }];
+  const rows = folders.map(({ name }, i) => ({ ...profiles[i]!, group: name }));
+  expect(filterTrash(rows, [...folderScope(folders, "Parent")], "").map((row) => row.group)).toEqual(["Parent", "Parent/Child"]);
+});
+
 test("Trash stays mounted but hidden during page navigation", () => {
-  const inactive = renderToStaticMarkup(<TrashPage active={false} onChanged={async () => {}} />);
-  const active = renderToStaticMarkup(<TrashPage active onChanged={async () => {}} />);
+  const inactive = renderToStaticMarkup(<I18nProvider><TrashPage active={false} onChanged={async () => {}} /></I18nProvider>);
+  const active = renderToStaticMarkup(<I18nProvider><TrashPage active onChanged={async () => {}} /></I18nProvider>);
   expect(inactive).toContain('hidden=""');
   expect(active).not.toContain('hidden=""');
   expect(active.match(/disabled=""/g)!.length).toBeGreaterThan(0);

@@ -1,8 +1,10 @@
-/** Best-effort import-time timezone enrichment and shared SOCKS5 tunneling. */
+/** Best-effort import- and launch-time timezone enrichment and shared SOCKS5 tunneling. */
 
 import { connect as netConnect, type Socket } from "node:net";
 import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { ProxySpec } from "./types.ts";
+import { localeForCountry, localeForTimezone } from "./profile-locale.ts";
+import { canonicalIp } from "./ip.ts";
 
 export type FetchLike = (url: string, init: RequestInit) => Promise<{ json(): Promise<any> }>;
 
@@ -118,11 +120,13 @@ export async function openSocks5Tunnel(
   }
 }
 
-/** Timezone of the connection's exit IP, using the profile proxy when present. */
-export async function lookupExitTimezone(
+export type ExitLocation = { timezone: string; country?: string; ip?: string };
+
+/** Location and address of the connection's exit IP, using the profile proxy when present. */
+export async function lookupExitLocation(
   proxy: ProxySpec | null,
   fetchFn: FetchLike = (url, init) => fetch(url, init),
-): Promise<string | null> {
+): Promise<ExitLocation | null> {
   let relay: ProxyRelay | undefined;
   try {
     if (proxy) {
@@ -139,20 +143,64 @@ export async function lookupExitTimezone(
       signal: AbortSignal.timeout(10_000),
     } as RequestInit;
     try {
-      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone", init);
-      const row = (await res.json()) as { status?: string; timezone?: string } | null;
-      if (row?.status === "success" && row.timezone) return row.timezone;
+      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init);
+      const row = (await res.json()) as { status?: string; timezone?: string; countryCode?: string; query?: string } | null;
+      if (row?.status === "success" && row.timezone) return withIp({ timezone: row.timezone, country: row.countryCode }, row.query);
     } catch {
       // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
     }
     const res = await fetchFn("https://v6.ipinfo.io/json", { ...init, signal: AbortSignal.timeout(10_000) });
-    const row = (await res.json()) as { timezone?: string } | null;
-    return typeof row?.timezone === "string" && row.timezone ? row.timezone : null;
+    const row = (await res.json()) as { timezone?: string; country?: string; ip?: string } | null;
+    return typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country }, row.ip) : null;
   } catch {
     return null;
   } finally {
     relay?.close();
   }
+}
+
+function withIp<T extends object>(location: T, raw: unknown): T & { ip?: string } {
+  const ip = typeof raw === "string" ? canonicalIp(raw) : null;
+  return ip ? { ...location, ip } : location;
+}
+
+// Profiles that share a proxy often open together, and ip-api.com answers 45 requests a minute
+// per address, so one answer serves each proxy for a minute. A failed lookup is not kept.
+const EXIT_REUSE_MS = 60_000;
+const exits = new Map<string, { at: number; location: Promise<ExitLocation | null> }>();
+
+/**
+ * Where a proxy's traffic leaves from (timezone, country and address), looked up through the
+ * proxy and never directly. Waits at most `waitMs`; an answer that comes later still serves the
+ * next launch. A changed proxy (type, host, port or login) gets its own lookup.
+ */
+export async function lookupProxyExitLocation(
+  proxy: ProxySpec,
+  opts: { fetchFn?: FetchLike; waitMs?: number; now?: () => number } = {},
+): Promise<ExitLocation | null> {
+  const now = opts.now ?? Date.now;
+  const key = JSON.stringify([proxy.type, proxy.host, String(proxy.port), proxy.user ?? "", proxy.pass ?? ""]);
+  let entry = exits.get(key);
+  if (!entry || now() - entry.at >= EXIT_REUSE_MS) {
+    for (const [old, value] of exits) if (now() - value.at >= EXIT_REUSE_MS) exits.delete(old);
+    const created = { at: now(), location: lookupExitLocation(proxy, opts.fetchFn) };
+    exits.set(key, created);
+    void created.location.then((location) => { if (!location && exits.get(key) === created) exits.delete(key); });
+    entry = created;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      entry.location,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), opts.waitMs ?? 5_000); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function lookupExitTimezone(proxy: ProxySpec | null, fetchFn?: FetchLike): Promise<string | null> {
+  return (await lookupExitLocation(proxy, fetchFn))?.timezone ?? null;
 }
 
 /**
@@ -161,9 +209,10 @@ export async function lookupExitTimezone(
  * returns the same array. Profiles without a proxy (or unresolved) keep
  * whatever timezone they already had. A gateway's location is not its exit.
  */
-export async function attachTimezones<T extends { proxy: ProxySpec | null; timezone: string }>(
+export async function attachTimezones<T extends { proxy: ProxySpec | null; timezone: string; locale?: string }>(
   profiles: T[],
   fetchFn: FetchLike = (url, init) => fetch(url, init),
+  refreshLocale = false,
 ): Promise<{ profiles: T[]; resolved: number }> {
   const withProxy = profiles.filter((p) => p.proxy?.host);
   if (withProxy.length === 0) return { profiles, resolved: 0 };
@@ -172,9 +221,10 @@ export async function attachTimezones<T extends { proxy: ProxySpec | null; timez
   await Promise.all(Array.from({ length: Math.min(16, withProxy.length) }, async () => {
     while (next < withProxy.length) {
       const p = withProxy[next++]!;
-      const tz = await lookupExitTimezone(p.proxy!, fetchFn);
-      if (tz) {
-        p.timezone = tz;
+      const location = await lookupExitLocation(p.proxy!, fetchFn);
+      if (location) {
+        p.timezone = location.timezone;
+        if (refreshLocale || !p.locale) p.locale = localeForCountry(location.country) ?? localeForTimezone(location.timezone);
         resolved++;
       }
     }

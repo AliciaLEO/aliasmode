@@ -1143,7 +1143,7 @@ test("makeLauncher forwards the system-proxy relay toggle to the Launcher", () =
     const viaSystemProxy = (launcher: unknown): boolean =>
       (launcher as { viaSystemProxy?: boolean }).viaSystemProxy ?? false;
 
-    const enabled = makeLauncher(store, [], false, dataRoot, undefined, { viaSystemProxy: true });
+    const enabled = makeLauncher(store, [], false, dataRoot, undefined, undefined, { viaSystemProxy: true });
     expect(viaSystemProxy(enabled)).toBe(true);
     (enabled as unknown as { autofill?: { close(): void } }).autofill?.close();
 

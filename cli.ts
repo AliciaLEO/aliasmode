@@ -23,6 +23,7 @@
 import { parseExport, decodeText, splitRecords } from "./parse.ts";
 import { ProfileStore } from "./store.ts";
 import { Launcher, readSnapshotChildBounded } from "./launcher.ts";
+import { linuxChromiumSandboxBlocked } from "./aliasmode-chromium.ts";
 import { AutofillBridge } from "./autofill-bridge.ts";
 import {
   defaultPlaywrightRuntimeRoot,
@@ -379,6 +380,8 @@ export function makeLauncher(
   remoteMode = false,
   defaultDataRoot = "profiles",
   ensureSearchProvider = ensureDuckDuckGoDefault,
+  // Local and Cloud profiles share one downloaded Chromium 155 runtime.
+  chromiumRuntimeRoot?: string,
   extra: { viaSystemProxy?: boolean } = {},
 ): Launcher {
   const unsafeCanary = has(rest, "unsafe-disable-identity-gates");
@@ -388,6 +391,7 @@ export function makeLauncher(
     store,
     autofill,
     dataRoot: defaultDataRoot,
+    ...(chromiumRuntimeRoot ? { chromiumRuntimeRoot } : {}),
     headless: has(rest, "headless"),
     // Relay upstream connections optionally chain through the OS system proxy
     // (Settings > Advanced). Read once here; toggling requires a restart.
@@ -406,6 +410,7 @@ export function makeLauncher(
       `--aliasmode-launcher-pid=${process.pid}`,
       ...(has(rest, "no-sandbox") ? ["--no-sandbox"] : []),
     ],
+    ...(process.platform === "linux" && !has(rest, "no-sandbox") ? { chromiumSandboxBlocked: () => linuxChromiumSandboxBlocked() } : {}),
     ...(unsafeCanary ? {} : { ensureSearchProvider }),
     // In remote mode the coordinator injects the roamed session over CDP, so the launcher's own
     // bootstrap cookie injection is turned off — and because the login is re-injected from the hub,
@@ -413,6 +418,12 @@ export function makeLauncher(
     // "something went wrong opening your profile" dialog) instead of the login being disk-authoritative.
     ...(remoteMode ? { ensureCookies: async () => ({ injected: false }), resetStorageOnUncleanExit: true } : {}),
   });
+}
+
+/** Download the browser runtimes that saved and newly saved profiles need, so a first open does not wait. */
+function prefetchBrowserRuntimes(launcher: Launcher, store: ProfileStore): void {
+  store.onProfileSaved = (profile) => launcher.prefetchBrowserRuntimes([profile]);
+  launcher.prefetchBrowserRuntimes(store.listProfiles());
 }
 
 function makeCloudBrowser(
@@ -2100,11 +2111,6 @@ function createCloudCrossDeviceSyntheticRuntime(
         ? "alive"
         : "generation_changed";
     },
-    async pageTargetFingerprint(profileId, expected) {
-      const launch = store.getLaunch(profileId);
-      if (!launch || launch.debugPort !== expected.debugPort || launch.startedAt !== expected.startedAt) return null;
-      return JSON.stringify([{ id: `fixture-${device}`, url: "https://x.com/home" }]);
-    },
     browserStorageWatchPaths() {
       return [];
     },
@@ -2126,7 +2132,7 @@ function createCloudCrossDeviceSyntheticRuntime(
       appliedSessions.push(bundle);
     },
     heartbeatMs: 0,
-    dirtyMonitorMs: 0,
+    storageCheckpoints: false,
   });
 
   return {
@@ -2381,6 +2387,8 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     rest,
     true,
     paths.cloudProfiles,
+    undefined,
+    join(paths.root, "runtimes"),
   );
   const profile = smokeProfile(
     profileId,
@@ -2392,6 +2400,7 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     profile.engine = engine;
     profile.firefox = createFirefoxProfileConfig(profile.screenWidth, profile.screenHeight);
   }
+  if (flag(rest, "chromium-runtime") === "aliasmode") profile.chromiumRuntime = "aliasmode";
   let payload = encodePortableProfile(profile, JSON.stringify({
     cookies: [{
       name: "auth_token",
@@ -2425,6 +2434,9 @@ async function runCloudLauncherSmoke(paths: StatePaths, rest: string[]): Promise
     },
     async closeOpen(_registrationId: string, request: { expectedVersion: number; payload: typeof payload }) {
       if (request.expectedVersion !== version) throw new Error("Cloud launcher smoke received a stale close");
+      if (request.payload.schemaVersion !== payload.schemaVersion) {
+        throw new Error("Cloud launcher smoke close changed the profile's browser runtime");
+      }
       if (!request.payload.session.cookies.some((cookie) =>
         cookie.name === "auth_token" && cookie.value === "aliasmode-smoke"
       )) {
@@ -2634,7 +2646,7 @@ async function main() {
         },
       })
     : undefined;
-  const mcpTunnel = process.platform === "win32" && agentNonce && cloudAuth && cloudConfig && cloudConnection
+  const mcpTunnel = agentNonce && cloudAuth && cloudConfig && cloudConnection
     ? new McpTunnelRuntime({
         baseUrl: cloudConfig.apiUrl,
         accessToken: () => cloudAuth.accessTokenOrRefresh(),
@@ -2717,8 +2729,9 @@ async function main() {
         // attributes locks to this id; a per-operator token overrides it.
         const owner = defaultOperatorName(identityDbPath);
         console.log(`local instance "${owner}" (hub lock attribution: this box's operator id)`);
-        const launcher = makeLauncher(store, rest, true, profileDataRoot);
+        const launcher = makeLauncher(store, rest, true, profileDataRoot, undefined, join(paths.root, "runtimes"));
         await launcher.reconcileOrphans();
+        prefetchBrowserRuntimes(launcher, store);
         const coord = new RemoteCoordinator({
           hub: new HubClient(hubUrl, password, owner),
           launcher,
@@ -2817,7 +2830,7 @@ async function main() {
       // stale crash row rejects startup before it can be proven dead.
       console.log(`${configuredMode.mode} mode: preparing browser recovery`);
       console.log("startup: initializing autofill bridge");
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, {
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"), {
         viaSystemProxy: savedMode.proxyViaSystemProxy === true,
       });
       console.log(`startup: checking ${store.listLaunches().length} saved browser process(es)`);
@@ -2829,6 +2842,7 @@ async function main() {
       console.log("startup: browser recovery checks complete");
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
+      prefetchBrowserRuntimes(launcher, store);
       if (configuredMode.mode === "cloud") {
         console.log("cloud mode: waiting for verified authentication before loading profiles");
         if (cloudBrowser && !desktopHealth) installCloudShutdown(cloudBrowser, mcpTunnel);
@@ -2929,13 +2943,14 @@ async function main() {
     }
     case "serve": {
       const store = new ProfileStore(dbPath);
-      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, {
+      const launcher = makeLauncher(store, rest, savedMode.mode === "cloud", profileDataRoot, undefined, join(paths.root, "runtimes"), {
         viaSystemProxy: savedMode.proxyViaSystemProxy === true,
       });
       await launcher.reconcileOrphans();
       if (savedMode.mode !== "cloud") await launcher.certifySurvivors();
       const cloudBrowser = makeCloudBrowser(launcher, store, cloudConnection, pendingSync);
       startMemoryAttributionLog();
+      prefetchBrowserRuntimes(launcher, store);
       if (cloudBrowser) installCloudShutdown(cloudBrowser);
       serveDashboard({
         launcher,
@@ -3022,10 +3037,13 @@ async function main() {
   }
 }
 
-// Only run the CLI when executed directly (`bun cli.ts …`), not when imported (e.g. by tests).
-if (import.meta.main) {
+export function runCli(): void {
   main().catch(() => {
     console.error("[aliasmode] FATAL command failure");
     process.exit(1);
   });
 }
+
+// Only run the CLI when executed directly (`bun cli.ts …`), not when imported (e.g. by tests).
+// The compiled sidecar starts it from sidecar-entry.ts.
+if (import.meta.main) runCli();

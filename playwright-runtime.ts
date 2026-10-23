@@ -104,7 +104,7 @@ export function resolvePlaywrightRuntime(
     return {
       kind: "packaged",
       root: packagedRoot,
-      nodeExecutable: join(packagedRoot, "node", "node.exe"),
+      nodeExecutable: join(packagedRoot, "node", process.platform === "win32" ? "node.exe" : "node"),
       workerPath: join(packagedRoot, "worker.mjs"),
     };
   }

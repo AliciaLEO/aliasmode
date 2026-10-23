@@ -17,6 +17,7 @@ export interface SourceRuntime {
 const NODE_VERSION = "22.23.2";
 const NODE_BUILDS = [
   { platform: "darwin", arch: "arm64", target: "darwin-arm64", sha256: "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6" },
+  { platform: "darwin", arch: "x64", target: "darwin-x64", sha256: "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026" },
   { platform: "linux", arch: "x64", target: "linux-x64", sha256: "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a" },
   { platform: "win32", arch: "x64", target: "win-x64", sha256: "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97" },
 ] as const;
@@ -27,7 +28,7 @@ export async function installSourceNode(
 ): Promise<string> {
   const platform = options.platform ?? process.platform;
   const build = NODE_BUILDS.find((value) => value.platform === platform && value.arch === (options.arch ?? process.arch));
-  if (!build) throw new Error("Source setup host is unsupported; use macOS arm64, Linux x64, or Windows x64");
+  if (!build) throw new Error("Source setup host is unsupported; use macOS, Linux x64, or Windows x64");
   const name = `node-v${NODE_VERSION}-${build.target}`;
   const extension = platform === "win32" ? "zip" : "tar.gz";
   const response = await (options.fetch ?? fetch)(`https://nodejs.org/dist/v${NODE_VERSION}/${name}.${extension}`);

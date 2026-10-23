@@ -4,9 +4,14 @@
 ; Installing over a running sidecar fails with "Error opening file for writing",
 ; so stop it here. Cloud sessions survive: every open browser's session is saved
 ; again from its encrypted local queue after the next start.
+; An AI client keeps aliasmode-mcp.exe open in the same way. Stopping it also
+; stops its MCP helper, an aliasmode-sidecar.exe process. Stop it first and
+; without /T: the helper may have started AliasMode, which is not its to stop.
 !macro NSIS_HOOK_PREINSTALL
   Push $R0
 
+  nsExec::Exec 'taskkill /F /IM "aliasmode-mcp.exe"'
+  Pop $R0
   nsExec::Exec 'taskkill /IM "aliasmode-sidecar.exe"'
   Pop $R0
   Sleep 5000
@@ -14,10 +19,19 @@
   Pop $R0
   Sleep 2000
 
+  ; Python scripts now download their runtime into the app data folder. Remove the copy
+  ; that earlier versions installed with the app; nothing installs or uninstalls it now.
+  RMDir /r "$INSTDIR\playwright\python"
+
   Pop $R0
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Earlier versions bundled CloakBrowser here. The app now downloads it into
+  ; its data folder, so remove the old copy once the new files are in place. Files that
+  ; a still-running browser holds stay until a later update.
+  RMDir /r "$INSTDIR\cloakbrowser"
+
   Push $R0
   Push $R1
   Push $R2

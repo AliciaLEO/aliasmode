@@ -168,6 +168,20 @@ diff --git a/lib/server/browserContext.js b/lib/server/browserContext.js
      const currentCookies = await this.cookies();
      await this.doClearCookies();
      const matches = (cookie, prop, value) => {
+diff --git a/lib/server/chromium/crPage.js b/lib/server/chromium/crPage.js
+--- a/lib/server/chromium/crPage.js
++++ b/lib/server/chromium/crPage.js
+@@ -408,7 +408,9 @@ class FrameSession {
+     if (!this._page.isStorageStatePage) {
+       if (this._crPage._browserContext.needsPlaywrightBinding())
+         promises.push(this.exposePlaywrightBinding());
+-      if (this._isMainFrame())
++      // Focus emulation makes every attached tab read document.hasFocus() as true and fire focus
++      // and blur events. AliasMode's own helpers turn it off, so the user's tabs never see them.
++      if (this._isMainFrame() && globalThis[Symbol.for("aliasmode.playwrightFocusEmulation")] !== false)
+         promises.push(this._client.send("Emulation.setFocusEmulationEnabled", { enabled: true }));
+       const options = this._crPage._browserContext._options;
+       if (options.bypassCSP)
 diff --git a/lib/server/chromium/crBrowser.js b/lib/server/chromium/crBrowser.js
 --- a/lib/server/chromium/crBrowser.js
 +++ b/lib/server/chromium/crBrowser.js
@@ -192,3 +206,17 @@ diff --git a/lib/server/chromium/crBrowser.js b/lib/server/chromium/crBrowser.js
      }).catch((e) => {
        if (e.message.includes("Failed to override timezone"))
          throw new Error(`Invalid timezone ID: ${this._options.timezoneId}`);
+diff --git a/lib/server/chromium/chromium.js b/lib/server/chromium/chromium.js
+--- a/lib/server/chromium/chromium.js
++++ b/lib/server/chromium/chromium.js
+@@ -98,7 +98,9 @@
+       const wsEndpoint = await urlToWSEndpoint(progress, endpointURL, headersMap);
+       chromeTransport = await import_transport.WebSocketTransport.connect(progress, wsEndpoint, { headers: headersMap });
+       const browserProcess = { close: doClose, kill: doClose };
+-      const persistent = { noDefaultViewport: true };
++      // Attaching to the user's browser never changes the colour scheme, motion, forced colours or
++      // contrast its open pages see: Playwright's defaults would emulate light, no-preference and none.
++      const persistent = { noDefaultViewport: true, colorScheme: "no-override", reducedMotion: "no-override", forcedColors: "no-override", contrast: "no-override" };
+       const browserOptions = {
+         slowMo: options.slowMo,
+         name: "chromium",

@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { CloudApiError } from "./cloud-client.ts";
 import { CloudProfileEditor } from "./cloud-profile-editor.ts";
 import type { PortableProfileV1, PortableProfileV2 } from "./contracts/cloud-v1.ts";
+import { completeProfileFingerprint } from "./firefox-config.ts";
+import { decodePortableProfile } from "./portable-profile.ts";
 
 function payload(): PortableProfileV1 {
   return {
@@ -45,8 +47,8 @@ function firefoxPayload(): PortableProfileV2 {
       extensionAssignments: [],
       firefox: {
         version: 1,
-        runtimeVersion: "152.0.4-beta.30",
-        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", timezone: "Etc/UTC" },
+        runtimeVersion: "156.0.1-beta.36",
+        config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0", timezone: "Etc/UTC" },
       },
     },
   };
@@ -57,6 +59,8 @@ test("Cloud fingerprint edits round-trip manual timezone and OS without changing
     const authoritative = { ...response(), payload: engine === "firefox" ? firefoxPayload() : payload() };
     const session = structuredClone(authoritative.payload.session);
     const calls: string[][] = [];
+    authoritative.payload.profile.locale = "fr-CA";
+    const expected = completeProfileFingerprint(decodePortableProfile(authoritative.payload).profile);
     const editor = new CloudProfileEditor({
       getProfile: async () => authoritative,
       updateProfile: async (_id: string, request: any) => { authoritative.payload = request.payload; },
@@ -69,9 +73,13 @@ test("Cloud fingerprint edits round-trip manual timezone and OS without changing
       const view = await editor.get("cloud1");
       expect(view.timezone).toBe(timezone);
       if (engine === "chromium") expect(view.platformOs).toBe("macos");
-      else expect((authoritative.payload as PortableProfileV2).profile.firefox!.config).toEqual({
-        "navigator.userAgent": "Mozilla/5.0 Firefox/152.0", ...(timezone ? { timezone } : {}),
-      });
+      else {
+        const { timezone: _timezone, ...config } = expected.firefox!.config;
+        expect((authoritative.payload as PortableProfileV2).profile.firefox.config).toEqual({
+          ...config, ...(timezone ? { timezone } : {}),
+        });
+      }
+      expect(authoritative.payload.profile.locale).toBe("fr-CA");
       expect(authoritative.payload.session).toEqual(session);
       expect(authoritative.payload.profile.fingerprintSeed).toBe(1234);
     }
@@ -79,7 +87,31 @@ test("Cloud fingerprint edits round-trip manual timezone and OS without changing
   }
 });
 
-test("Firefox Cloud edits preserve saved identity and session without automatic lookup", async () => {
+test("Firefox Cloud edits set a new proxy's timezone in the saved config", async () => {
+  const authoritative = { ...response(), payload: firefoxPayload() };
+  let updated: any;
+  const editor = new CloudProfileEditor({
+    getProfile: async () => authoritative,
+    updateProfile: async (_id: string, request: unknown) => { updated = request; },
+  } as any, readOnlyStore(), timezoneFetch({ "new-proxy.example": "Europe/Paris" }));
+  await editor.save("cloud1", 7, { proxy: "new-proxy.example:8080" });
+  expect(updated.payload.profile.timezone).toBe("Europe/Paris");
+  expect(updated.payload.profile.firefox.config.timezone).toBe("Europe/Paris");
+});
+
+test("Cloud proxy edits set the language from the proxy country", async () => {
+  const authoritative = { ...response(), payload: firefoxPayload() };
+  authoritative.payload.profile.locale = "en-GB";
+  let updated: any;
+  const editor = new CloudProfileEditor({
+    getProfile: async () => authoritative,
+    updateProfile: async (_id: string, request: unknown) => { updated = request; },
+  } as any, readOnlyStore(), timezoneFetch({ "new-proxy.example": "America/New_York" }));
+  await editor.save("cloud1", 7, { proxy: "new-proxy.example:8080" });
+  expect(updated.payload.profile.locale).toBe("en-US");
+});
+
+test("Firefox Cloud edits keep saved identity and session when the timezone lookup fails", async () => {
   const authoritative = { ...response(), payload: firefoxPayload() };
   let updated: any;
   const calls: string[][] = [];
@@ -89,10 +121,10 @@ test("Firefox Cloud edits preserve saved identity and session without automatic 
   } as any, readOnlyStore(), timezoneFetch({}, calls));
   expect((await editor.get("cloud1")).engine).toBe("firefox");
   await editor.save("cloud1", 7, { name: "Renamed", proxy: "new-proxy.example:8080" });
-  expect(calls).toEqual([]);
+  expect(calls.length).toBeGreaterThan(0);
   expect(updated.payload.schemaVersion).toBe(2);
   expect(updated.payload.profile.engine).toBe("firefox");
-  expect(updated.payload.profile.firefox).toEqual(authoritative.payload.profile.firefox);
+  expect(updated.payload.profile.firefox).toEqual(completeProfileFingerprint(decodePortableProfile(authoritative.payload).profile).firefox);
   expect(updated.payload.profile.timezone).toBe("Etc/UTC");
   expect(updated.payload.session).toEqual(authoritative.payload.session);
 });

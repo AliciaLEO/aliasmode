@@ -15,13 +15,34 @@ use tokio::sync::Mutex;
 use url::Url;
 
 const RELEASES_API: &str = "https://api.github.com/repos/aliasmode/aliasmode/releases?per_page=10";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_MANIFEST: &str = "latest-v2.json";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const UPDATE_TARGET: &str = "windows-x86_64";
+// macOS and Linux read their own feeds: installed Windows clients accept only a one-platform manifest.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const UPDATE_MANIFEST: &str = "latest-macos.json";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const UPDATE_TARGET: &str = "darwin-aarch64";
+// Installed Apple Silicon apps accept only a one-platform manifest, so Intel Macs read their own.
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const UPDATE_MANIFEST: &str = "latest-macos-x64.json";
+#[cfg(all(target_os = "macos", not(target_arch = "aarch64")))]
+const UPDATE_TARGET: &str = "darwin-x86_64";
+#[cfg(target_os = "linux")]
+const UPDATE_MANIFEST: &str = "latest-linux.json";
+#[cfg(target_os = "linux")]
+const UPDATE_TARGET: &str = "linux-x86_64";
 const MAX_RELEASE_HIGHLIGHTS: usize = 3;
 const UPDATE_BUSY: &str = "An update operation is already running.";
 const CHECK_FAILED: &str = "AliasMode could not check for updates. Try again.";
 const DOWNLOAD_FAILED: &str = "AliasMode could not download and verify the update. Try again.";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const INSTALLATION_UNSAFE: &str = "AliasMode cannot safely update this installation. Close AliasMode and run the full offline installer from the release page. Do not uninstall.";
+#[cfg(target_os = "macos")]
+const INSTALLATION_UNSAFE: &str = "AliasMode cannot update this copy. Move AliasMode to the Applications folder and open it again, or run the install command again.";
+#[cfg(target_os = "linux")]
+const INSTALLATION_UNSAFE: &str = "AliasMode cannot update this copy. Close AliasMode and run the install command from aliasmode.com/download again.";
 const CLEANUP_FAILED: &str =
     "The update was not installed because AliasMode could not safely close browser services. The current version remains installed.";
 const INSTALL_FAILED: &str =
@@ -191,6 +212,18 @@ async fn fetch_releases() -> Result<Vec<GithubRelease>, String> {
     serde_json::from_slice(&bytes).map_err(|error| error.to_string())
 }
 
+fn update_artifact_name(version: &Version) -> String {
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        format!("AliasMode_{version}_aarch64.app.tar.gz")
+    } else if cfg!(target_os = "macos") {
+        format!("AliasMode_{version}_x64.app.tar.gz")
+    } else if cfg!(target_os = "linux") {
+        format!("AliasMode_{version}_x86_64-linux.tar.gz")
+    } else {
+        format!("AliasMode_{version}_x64-setup.exe")
+    }
+}
+
 fn validate_manifest_result(
     candidate: &ReleaseCandidate,
     version: &str,
@@ -204,8 +237,11 @@ fn validate_manifest_result(
         return Err("release manifest identity did not match its GitHub release".to_owned());
     }
 
-    let installer_name = format!("AliasMode_{}_x64-setup.exe", candidate.version);
-    if !is_release_asset_url(download_url, &candidate.tag, &installer_name) {
+    if !is_release_asset_url(
+        download_url,
+        &candidate.tag,
+        &update_artifact_name(&candidate.version),
+    ) {
         return Err("release manifest installer URL was not an AliasMode release asset".to_owned());
     }
 
@@ -221,7 +257,7 @@ fn validate_manifest_result(
     let platform = platforms
         .get(UPDATE_TARGET)
         .and_then(Value::as_object)
-        .ok_or_else(|| "release manifest did not contain the Windows x64 update".to_owned())?;
+        .ok_or_else(|| "release manifest did not contain the update for this system".to_owned())?;
     let raw_url = platform
         .get("url")
         .and_then(Value::as_str)
@@ -306,6 +342,13 @@ pub async fn check_for_updates(
     app: AppHandle,
     coordinator: tauri::State<'_, UpdateCoordinator>,
 ) -> Result<UpdateStatus, String> {
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) {
+        return Err("AliasMode updates are not available on this system.".to_owned());
+    }
     let _guard = coordinator
         .0
         .try_lock()
@@ -355,6 +398,30 @@ fn record_update_failure(
     }
 }
 
+/// Keeps the cause of a failed install step. The app writes its error text only to its
+/// standard error, and that is lost when the app starts from the desktop.
+fn log_install_failure(data_dir: &std::path::Path, version: &str, error: &str) {
+    use std::io::Write;
+    let logs = data_dir.join("logs");
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let written = std::fs::create_dir_all(&logs).and_then(|()| {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("desktop-update.log"))?;
+        writeln!(
+            file,
+            "{seconds} update from {} to {version} failed at the install step: {error}",
+            env!("CARGO_PKG_VERSION")
+        )
+    });
+    if written.is_err() {
+        eprintln!("AliasMode could not store the cause of the failed update");
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum UpdatePreparationError {
     Download(String),
@@ -381,6 +448,47 @@ where
     install(&bytes).map_err(UpdatePreparationError::Install)
 }
 
+/// Windows: the NSIS installer takes over and ends this process, so a return is a failure.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn install_verified_update(
+    update: &Update,
+    bytes: &[u8],
+    _app: &AppHandle,
+    _handoff: &InstallerHandoff,
+) -> Result<(), String> {
+    update.install(bytes).map_err(|error| error.to_string())?;
+    Err("the verified installer returned without transferring control".to_owned())
+}
+
+/// macOS and Linux: the app bundle or folder is swapped and the call returns; nothing
+/// restarts the app for us.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn install_verified_update(
+    update: &Update,
+    bytes: &[u8],
+    app: &AppHandle,
+    handoff: &InstallerHandoff,
+) -> Result<(), String> {
+    // Started first, so the relaunch still happens if this process dies during the swap.
+    let mut relaunch =
+        update_attempt::spawn_relaunch_after_exit(handoff).map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    let installed = update.install(bytes).map_err(|error| error.to_string());
+    // The updater's own Linux step replaces an AppImage file; this app is a folder.
+    #[cfg(target_os = "linux")]
+    let installed = {
+        let _ = update;
+        update_attempt::replace_linux_install(&handoff.canonical_root, bytes)
+            .map_err(|error| error.to_string())
+    };
+    if let Err(error) = installed {
+        let _ = relaunch.kill();
+        return Err(error);
+    }
+    app.exit(0);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_now(
     app: AppHandle,
@@ -389,8 +497,12 @@ pub async fn update_now(
     coordinator: tauri::State<'_, UpdateCoordinator>,
     on_progress: Channel<UpdateProgress>,
 ) -> Result<(), String> {
-    if !cfg!(target_os = "windows") {
-        return Err("AliasMode updates are available only in the Windows desktop app.".to_owned());
+    if !cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    )) {
+        return Err("AliasMode updates are not available on this system.".to_owned());
     }
     let _guard = coordinator
         .0
@@ -405,7 +517,7 @@ pub async fn update_now(
         eprintln!("AliasMode update app-data path was unavailable");
         INSTALLATION_UNSAFE.to_owned()
     })?;
-    let discovered = match discover_update(&app, Some(&handoff)).await {
+    let discovered = match discover_update(&app, cfg!(windows).then_some(&handoff)).await {
         Ok(Some(discovered)) => discovered,
         Ok(None) => return Err("AliasMode is already up to date.".to_owned()),
         Err(error) => {
@@ -426,6 +538,8 @@ pub async fn update_now(
     let install_progress = on_progress.clone();
     let install_window = window.clone();
     let preparation_handoff = handoff.clone();
+    let install_handoff = handoff.clone();
+    let install_app = app.clone();
     let preparation_data_dir = data_dir.clone();
     let preparation_version = expected_version.clone();
     match run_verified_update(
@@ -450,6 +564,7 @@ pub async fn update_now(
                 .map_err(|error| error.to_string())
         },
         async move {
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
             update_attempt::validate_registered_install(
                 &preparation_handoff,
                 env!("CARGO_PKG_VERSION"),
@@ -470,12 +585,15 @@ pub async fn update_now(
         |bytes| {
             let _ = install_progress.send(UpdateProgress::Installing);
             let _ = install_window.hide();
-            update.install(bytes).map_err(|error| error.to_string())?;
-            Err("the verified installer returned without transferring control".to_owned())
+            install_verified_update(&update, bytes, &install_app, &install_handoff)
         },
     )
     .await
     {
+        // macOS and Linux: the app is replaced and this process is exiting for the relaunch.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        Ok(()) => Ok(()),
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         Ok(()) => {
             record_update_failure(&data_dir, &handoff.id, UpdateFailureReason::InstallerLaunch);
             let _ = window.show();
@@ -499,6 +617,7 @@ pub async fn update_now(
         }
         Err(UpdatePreparationError::Install(error)) => {
             record_update_failure(&data_dir, &handoff.id, UpdateFailureReason::InstallerLaunch);
+            log_install_failure(&data_dir, &expected_version, &error);
             let _ = window.show();
             let _ = window.set_focus();
             restart_after_install_failure(app, error);
@@ -510,10 +629,10 @@ pub async fn update_now(
 #[cfg(test)]
 mod tests {
     use super::{
-        download_percent, is_release_asset_url, newest_release, release_highlights,
-        run_verified_update, validate_manifest_result, GithubAsset, GithubRelease,
-        ReleaseCandidate, UpdateCoordinator, UpdatePreparationError, UpdateProgress, UpdateStatus,
-        UPDATE_MANIFEST, UPDATE_TARGET,
+        download_percent, is_release_asset_url, log_install_failure, newest_release,
+        release_highlights, run_verified_update, update_artifact_name, validate_manifest_result,
+        GithubAsset, GithubRelease, ReleaseCandidate, UpdateCoordinator, UpdatePreparationError,
+        UpdateProgress, UpdateStatus, UPDATE_MANIFEST, UPDATE_TARGET,
     };
     use semver::Version;
     use serde_json::json;
@@ -693,7 +812,11 @@ mod tests {
     #[test]
     fn binds_manifest_to_release_version_target_and_installer() {
         let candidate = candidate("0.1.0-beta.36");
-        let installer = "https://github.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/AliasMode_0.1.0-beta.36_x64-setup.exe";
+        let installer = format!(
+            "https://github.com/aliasmode/aliasmode/releases/download/v0.1.0-beta.36/{}",
+            update_artifact_name(&candidate.version)
+        );
+        let installer = installer.as_str();
         let url = Url::parse(installer).unwrap();
         let raw = update_json("0.1.0-beta.36", installer, "signed");
         assert!(validate_manifest_result(
@@ -885,6 +1008,25 @@ mod tests {
             serde_json::to_value(UpdateProgress::Installing).unwrap(),
             json!({ "phase": "installing" })
         );
+    }
+
+    #[test]
+    fn keeps_the_cause_of_a_failed_install() {
+        let directory = tempfile::tempdir().unwrap();
+        log_install_failure(
+            directory.path(),
+            "0.1.0-beta.99",
+            "Operation not permitted (os error 1)",
+        );
+        log_install_failure(directory.path(), "0.1.0-beta.99", "second failure");
+        let text =
+            std::fs::read_to_string(directory.path().join("logs/desktop-update.log")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with(
+            "to 0.1.0-beta.99 failed at the install step: Operation not permitted (os error 1)"
+        ));
+        assert!(lines[1].ends_with("second failure"));
     }
 
     #[test]

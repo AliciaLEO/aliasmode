@@ -3,11 +3,14 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { Launcher, BrowserLaunchError, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
+import { firefoxLaunchConfig, firefoxStartupPrefs, graphicsIdentity } from "./firefox-config.ts";
+import { FIREFOX_FONT_PACKS, firefoxFontPackPrefs, type FirefoxFontPack } from "./firefox-fonts.ts";
+import { Launcher, BrowserLaunchError, decodeMozLz4, type HostProcessSnapshot, type LauncherOptions } from "./launcher.ts";
 import { ProfileStore } from "./store.ts";
 import type { Profile } from "./types.ts";
 
 const cleanup: Array<() => void> = [];
+const LABEL = "Firefox profile · #1";
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
 function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
@@ -19,7 +22,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     id: "firefox-one", accId: "", name: "Firefox profile", group: "", username: "", password: "", twofa: "",
     proxy: null, ua: "", timezone: "", screenWidth: 1920, screenHeight: 1080, fingerprintSeed: 1,
     cookies: [], seeded: false, engine: "firefox",
-    firefox: { version: 1, runtimeVersion: "152.0.4-beta.30", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/152.0" } },
+    firefox: { version: 1, runtimeVersion: "156.0.1-beta.36", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" } },
   };
   store.upsertProfile(profile);
   const reservation = { endpoint: "http://127.0.0.1:41001", token: "a".repeat(64), generation: "11111111-1111-4111-8111-111111111111" };
@@ -30,11 +33,15 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   let snapshotIncomplete = false;
   let launches = 0;
   let receivedConfig: unknown;
+  let receivedPrefs: unknown;
+  let labeled = 0;
   let startupPreferences = "";
   let browserExecutable = "/fake/firefox.exe";
   let ownerExecutable = "node";
   const navigated: string[][] = [];
   const killed: number[] = [];
+  const fontPacks: FirefoxFontPack[] = [];
+  let fontPackFailure: Error | undefined;
   const snapshots = (): HostProcessSnapshot => ({
     incomplete: snapshotIncomplete,
     records: [
@@ -43,10 +50,16 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     ],
   });
   const options: LauncherOptions = {
-    store, dataRoot: root, firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
+    store, dataRoot: root, chromiumRuntimeRoot: join(root, "runtimes"), firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
     enforceHostCompatibility: true, hostPlatform, hostArch, captureFingerprint: async () => null,
     navigate: async (_endpoint, urls) => { navigated.push([...urls]); }, ensureCookies: async () => ({ injected: false }),
+    labelWindow: async () => { labeled++; },
     applySession: async () => {}, log: () => {},
+    ensureFirefoxFontPack: async (packRoot, pack) => {
+      fontPacks.push(pack);
+      if (fontPackFailure) throw fontPackFailure;
+      return join(packRoot, "firefox-fonts", pack.os, "fonts");
+    },
     readProcessSnapshot: async () => snapshots(),
     isPidAlive: (pid) => pid === 201 ? ownerAlive : pid === 202 ? browserAlive : false,
     killPid: async (pid) => { killed.push(pid); if (pid === 201) ownerAlive = false; if (pid === 202) browserAlive = false; },
@@ -56,6 +69,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
         launches++;
         expect(store.getLaunch(profile.id)?.firefoxOwner?.generation).toBe(reservation.generation);
         receivedConfig = args.config;
+        receivedPrefs = args.prefs;
         startupPreferences = readFileSync(join(args.userDataDir, "user.js"), "utf8");
         ownerAlive = true;
         await hooks?.onSpawn?.({ ...reservation, pid: 201, browserPid: 0 });
@@ -78,9 +92,10 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     },
   };
   return {
-    store, profile, options, killed, launcher: new Launcher(options),
-    launches: () => launches, config: () => receivedConfig,
-    startupPreferences: () => startupPreferences, navigated,
+    store, profile: store.getProfile(profile.id)!, options, killed, launcher: new Launcher(options),
+    launches: () => launches, config: () => receivedConfig, prefs: () => receivedPrefs, labeled: () => labeled,
+    startupPreferences: () => startupPreferences, navigated, fontPacks,
+    failFontPacks: (error?: Error) => { fontPackFailure = error; },
     setProcessPaths: (browser: string, owner: string) => {
       browserExecutable = browser;
       ownerExecutable = owner;
@@ -96,7 +111,13 @@ test("Firefox launches one saved persona and retains ownership across manager re
   const opened = await f.launcher.start(f.profile.id);
   expect(opened.ws.startsWith("firefox://")).toBe(true);
   expect(opened.ws).not.toContain("a".repeat(64));
-  expect(f.config()).toEqual(f.profile.firefox!.config);
+  // The launch adds the per-profile seed, voices, devices and window label; the saved identity stays as it was.
+  expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
+  expect(f.config()).toMatchObject({ "aliasmode:windowLabel": LABEL, "voices:blockIfNotDefined": true, "mediaDevices:enabled": true });
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+  expect(f.store.getProfile(f.profile.id)!.firefox!.config).not.toHaveProperty("audio:seed");
+  // The engine shows the label in the native title, so no page script rewrites document.title.
+  expect(f.labeled()).toBe(0);
   expect(f.store.getLaunch(f.profile.id)?.engine).toBe("firefox");
   const restarted = new Launcher(f.options);
   expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
@@ -104,6 +125,85 @@ test("Firefox launches one saved persona and retains ownership across manager re
   expect(f.launches()).toBe(1);
   expect(await restarted.stop(f.profile.id)).toBe(true);
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
+});
+
+test("a proxied Firefox launch gives the engine the proxy exit IP for WebRTC, and no answer keeps today's config", async () => {
+  for (const exitIp of ["203.0.113.7", null]) {
+    const f = fixture();
+    const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+    f.store.upsertProfile({ ...f.profile, proxy });
+    const profile = f.store.getProfile(f.profile.id)!;
+    const asked: unknown[] = [];
+    const launcher = new Launcher({
+      ...f.options,
+      lookupExitLocation: async (spec) => { asked.push(spec); return exitIp ? { timezone: profile.timezone, ip: exitIp } : null; },
+    });
+    await launcher.start(profile.id);
+    expect(asked).toEqual([proxy]);
+    expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, exitIp ?? undefined));
+    expect((f.config() as Record<string, unknown>)["webrtc:ipv4"]).toBe(exitIp ?? undefined);
+    expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("webrtc:ipv4");
+    expect(await launcher.stop(profile.id)).toBe(true);
+  }
+});
+
+test("a proxied Firefox launch saves the proxy exit's timezone in its config, and no answer keeps the saved one", async () => {
+  for (const exit of [{ timezone: "Asia/Tokyo", country: "JP", ip: "203.0.113.7" }, null]) {
+    const f = fixture();
+    const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
+    const firefox = { ...f.profile.firefox!, config: { ...f.profile.firefox!.config, timezone: "Europe/London" } };
+    f.store.upsertProfile({ ...f.profile, proxy, timezone: "Europe/London", firefox });
+    const options = { ...f.options, lookupExitLocation: async () => exit };
+    const launcher = new Launcher(options);
+    const opened = await launcher.start(f.profile.id);
+    const timezone = exit?.timezone ?? "Europe/London";
+    const saved = f.store.getProfile(f.profile.id)!;
+    expect(saved.timezone).toBe(timezone);
+    expect(saved.firefox!.config.timezone).toBe(timezone);
+    expect((f.config() as Record<string, unknown>).timezone).toBe(timezone);
+    // The launch identity was recorded with the saved timezone, so a restarted app reattaches.
+    const restarted = new Launcher(options);
+    expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
+    expect(await restarted.certifiedActive(f.profile.id)).toBe(true);
+    expect(f.launches()).toBe(1);
+    expect(await restarted.stop(f.profile.id)).toBe(true);
+  }
+});
+
+test.each([false, true])("legacy Firefox keeps its old digest until confirmed close (stale=%s)", async (stale) => {
+  const f = fixture();
+  const legacyConfig = { version: 1 as const, runtimeVersion: "156.0.1-beta.36", config: { "navigator.userAgent": "Mozilla/5.0 Firefox/156.0" } };
+  (f.store as any).db.query("UPDATE profiles SET locale = '', firefox_config_json = ? WHERE id = ?")
+    .run(JSON.stringify(legacyConfig), f.profile.id);
+  const legacy = f.store.getProfile(f.profile.id)!;
+  await f.launcher.start(legacy.id);
+  const launch = f.store.getLaunch(legacy.id)!;
+  const oldDigest = createHash("sha256").update(JSON.stringify({
+    schema: 2, engine: "firefox", firefox: legacy.firefox,
+    binarySha256: "0".repeat(64), host: ["win32", "x64"], headless: false,
+    windowScale: [0.65, 0.9], ua: legacy.ua, platform: legacy.platform,
+    proxy: null, webRtcPolicy: "default_public_interface_only", timezone: legacy.timezone,
+    screen: [legacy.screenWidth, legacy.screenHeight], fingerprintSeed: legacy.fingerprintSeed, extensions: [],
+  })).digest("hex");
+  expect(launch.personaDigest).toBe(oldDigest);
+  const restarted = new Launcher(f.options);
+  if (stale) {
+    await f.options.firefoxRuntime!.close(launch.firefoxOwner!);
+  } else {
+    await restarted.start(legacy.id);
+    expect(f.launches()).toBe(1);
+    expect(f.store.getProfile(legacy.id)!.locale).toBeUndefined();
+    expect(f.store.getProfile(legacy.id)!.firefox).toEqual(legacyConfig);
+    expect(await restarted.stop(legacy.id)).toBe(true);
+  }
+  await restarted.start(legacy.id);
+  const completed = f.store.getProfile(legacy.id)!;
+  expect(completed.locale).toBe("en-US");
+  expect(completed.firefox!.config.fonts).toBeArray();
+  expect(f.config()).toEqual(firefoxLaunchConfig(completed, LABEL));
+  expect(f.store.getLaunch(legacy.id)!.personaDigest).not.toBe(oldDigest);
+  expect(f.launches()).toBe(2);
+  expect(await restarted.stop(legacy.id)).toBe(true);
 });
 
 test("Firefox uses its authenticated owner when an external close leaves the host scan inconclusive", async () => {
@@ -120,6 +220,32 @@ test("Firefox uses its authenticated owner when an external close leaves the hos
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
   expect(f.killed).toEqual([]);
   expect(f.store.getLaunch(f.profile.id)).toBeNull();
+});
+
+test.each(["stop", "reconcile", "reopen"])("Linux Firefox recovers native exit through %s without Chromium group proof", async (operation) => {
+  const f = fixture("linux", "x64");
+  await f.launcher.start(f.profile.id);
+  const launch = f.store.getLaunch(f.profile.id)!;
+  await f.options.firefoxRuntime!.close(launch.firefoxOwner!);
+  if (operation === "stop") expect(await f.launcher.stop(f.profile.id)).toBe(true);
+  if (operation === "reconcile") expect(await f.launcher.reconcileOrphan(f.profile.id, launch)).toBe("dead");
+  await f.launcher.start(f.profile.id);
+  expect(f.launches()).toBe(2);
+  expect(f.killed).toEqual([]);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+test("Linux Firefox retains native-exit ownership while its process scan is incomplete", async () => {
+  const f = fixture("linux", "x64");
+  await f.launcher.start(f.profile.id);
+  const launch = f.store.getLaunch(f.profile.id)!;
+  await f.options.firefoxRuntime!.close(launch.firefoxOwner!);
+  f.setSnapshotIncomplete(true);
+  expect(await f.launcher.stop(f.profile.id)).toBe(false);
+  expect(f.store.getLaunch(f.profile.id)).not.toBeNull();
+  expect(f.killed).toEqual([]);
+  f.setSnapshotIncomplete(false);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
 });
 
 test("Firefox retains ownership when its host scan stays inconclusive after authenticated close", async () => {
@@ -185,12 +311,13 @@ test("Firefox records and matches the managed Node owner after PATH changes", as
   }
 });
 
-test("Firefox supports Darwin arm64 and Linux x64 personas without changing saved config", async () => {
-  for (const [platform, arch] of [["darwin", "arm64"], ["linux", "x64"]] as const) {
+test("Firefox supports Darwin arm64, Darwin x64 and Linux x64 personas without changing saved config", async () => {
+  for (const [platform, arch] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]] as const) {
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     const opened = await f.launcher.start(f.profile.id);
-    expect(f.config()).toEqual(savedConfig.config);
+    // A Windows persona on these computers reads the Windows font pack.
+    expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL, join(f.options.chromiumRuntimeRoot!, "firefox-fonts", "windows", "fonts")));
     expect(f.store.getLaunch(f.profile.id)?.firefoxOwner).toMatchObject({ pid: 201, browserPid: 202 });
     const restarted = new Launcher(f.options);
     expect(await restarted.start(f.profile.id)).toEqual({ ...opened, nativeSessionRestored: false });
@@ -201,8 +328,26 @@ test("Firefox supports Darwin arm64 and Linux x64 personas without changing save
   }
 });
 
+test("an Intel Mac asks its GPU vendor once for macOS profiles and shows a card of that vendor", async () => {
+  const f = fixture("darwin", "x64");
+  let asked = 0;
+  const launcher = new Launcher({ ...f.options, macGraphicsVendor: async () => { asked++; return "amd"; } });
+  await launcher.start(f.profile.id);
+  // The fixture's profile is a Windows one: no question, and the config is unchanged.
+  expect(asked).toBe(0);
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+  const mac = { ...f.profile.firefox!.config, "navigator.platform": "MacIntel", ...graphicsIdentity("macos", 1) };
+  f.store.upsertProfile({ ...f.profile, firefox: { ...f.profile.firefox!, config: mac } });
+  const profile = f.store.getProfile(f.profile.id)!;
+  await launcher.start(profile.id);
+  expect(asked).toBe(1);
+  expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, undefined, { vendor: "amd" }));
+  expect((f.config() as Record<string, unknown>)["webGl:vendor"]).toBe("ATI Technologies Inc.");
+  expect(await launcher.stop(profile.id)).toBe(true);
+});
+
 test("Firefox rejects unsupported host tuples without changing saved config", async () => {
-  for (const [platform, arch] of [["darwin", "x64"], ["linux", "arm64"], ["win32", "arm64"]] as const) {
+  for (const [platform, arch] of [["linux", "arm64"], ["win32", "arm64"]] as const) {
     const f = fixture(platform, arch);
     const savedConfig = structuredClone(f.profile.firefox!);
     await expect(f.launcher.start(f.profile.id)).rejects.toBeInstanceOf(BrowserLaunchError);
@@ -236,15 +381,129 @@ test("Darwin and Linux Firefox ownership remains exact after an owner crash", as
   }
 });
 
-test("Firefox enables native tab restore in the owned profile before spawn", async () => {
+test("Local capture retains unavailable tabs without reverting fresh storage", async () => {
+  for (const tabs of [undefined, [], ["https://two.example/"]]) {
+    const f = fixture();
+    const savedTabs = ["https://one.example/", "https://two.example/", "https://one.example/"];
+    f.store.saveSessionBundle(f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: savedTabs }));
+    const fresh = {
+      cookies: [{ name: "session", value: "fresh", domain: "one.example", path: "/" }],
+      origins: [{ origin: "https://one.example", localStorage: [{ name: "state", value: "fresh" }] }],
+    };
+    const launcher = new Launcher({ ...f.options, readSession: async () => JSON.stringify({ ...fresh, tabs }) });
+    await launcher.start(f.profile.id);
+    if (tabs === undefined) f.closeNativeWindow();
+    expect(await launcher.captureLocalSession(f.profile.id)).toBe(true);
+    expect(JSON.parse(f.store.getSessionBundle(f.profile.id)!)).toEqual({ ...fresh, tabs: tabs ?? savedTabs });
+    expect(await launcher.stop(f.profile.id)).toBe(true);
+  }
+});
+
+test("Mac reopens a closed window on its existing Firefox owner", async () => {
+  const f = fixture("darwin", "arm64");
+  const initial = await f.launcher.start(f.profile.id);
+  const launch = f.store.getLaunch(f.profile.id)!;
+  const tabs = ["https://new.example/", "https://new.example/"];
+  writeFileSync(join(f.launcher.userDataDir(f.profile.id), "aliasmode-session-tabs.json"), JSON.stringify({
+    generation: `${launch.debugPort}:${launch.startedAt}`, tabs,
+  }));
+  f.closeNativeWindow();
+  expect(await f.launcher.start(f.profile.id)).toEqual({ ...initial, nativeSessionRestored: true });
+  expect(f.navigated).toEqual([tabs]);
+  expect(f.launches()).toBe(1);
+  expect(f.killed).toEqual([]);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+test("Mac reopens the latest native-close tabs instead of an older session", async () => {
+  const f = fixture("darwin", "arm64");
+  const root = f.launcher.userDataDir(f.profile.id);
+  const tabs = ["https://new.example/", "https://second.example/", "https://new.example/"];
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "sessionstore.jsonlz4"), "older native session");
+  writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: "previous", tabs }));
+  f.store.saveSessionBundle(f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: ["https://old.example/"] }));
+  await f.launcher.start(f.profile.id);
+  expect(f.navigated).toEqual([tabs]);
+  const launch = f.store.getLaunch(f.profile.id)!;
+  expect(f.launcher.closedFirefoxTabs(f.profile.id, launch)).toBeUndefined();
+  writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: `${launch.debugPort}:${launch.startedAt}`, tabs }));
+  expect(f.launcher.closedFirefoxTabs(f.profile.id, launch)).toEqual(tabs);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+test("Firefox enables native tab restore with session cookies in the owned profile before spawn", async () => {
   const f = fixture();
   const root = f.launcher.userDataDir(f.profile.id);
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
-  writeFileSync(join(root, "user.js"), 'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 1);\n');
+  writeFileSync(
+    join(root, "user.js"),
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 2);\nuser_pref("browser.startup.page", 1);\n',
+  );
   f.store.saveSessionBundle(f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: ["https://old.example/"] }));
   const opened = await f.launcher.start(f.profile.id);
-  expect(f.startupPreferences()).toBe('user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 3);\n');
+  expect(f.startupPreferences()).toBe(
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n',
+  );
+  expect(opened.nativeSessionRestored).toBe(true);
+  expect(f.navigated).toEqual([]);
+  expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+/** A literal-only mozLz4 file, as Firefox reads it. */
+function mozLz4(value: unknown): Buffer {
+  const data = Buffer.from(JSON.stringify(value));
+  const header = Buffer.alloc(12);
+  header.write("mozLz40\0", 0, "latin1");
+  header.writeUInt32LE(data.length, 8);
+  const extra: number[] = [];
+  if (data.length >= 15) {
+    let rest = data.length - 15;
+    for (; rest >= 255; rest -= 255) extra.push(255);
+    extra.push(rest);
+  }
+  return Buffer.concat([header, Buffer.from([Math.min(data.length, 15) << 4, ...extra]), data]);
+}
+
+test("mozLz4 decoding follows LZ4 back-references", () => {
+  const header = Buffer.alloc(12);
+  header.write("mozLz40\0", 0, "latin1");
+  header.writeUInt32LE(12, 8);
+  expect(decodeMozLz4(Buffer.concat([header, Buffer.from([0x35, 0x61, 0x62, 0x63, 3, 0])])).toString()).toBe("abcabcabcabc");
+  expect(JSON.parse(decodeMozLz4(mozLz4({ windows: [] })).toString())).toEqual({ windows: [] });
+});
+
+test("Firefox reopens without native restore when the saved session would show no web page", async () => {
+  // A script that closed every page ended Firefox through its last tab. Firefox would reopen that
+  // window as an empty new-tab page, the owner never became ready, and every open failed.
+  const lastTabClosed = { windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "about:blank" }, { url: "https://example.com/" }], index: 2 }] }] };
+  const newTabOnly = { windows: [{ tabs: [{ entries: [{ url: "chrome://browser/content/blanktab.html" }], index: 1 }] }] };
+  for (const [file, session] of [
+    ["sessionstore.jsonlz4", lastTabClosed],
+    ["sessionstore-backups/recovery.jsonlz4", newTabOnly],
+  ] as const) {
+    const f = fixture();
+    const root = f.launcher.userDataDir(f.profile.id);
+    mkdirSync(join(root, "sessionstore-backups"), { recursive: true });
+    writeFileSync(join(root, file), mozLz4(session));
+    writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: "previous", tabs: ["https://www.wikipedia.org/"] }));
+    await f.launcher.start(f.profile.id);
+    expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
+    expect(f.navigated).toEqual([["https://www.wikipedia.org/"]]);
+    expect(await f.launcher.stop(f.profile.id)).toBe(true);
+  }
+});
+
+test("Firefox natively restores a saved session with a web page", async () => {
+  const f = fixture();
+  const root = f.launcher.userDataDir(f.profile.id);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4({
+    windows: [{ tabs: [{ entries: [{ url: "about:blank" }, { url: "https://example.com/" }], index: 2 }] }],
+  }));
+  const opened = await f.launcher.start(f.profile.id);
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 3);\n');
   expect(opened.nativeSessionRestored).toBe(true);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -257,7 +516,9 @@ test("Firefox disables native restore when the Cloud coordinator requests portab
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   writeFileSync(join(root, "user.js"), 'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 3);\n');
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false, restoreLastSession: false });
-  expect(f.startupPreferences()).toBe('user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.startup.page", 0);\n');
+  expect(f.startupPreferences()).toBe(
+    'user_pref("toolkit.telemetry.enabled", false);\nuser_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n',
+  );
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.navigated).toEqual([]);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -270,7 +531,7 @@ test("Firefox disables native restore before applying a pending Cloud bundle", a
   writeFileSync(join(root, "sessionstore.jsonlz4"), "opaque native session");
   f.store.upsertProfiles([f.profile], new Map([[f.profile.id, JSON.stringify({ cookies: [], origins: [], tabs: [] })]]));
   const opened = await f.launcher.start(f.profile.id, [], { autoNavigate: false });
-  expect(f.startupPreferences()).toBe('user_pref("browser.startup.page", 0);\n');
+  expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
   expect(opened.nativeSessionRestored).toBe(false);
   expect(f.store.getPendingSessionBundle(f.profile.id)).toBeNull();
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -287,7 +548,6 @@ test("Firefox target probes ignore replaced launch generations", async () => {
     f.store.recordLaunch({ ...launch, startedAt: launch.startedAt + 1 });
     return { ...result, hasPages: false, pageTargets: [] };
   };
-  expect(await f.launcher.pageTargetFingerprint(f.profile.id, launch)).toBeNull();
   f.store.recordLaunch(launch);
   expect(await f.launcher.hasPageTargets(f.profile.id)).toBe(true);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
@@ -342,4 +602,89 @@ test("Firefox rejects Chromium launch switches and stale stop generations", asyn
   expect(await f.launcher.stop(f.profile.id, { debugPort: launch.debugPort, startedAt: launch.startedAt - 1 })).toBe(false);
   expect(await f.launcher.active(f.profile.id)).toBe(true);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+function macosPersona(f: ReturnType<typeof fixture>): Profile {
+  const profile = {
+    ...f.profile, platformOs: "macos",
+    firefox: { ...f.profile.firefox!, config: { ...f.profile.firefox!.config, "navigator.platform": "MacIntel" } },
+  };
+  f.store.upsertProfile(profile);
+  return f.store.getProfile(profile.id)!;
+}
+
+test("a Firefox profile of this computer's own OS opens without a font pack", async () => {
+  const f = fixture("win32", "x64");
+  await f.launcher.start(f.profile.id);
+  expect(f.fontPacks).toEqual([]);
+  expect(f.config()).not.toHaveProperty("aliasmode:fontsDir");
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+});
+
+test("a Firefox profile of another OS opens with that OS's font pack", async () => {
+  const f = fixture("win32", "x64");
+  const profile = macosPersona(f);
+  await f.launcher.start(profile.id);
+  expect(f.fontPacks).toEqual([FIREFOX_FONT_PACKS.macos]);
+  const fontsDir = join(f.options.chromiumRuntimeRoot!, "firefox-fonts", "macos", "fonts");
+  expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, fontsDir));
+  expect(f.config()).toMatchObject({ "aliasmode:fontsDir": fontsDir });
+  expect(f.prefs()).toEqual({ ...firefoxStartupPrefs(profile), ...firefoxFontPackPrefs(fontsDir, "win32") });
+  // The saved identity never stores the folder of this computer.
+  expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("aliasmode:fontsDir");
+});
+
+test("a Firefox launch has WebGPU where stock Firefox has it, with this computer's adapter only for a macOS profile on an Apple Silicon Mac", async () => {
+  for (const [platform, arch, persona, enabled, blocked] of [
+    ["darwin", "arm64", "macos", true, false], ["win32", "x64", "macos", false, true], ["darwin", "arm64", "windows", true, true],
+  ] as const) {
+    const f = fixture(platform, arch);
+    const profile = persona === "macos" ? macosPersona(f) : f.profile;
+    await f.launcher.start(profile.id);
+    expect(f.prefs()).toMatchObject(firefoxStartupPrefs(profile, platform, arch));
+    expect(f.prefs()).toMatchObject({ "dom.webgpu.enabled": enabled });
+    expect(Object.hasOwn(f.prefs() as object, "gfx.blacklist.webgpu")).toBe(blocked);
+  }
+});
+
+test("a Firefox profile of another OS does not open when its font pack cannot be installed", async () => {
+  const f = fixture("darwin", "arm64");
+  f.failFontPacks(new Error("network is unreachable"));
+  const error = await f.launcher.start(f.profile.id).catch((caught) => caught);
+  expect(error).toEqual(new BrowserLaunchError("preflight", "firefox_fonts_download"));
+  expect((error as BrowserLaunchError).guidance).toContain("could not be downloaded");
+  expect(f.fontPacks).toEqual([FIREFOX_FONT_PACKS.windows]);
+  expect(f.launches()).toBe(0);
+  expect(f.store.getLaunch(f.profile.id)).toBeNull();
+
+  f.failFontPacks(undefined);
+  await f.launcher.start(f.profile.id);
+  expect(f.launches()).toBe(1);
+});
+
+test("Firefox font packs are fetched in the background once per needed OS", async () => {
+  const f = fixture("win32", "x64");
+  const mac = macosPersona(f);
+  const linux = { ...mac, id: "firefox-linux", platformOs: "linux" };
+  const chromium = { ...mac, id: "chromium-mac", engine: "chromium" as const, firefox: undefined };
+  f.failFontPacks(new Error("offline"));
+  f.launcher.prefetchFirefoxFontPacks([f.profile, mac, { ...mac, id: "firefox-mac-2" }, linux, chromium]);
+  await Bun.sleep(0);
+  expect(f.fontPacks.map((pack) => pack.os)).toEqual(["macos", "linux"]);
+  // A failed background download is not repeated in the background; opening the profile retries it.
+  f.launcher.prefetchFirefoxFontPacks([mac]);
+  expect(f.fontPacks).toHaveLength(2);
+  f.failFontPacks(undefined);
+  await f.launcher.start(mac.id);
+  expect(f.fontPacks.map((pack) => pack.os)).toEqual(["macos", "linux", "macos"]);
+  f.launcher.prefetchFirefoxFontPacks([mac]);
+  expect(f.fontPacks).toHaveLength(4);
+});
+
+test("the first background fetch removes font packs that are no longer pinned", () => {
+  const f = fixture("win32", "x64");
+  const packs = join(f.options.chromiumRuntimeRoot!, "firefox-fonts");
+  mkdirSync(join(packs, "macos-0000000000000000", "fonts"), { recursive: true });
+  f.launcher.prefetchFirefoxFontPacks([]);
+  expect(existsSync(join(packs, "macos-0000000000000000"))).toBe(false);
 });

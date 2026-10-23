@@ -21,7 +21,7 @@ const isStrings = (value: JsonValue | undefined) => Array.isArray(value) && valu
 
 /** The engine crashes on a value of the wrong type (settings/properties.json of the 156 engine). */
 function expectEngineTypes(config: Record<string, JsonValue>) {
-  for (const key of ["audio:seed", "aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(isUint(config[key])).toBe(true);
+  for (const key of ["aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(isUint(config[key])).toBe(true);
   expect(config["voices:blockIfNotDefined"]).toBeBoolean();
   expect(config["mediaDevices:enabled"]).toBeBoolean();
   for (const kind of ["micros", "webcams", "speakers"]) expect(isUint(config[`mediaDevices:${kind}`])).toBe(true);
@@ -40,27 +40,28 @@ function expectEngineTypes(config: Record<string, JsonValue>) {
   }
 }
 
-test("each Firefox launch gets audio, canvas and text seeds, voices and media devices from its profile seed, never stored", () => {
-  const one = profile(3983315515, { "navigator.globalPrivacyControl": true, "canvas:seed": 7, "fonts:spacing_seed": 8 });
+test("each Firefox launch gets canvas and text seeds, voices and media devices from its profile seed, never stored, and no audio seed", () => {
+  const one = profile(3983315515, { "navigator.globalPrivacyControl": true, "canvas:seed": 7, "fonts:spacing_seed": 8, "audio:seed": 9 });
   const saved = structuredClone(one.firefox);
   const first = firefoxLaunchConfig(one);
   expectEngineTypes(first);
   expect((first.voices as JsonValue[]).length).toBeGreaterThan(0);
   expect(first["voices:blockIfNotDefined"]).toBe(true);
   expect(first["mediaDevices:enabled"]).toBe(true);
-  // 156 ignores the canvas and font seeds; privacy control without its Sec-GPC header is a tell.
-  for (const key of ["canvas:seed", "fonts:spacing_seed", "navigator.globalPrivacyControl", "aliasmode:windowLabel"]) {
+  // 156 ignores the canvas and font seeds; privacy control without its Sec-GPC header is a tell. Stock
+  // Firefox renders audio the same on every OS, and an audio seed only added noise to exact signals.
+  for (const key of ["canvas:seed", "fonts:spacing_seed", "navigator.globalPrivacyControl", "aliasmode:windowLabel", "audio:seed"]) {
     expect(first).not.toHaveProperty(key);
   }
   expect(firefoxLaunchConfig(structuredClone(one))).toEqual(first);
   expect(one.firefox).toEqual(saved);
   const other = firefoxLaunchConfig(profile(2354318635));
-  for (const key of ["audio:seed", "aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(other[key]).not.toBe(first[key]);
+  for (const key of ["aliasmode:canvasSeed", "aliasmode:textSeed"]) expect(other[key]).not.toBe(first[key]);
 });
 
 test("a Firefox launch keeps a seed, voice list or media device set that the profile stores", () => {
-  const config = firefoxLaunchConfig(profile(7, { "audio:seed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false }));
-  expect(config).toMatchObject({ "audio:seed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false });
+  const config = firefoxLaunchConfig(profile(7, { "aliasmode:canvasSeed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false }));
+  expect(config).toMatchObject({ "aliasmode:canvasSeed": 42, voices: [], "voices:blockIfNotDefined": false, "mediaDevices:enabled": false });
   expect(Object.keys(config).filter((key) => key.startsWith("mediaDevices:"))).toEqual(["mediaDevices:enabled"]);
 });
 
@@ -104,7 +105,7 @@ test("a Firefox launch shows the window label in the native title and starts in 
   const german = { ...profile(5, { "locale:language": "de", "locale:region": "DE", "navigator.language": "de-DE" }), locale: "de-DE" };
   expect(firefoxLaunchConfig(german, "Shop · #3 — ")["aliasmode:windowLabel"]).toBe("Shop · #3 — ");
   expect(firefoxStartupPrefs(german)).toEqual({
-    "intl.locale.requested": "de-DE", "dom.webgpu.enabled": true, "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
+    "intl.locale.requested": "de-DE", "dom.webgpu.enabled": true, "dom.webgpu.service-workers.enabled": true, "gfx.blacklist.webgpu": 4, "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
     "browser.newtabpage.enabled": true,
   });
@@ -115,6 +116,8 @@ test("WebGPU shows where stock Firefox 156 has it, with this computer's adapter 
   const macos = (config: Record<string, JsonValue> = {}) => ({ ...profile(5, { "navigator.platform": "MacIntel", ...config }), platformOs: "macos" as const });
   const webgpu = (persona: Profile, platform?: NodeJS.Platform, arch?: string) => {
     const prefs = firefoxStartupPrefs(persona, platform, arch);
+    // WebGPU in service workers comes with WebGPU, as in stock Firefox.
+    expect(prefs["dom.webgpu.service-workers.enabled"]).toBe(prefs["dom.webgpu.enabled"]!);
     return [prefs["dom.webgpu.enabled"], prefs["gfx.blacklist.webgpu"] === 4];
   };
   const intelCard = { "webGl:vendor": "Intel Inc.", "webGl:renderer": "Intel(R) HD Graphics 400, or similar" };
@@ -133,6 +136,65 @@ test("WebGPU shows where stock Firefox 156 has it, with this computer's adapter 
   for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"], [undefined, undefined]] as const) {
     expect(webgpu(profile(5), platform, arch)).toEqual([true, true]);
     expect(webgpu(profile(5, { "navigator.platform": "Linux x86_64" }), platform, arch)).toEqual([false, true]);
+  }
+});
+
+test("a profile of another OS gets that OS's stock fonts and Windows colours; a profile of this computer's OS keeps its own", () => {
+  const windows = profile(5);
+  const macos = { ...profile(5, { "navigator.platform": "MacIntel" }), platformOs: "macos" as const };
+  const linux = profile(5, { "navigator.platform": "Linux x86_64" });
+  const crossOs = (prefs: Record<string, JsonValue>) => Object.keys(prefs).filter((key) => /^(font\.|ui\.)/.test(key));
+  const onLinux = firefoxStartupPrefs(windows, "linux", "x64");
+  expect(onLinux).toMatchObject({
+    "font.name-list.serif.x-western": "Times New Roman", "font.name-list.sans-serif.x-western": "Arial",
+    "font.name-list.monospace.x-western": "Consolas", "font.name-list.cursive.x-western": "Comic Sans MS",
+    "font.name-list.fantasy.x-western": "Arial", "font.name-list.emoji": "Segoe UI Emoji, Twemoji Mozilla",
+    "font.name-list.sans-serif.zh-CN": "Microsoft YaHei, SimHei, Noto Sans CJK SC, Noto Sans SC",
+    "font.size.monospace.x-western": 13, "font.minimum-size.th": 10,
+    "ui.highlight": "#0078d7", "ui.selecteditem": "#0078d7", "ui.accentcolor": "#0060df",
+    "ui.-moz-dialog": "#ffffff", "ui.-moz-dialogtext": "#000000", "ui.-moz_menuhover": "#e0e0e6",
+  });
+  // Windows has no fantasy default but in x-western, where stock Firefox draws it in Arial.
+  expect(crossOs(onLinux).filter((key) => key.startsWith("font.name-list.fantasy."))).toEqual(["font.name-list.fantasy.x-western"]);
+  expect(firefoxStartupPrefs(windows, "darwin", "arm64")).toMatchObject({ "font.name-list.emoji": "Segoe UI Emoji, Twemoji Mozilla", "ui.highlight": "#0078d7" });
+  const macOnWindows = firefoxStartupPrefs(macos, "win32", "x64");
+  expect(macOnWindows).toMatchObject({
+    "font.name-list.serif.x-western": "Times, Times New Roman", "font.name-list.sans-serif.x-western": "Helvetica, Arial",
+    "font.name-list.monospace.x-western": "Menlo", "font.name-list.cursive.x-western": "Apple Chancery",
+    "font.name-list.fantasy.x-western": "Papyrus", "font.name-list.emoji": "Apple Color Emoji",
+  });
+  // Stock macOS colours are not measured yet: a macOS profile keeps the computer's.
+  expect(crossOs(macOnWindows).some((key) => key.startsWith("ui."))).toBe(false);
+  for (const [persona, platform] of [[windows, "win32"], [macos, "darwin"], [linux, "linux"], [linux, "win32"], [windows, undefined]] as const) {
+    expect(crossOs(firefoxStartupPrefs(persona, platform, "x64"))).toEqual([]);
+  }
+});
+
+test("a Firefox profile's processor count fits its graphics card class, at launch and when generated", () => {
+  const card = (renderer: string) => ({ "webGl:vendor": "Google Inc. (NVIDIA)", "webGl:renderer": renderer });
+  const threadsAt = (renderer: string, threads: number, seed = 5) =>
+    firefoxLaunchConfig(profile(seed, { ...card(renderer), "navigator.hardwareConcurrency": threads }))["navigator.hardwareConcurrency"];
+  // Stock Firefox names every GeForce from the 900 series on as a GTX 980, so a 32-thread one is real.
+  expect(threadsAt("ANGLE (NVIDIA, NVIDIA GeForce GTX 980 Direct3D11 vs_5_0 ps_5_0), or similar", 32)).toBe(32);
+  expect(threadsAt("ANGLE (Intel, Intel(R) HD Graphics Direct3D11 vs_5_0 ps_5_0), or similar", 16)).toBe(16);
+  // A Fermi or Kepler GeForce (GTX 480 class) came with 2 to 12 threads, a Tesla one with 2 or 4.
+  for (let seed = 1; seed <= 30; seed++) {
+    expect([2, 4, 8, 12]).toContain(threadsAt("ANGLE (NVIDIA, NVIDIA GeForce GTX 480 Direct3D11 vs_5_0 ps_5_0), or similar", 32, seed) as number);
+    expect([2, 4]).toContain(threadsAt("ANGLE (NVIDIA, NVIDIA GeForce 8800 GTX Direct3D11 vs_4_0 ps_4_0)", 16, seed) as number);
+    expect([4, 6, 8, 12, 16]).toContain(threadsAt("ANGLE (AMD, Radeon HD 3200 Graphics Direct3D11 vs_5_0 ps_5_0), or similar", 32, seed) as number);
+  }
+  // The stored count is kept, and a launch picks the same count each time.
+  const old = profile(7, { ...card("ANGLE (NVIDIA, NVIDIA GeForce GTX 480 Direct3D11 vs_5_0 ps_5_0), or similar"), "navigator.hardwareConcurrency": 32 });
+  expect(firefoxLaunchConfig(old)["navigator.hardwareConcurrency"]).toBe(firefoxLaunchConfig(structuredClone(old))["navigator.hardwareConcurrency"]!);
+  expect(old.firefox!.config["navigator.hardwareConcurrency"]).toBe(32);
+  // Generated profiles already have a fitting count, the one their launch shows.
+  for (let seed = 1; seed <= 60; seed++) {
+    const generated = createFirefoxProfileConfig(1920, 1080, "windows", seed).config;
+    const launched = firefoxLaunchConfig({ ...profile(seed, generated), fingerprintSeed: seed });
+    expect(launched["navigator.hardwareConcurrency"]).toBe(generated["navigator.hardwareConcurrency"]!);
+    if (/GTX 480|8800 GTX|HD 3200|Intel\(R\) HD Graphics Direct/.test(String(generated["webGl:renderer"]))) {
+      expect(Number(generated["navigator.hardwareConcurrency"])).toBeLessThanOrEqual(20);
+    }
   }
 });
 
@@ -258,6 +320,7 @@ test("a Firefox launch shows its own subset of the stock font list, the same on 
     "Linux x86_64": ["Arimo", "Tinos", "Cousine", "Noto Sans SC", "Noto Serif Yezidi", "Twemoji Mozilla"],
   };
   for (const [platform, kept] of Object.entries(core)) {
+    if (platform === "Win32") continue;
     const stock = stocked(1, platform).firefox!.config.fonts as string[];
     const lists = Array.from({ length: 12 }, (_, i) => firefoxLaunchConfig(stocked(i + 1, platform)).fonts as string[]);
     expect(new Set(lists.map((list) => list.join("|"))).size).toBeGreaterThan(3);
@@ -267,6 +330,19 @@ test("a Firefox launch shows its own subset of the stock font list, the same on 
       expect(list.every((font) => stock.includes(font))).toBe(true);
     }
     expect(firefoxLaunchConfig(stocked(1, platform)).fonts).toEqual(lists[0]!);
+  }
+  // Every Windows profile shows the whole stock list, on Windows with the named styles of Sitka:
+  // Pixelscan treats the handwriting, supplemental, historic and CJK Extension B families as core fonts.
+  const windowsStock = stocked(1, "Win32").firefox!.config.fonts as string[];
+  const sitka = ["Sitka Small", "Sitka Text", "Sitka Subheading", "Sitka Heading", "Sitka Display", "Sitka Banner"];
+  for (let seed = 1; seed <= 40; seed++) {
+    const list = firefoxLaunchConfig(stocked(seed, "Win32")).fonts as string[];
+    expect(new Set(list)).toEqual(new Set([...windowsStock, ...sitka]));
+    // With the font pack on another OS only Sitka Text of SitkaVF loads.
+    expect(firefoxLaunchConfig(stocked(seed, "Win32"), undefined, "/data/runtimes/firefox-fonts/windows-1/fonts").fonts).toEqual(windowsStock);
+    for (const font of [...core.Win32!, "Gabriola", "Segoe Print", "Microsoft Himalaya", "Mongolian Baiti", "Ebrima", "Segoe UI Historic", "Sylfaen", "SimSun-ExtB", "MingLiU-ExtB"]) {
+      expect(list).toContain(font);
+    }
   }
   // The stored list is unchanged, and a list the user changed is shown as stored.
   const one = stocked(5, "Win32");

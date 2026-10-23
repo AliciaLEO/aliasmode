@@ -39,6 +39,36 @@ const INTEL_MAC_VENDORS: Record<MacGraphicsVendor, string> = { intel: "Intel Inc
 const INTEL_MAC_THREADS: Record<MacGraphicsVendor, number[]> = { intel: [4, 8], amd: [8, 12, 16] };
 
 /**
+ * Logical processors of computers per graphics class that stock Firefox reports. Its
+ * SanitizeRenderer.cpp names a range of cards by one model: "GeForce GTX 980" is every GeForce from
+ * the 900 series to today's RTX cards, "Radeon R9 200 Series" every newer Radeon, "Intel(R) HD
+ * Graphics 400" Intel's UHD and numbered HD graphics since 2015, "Intel(R) HD Graphics" Iris Xe and
+ * HD 2000 to 4600, "Radeon HD 3200 Graphics" Radeon graphics without a model number (most Ryzen
+ * laptops). The older classes come with the processors of their years.
+ */
+const GRAPHICS_THREADS: Array<[RegExp, number[]]> = [
+  [/GeForce GTX 980|Radeon R9 200|HD Graphics 400|Arc\(TM\)/, [4, 6, 8, 12, 16, 20, 24, 32]],
+  [/Intel\(R\) HD Graphics/, [4, 8, 12, 16, 20]],
+  [/Radeon HD 3200/, [4, 6, 8, 12, 16]],
+  [/GeForce GTX 480|Radeon HD 5850/, [2, 4, 8, 12]],
+  [/GeForce 8800 GTX|Intel 945GM/, [2, 4]],
+];
+
+/**
+ * Keep the processor count to one a computer with the profile's graphics card has. A macOS profile
+ * on an Intel Mac reports a count of its card's class of Mac; one with Apple graphics keeps its own.
+ */
+function fitThreads(config: Record<string, JsonValue>, os: PersonaOs, intelMac: boolean, fraction: (key: string) => number): void {
+  if (!storesGraphics(config)) return;
+  const threads = os === "macos"
+    ? intelMac ? INTEL_MAC_THREADS[config["webGl:vendor"] === INTEL_MAC_VENDORS.amd ? "amd" : "intel"] : undefined
+    : GRAPHICS_THREADS.find(([pattern]) => pattern.test(String(config["webGl:renderer"])))?.[1];
+  if (threads && !threads.includes(Number(config["navigator.hardwareConcurrency"]))) {
+    config["navigator.hardwareConcurrency"] = threads[Math.floor(fraction(os === "macos" ? "intelMac:threads" : "threads") * threads.length)]!;
+  }
+}
+
+/**
  * Real graphics identities per system from the engine's data set, weighted by how
  * common they are. Each has the vendor, the renderer and the matching WebGL limits.
  * Software renderers are left out: they are no device identity. On macOS only Apple's:
@@ -174,7 +204,11 @@ export function createFirefoxProfileConfig(
   if (typeof config.timezone !== "string" || !config.timezone.trim()) {
     config.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   }
-  if (seed !== undefined) Object.assign(config, graphicsIdentity(platformOs, seed));
+  if (seed !== undefined) {
+    Object.assign(config, graphicsIdentity(platformOs, seed));
+    // The same count a launch would pick for this card (firefoxLaunchConfig).
+    fitThreads(config, platformOs, false, (key) => seedFraction(deterministicSeed(`${seed}:${key}`)));
+  }
   return normalizeFirefoxProfileConfig({
     version: 1,
     runtimeVersion: FIREFOX_RUNTIME_VERSION,
@@ -242,10 +276,12 @@ export function fitFirefoxWindow(config: Record<string, JsonValue>): void {
 /**
  * Keys the 156 engine ignores (canvas:seed, fonts:spacing_seed; window.screenX/Y, as pages see the
  * real window position) or that are a tell: navigator.globalPrivacyControl is true without the
- * Sec-GPC header stock Firefox sends with it.
+ * Sec-GPC header stock Firefox sends with it, and audio:seed adds noise to audio that stock Firefox
+ * renders the same on every computer and OS, so it changed signals that must stay exact (a constant
+ * 0.5 signal, silence) and gave sums no stock Firefox gives.
  */
 const DROPPED_LAUNCH_KEYS = [
-  "canvas:seed", "fonts:spacing_seed", "window.screenX", "window.screenY", "navigator.globalPrivacyControl",
+  "canvas:seed", "fonts:spacing_seed", "window.screenX", "window.screenY", "navigator.globalPrivacyControl", "audio:seed",
 ];
 
 /**
@@ -263,8 +299,6 @@ export function firefoxLaunchConfig(
   if (fontsDir) config["aliasmode:fontsDir"] = fontsDir;
   else delete config["aliasmode:fontsDir"];
   const seed = (key: string) => deterministicSeed(`${profile.fingerprintSeed}:${key}`);
-  // Without a seed every profile on one computer gives the same audio output.
-  config["audio:seed"] ??= seed("audio:seed");
   // Without these, profiles on one computer read back the same canvas and WebGL pixels and
   // measure the same text widths.
   config["aliasmode:canvasSeed"] ??= seed("aliasmode:canvasSeed");
@@ -275,15 +309,9 @@ export function firefoxLaunchConfig(
     for (const key of Object.keys(config)) if (/^webGl2?:/.test(key)) delete config[key];
     Object.assign(config, graphics);
   }
-  // A macOS profile on an Intel Mac reports a processor count of its card's class of Mac.
-  const threads = intelMac && os === "macos"
-    ? INTEL_MAC_THREADS[config["webGl:vendor"] === INTEL_MAC_VENDORS.amd ? "amd" : "intel"]
-    : undefined;
-  if (threads && storesGraphics(config) && !threads.includes(Number(config["navigator.hardwareConcurrency"]))) {
-    config["navigator.hardwareConcurrency"] = threads[Math.floor(seedFraction(seed("intelMac:threads")) * threads.length)]!;
-  }
+  fitThreads(config, os, !!intelMac, (key) => seedFraction(seed(key)));
   // With the stock list every profile of one OS shows the same fonts.
-  if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)));
+  if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)), !fontsDir);
   // Of the Hiragino faces the macOS font pack holds only Hiragino Sans GB, so on another computer
   // the others cannot load, and a listed font that never loads is a tell.
   if (fontsDir && os === "macos" && isStrings(config.fonts)) {
@@ -318,17 +346,15 @@ const HISTORIC_NOTO = [
 ].map((script) => `Noto Sans ${script}`);
 
 /**
- * Groups of rarely used families a stock install has, each shown by `presence` of profiles,
- * the same groups and shares as AliasMode Chromium's Windows font packs. Core families and
- * the families detectors use to tell the OS version (FONT_VERSION_MARKERS) are never in a group.
+ * Groups of rarely used families a stock install has, each shown by `presence` of profiles. Core
+ * families and the families detectors use to tell the OS version (FONT_VERSION_MARKERS) are never
+ * in a group. Windows has none: every Windows 10 and 11 has its handwriting, supplemental-script,
+ * historic-script and CJK Extension B families, and Pixelscan treats a missing one as a tell. The
+ * fonts real Windows computers differ by (Microsoft Office, optional language features) are not in
+ * the Windows font pack, so Windows profiles show the same list.
  */
 const OPTIONAL_FONT_GROUPS: Record<PersonaOs, Array<{ id: string; presence: number; fonts: string[] }>> = {
-  windows: [
-    { id: "handwriting", presence: 0.7, fonts: ["Gabriola", "MV Boli", "Segoe Print", "Segoe Script"] },
-    { id: "supplemental-scripts", presence: 0.7, fonts: ["Microsoft Himalaya", "Microsoft New Tai Lue", "Microsoft PhagsPa", "Microsoft Tai Le", "Microsoft Yi Baiti", "Mongolian Baiti"] },
-    { id: "historic-scripts", presence: 0.75, fonts: ["Ebrima", "Segoe UI Historic", "Sylfaen"] },
-    { id: "cjk-extension-b", presence: 0.7, fonts: ["MingLiU-ExtB", "MingLiU_HKSCS-ExtB", "PMingLiU-ExtB", "SimSun-ExtB", "細明體-ExtB", "細明體_HKSCS-ExtB", "新細明體-ExtB"] },
-  ],
+  windows: [],
   macos: [
     { id: "decorative", presence: 0.7, fonts: ["Academy Engraved LET", "Bodoni Ornaments", "Chalkduster", "Herculanum", "Hoefler Text Ornaments", "Party LET", "Phosphate", "Savoye LET", "Trattatello", "Zapfino"] },
     { id: "pt", presence: 0.7, fonts: ["PT *"] },
@@ -355,16 +381,26 @@ const FONT_VERSION_MARKERS = new Set(["Noto Sans Canadian Aboriginal", "Noto San
 const isStrings = (value: JsonValue | undefined): value is string[] => Array.isArray(value) && value.every((item) => typeof item === "string");
 
 /**
- * The fonts one launch shows: a stored list that is the stock list of the profile's OS, less the
- * optional groups this profile does not draw. A list the user changed is shown as stored.
+ * Families of a stock install that the engine's stock list lacks: Windows 10 and 11 name the styles
+ * of Sitka as families of their own. On another OS only Sitka Text of the font pack's SitkaVF loads
+ * (Linux names a variable font by its default style), and a listed font that never loads is a tell.
  */
-function firefoxProfileFonts(os: PersonaOs, stored: string[], fraction: (group: string) => number): string[] {
+const MISSING_STOCK_FONTS: Partial<Record<PersonaOs, string[]>> = {
+  windows: ["Sitka Small", "Sitka Text", "Sitka Subheading", "Sitka Heading", "Sitka Display", "Sitka Banner"],
+};
+
+/**
+ * The fonts one launch shows: a stored list that is the stock list of the profile's OS, with the
+ * stock families that list lacks on that OS itself, less the optional groups this profile does not
+ * draw. A list the user changed is shown as stored.
+ */
+function firefoxProfileFonts(os: PersonaOs, stored: string[], fraction: (group: string) => number, ownOs: boolean): string[] {
   const stock = fonts[OS_FONT_KEYS[os]] as string[];
   if (stored.length !== stock.length || !stock.every((font) => stored.includes(font))) return stored;
   const hidden = OPTIONAL_FONT_GROUPS[os].filter((group) => fraction(group.id) >= group.presence).flatMap((group) => group.fonts);
   const inHidden = (font: string) => !FONT_VERSION_MARKERS.has(font)
     && hidden.some((pattern) => pattern.endsWith("*") ? font.startsWith(pattern.slice(0, -1)) : font === pattern);
-  return stored.filter((font) => !inHidden(font));
+  return [...new Set([...stored, ...ownOs ? MISSING_STOCK_FONTS[os] ?? [] : []])].filter((font) => !inHidden(font));
 }
 
 /** The profile's language for the browser interface, Intl and form messages (as upstream Camoufox sets it). */
@@ -387,7 +423,8 @@ function firefoxStartupLocale(profile: Profile): string {
  * startup differs from the same text measured later. Synchronous fallback gives one result.
  * The engine turns the new tab page off, so a new tab was blank; Firefox's own page (logo and a
  * search box that uses the default search engine) is local, makes no requests and adds nothing
- * a site can see.
+ * a site can see. WebGPU in service workers follows WebGPU, as in stock Firefox. A profile of
+ * another OS than this computer's gets that OS's stock fonts and colours (personaOsPrefs).
  */
 export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Platform, hostArch?: string): Record<string, JsonValue> {
   const os = firefoxPersonaOs(profile);
@@ -395,14 +432,107 @@ export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Plat
   // A profile without a stored card shows this computer's; on an Intel Mac a macOS one shows an Intel or AMD card.
   const renderer = firefoxGraphicsRenderer(profile, hostPlatform === "darwin" && hostArch === "x64" ? {} : undefined);
   const appleGraphics = renderer === undefined ? appleSilicon : String(renderer).startsWith("Apple");
+  const webGpu = os === "windows" || (os === "macos" && appleGraphics);
+  const host = hostPlatform === "win32" ? "windows" : hostPlatform === "darwin" ? "macos" : hostPlatform === "linux" ? "linux" : undefined;
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
-    "dom.webgpu.enabled": os === "windows" || (os === "macos" && appleGraphics),
+    "dom.webgpu.enabled": webGpu,
+    "dom.webgpu.service-workers.enabled": webGpu,
     ...(os === "macos" && appleSilicon ? {} : { "gfx.blacklist.webgpu": 4 }),
     "browser.startup.couldRestoreSession.count": -1,
     "gfx.font_rendering.fallback.async": false,
     "browser.newtabpage.enabled": true,
+    ...(host && host !== os ? personaOsPrefs(os) : {}),
   };
+}
+
+const GENERIC_FAMILIES = ["serif", "sans-serif", "monospace", "cursive", "fantasy"] as const;
+
+/**
+ * The fonts stock Firefox 156 names for the generic families (in GENERIC_FAMILIES order) of each
+ * language group, and for emoji, on Windows and macOS (font.name-list.* in modules/libpref/init/
+ * all.js of FIREFOX_156_0_RELEASE; font.name.* are empty). Windows sets no fantasy family, and
+ * stock Firefox there draws it in Arial (measured).
+ */
+const PERSONA_FONTS: Record<"windows" | "macos", { emoji: string; groups: Record<string, string[]> }> = {
+  windows: {
+    emoji: "Segoe UI Emoji, Twemoji Mozilla",
+    groups: {
+      "x-western": ["Times New Roman", "Arial", "Consolas", "Comic Sans MS", "Arial"],
+      "x-unicode": ["Times New Roman", "Arial", "Consolas", "Comic Sans MS"],
+      "x-cyrillic": ["Times New Roman", "Arial", "Consolas", "Comic Sans MS"],
+      el: ["Times New Roman", "Arial", "Consolas", "Comic Sans MS"],
+      ar: ["Times New Roman", "Segoe UI, Tahoma, Arial", "Consolas", "Comic Sans MS"],
+      he: ["Narkisim, David", "Arial", "Fixed Miriam Transparent, Miriam Fixed, Rod, Consolas, Courier New", "Guttman Yad, Ktav, Arial"],
+      th: ["Tahoma", "Tahoma", "Tahoma", "Tahoma"],
+      ja: [
+        "Yu Mincho, MS PMincho, MS Mincho, Noto Serif CJK JP, Noto Serif JP, Meiryo, Yu Gothic, MS PGothic, MS Gothic",
+        "Meiryo, Yu Gothic, MS PGothic, MS Gothic, Noto Sans CJK JP, Noto Sans JP",
+        "BIZ UDGothic, MS Gothic, MS Mincho, Meiryo, Yu Gothic, Yu Mincho",
+      ],
+      ko: ["Batang, Noto Serif CJK KR, Noto Serif KR, Gulim", "Malgun Gothic, Gulim, Noto Sans CJK KR, Noto Sans KR", "GulimChe", "Gungsuh"],
+      "zh-CN": [
+        "SimSun, MS Song, SimSun-ExtB, Noto Serif CJK SC, Noto Serif SC", "Microsoft YaHei, SimHei, Noto Sans CJK SC, Noto Sans SC",
+        "NSimSun, SimSun, MS Song, SimSun-ExtB", "KaiTi, KaiTi_GB2312",
+      ],
+      "zh-TW": [
+        "Times New Roman, PMingLiu, MingLiU, MingLiU-ExtB, Noto Serif CJK TC, Noto Serif TC",
+        "Arial, Microsoft JhengHei, PMingLiU, MingLiU, MingLiU-ExtB, Noto Sans CJK TC, Noto Sans TC", "MingLiU, MingLiU-ExtB", "DFKai-SB",
+      ],
+      "zh-HK": [
+        "Times New Roman, MingLiu_HKSCS, Ming(for ISO10646), MingLiU, MingLiU_HKSCS-ExtB, Noto Serif CJK HK, Noto Serif HK, Microsoft JhengHei",
+        "Arial, MingLiU_HKSCS, Ming(for ISO10646), MingLiU, MingLiU_HKSCS-ExtB, Microsoft JhengHei, Noto Sans CJK HK, Noto Sans HK",
+        "MingLiU_HKSCS, Ming(for ISO10646), MingLiU, MingLiU_HKSCS-ExtB, Microsoft JhengHei", "DFKai-SB",
+      ],
+    },
+  },
+  macos: {
+    emoji: "Apple Color Emoji",
+    groups: {
+      "x-western": ["Times, Times New Roman", "Helvetica, Arial", "Menlo", "Apple Chancery", "Papyrus"],
+      "x-unicode": ["Times", "Helvetica", "Menlo", "Apple Chancery", "Papyrus"],
+      "x-cyrillic": ["Times, Times New Roman", "Helvetica, Arial", "Menlo", "Geneva", "Charcoal CY"],
+      el: ["Times, Times New Roman", "Helvetica, Lucida Grande", "Menlo", "Lucida Grande, Times", "Lucida Grande, Times"],
+      ar: ["Al Bayan", "Geeza Pro", "Menlo, Geeza Pro", "DecoType Naskh", "KufiStandardGK"],
+      he: ["Times New Roman", "Arial", "Menlo, Courier New", "Times New Roman", "Times New Roman"],
+      th: ["Thonburi", "Thonburi", "Menlo, Ayuthaya"],
+      ja: [
+        "Hiragino Mincho ProN, Hiragino Mincho Pro", "Hiragino Kaku Gothic ProN, Hiragino Kaku Gothic Pro, Hiragino Sans",
+        "Osaka-Mono, Menlo, Hiragino Kaku Gothic ProN, Hiragino Sans",
+      ],
+      ko: ["AppleMyungjo", "Apple SD Gothic Neo, AppleGothic", "Menlo, Apple SD Gothic Neo, AppleGothic"],
+      "zh-CN": ["Times New Roman, Songti SC, STSong, Heiti SC", "Arial, PingFang SC, STHeiti, Heiti SC", "Menlo, PingFang SC, STHeiti, Heiti SC", "Kaiti SC"],
+      "zh-TW": ["Times New Roman, Songti TC, LiSong Pro, Heiti TC", "Arial, PingFang TC, Heiti TC, LiHei Pro", "Menlo, PingFang TC, Heiti TC, LiHei Pro", "Kaiti TC"],
+      "zh-HK": ["Times New Roman, Songti TC, LiSong Pro, Heiti TC", "Arial, PingFang TC, Heiti TC, LiHei Pro", "Menlo, PingFang TC, Heiti TC, LiHei Pro", "Kaiti TC"],
+    },
+  },
+};
+
+/**
+ * The system colours stock Firefox 156 on Windows shows pages where Linux and macOS show their own
+ * (measured: Highlight, SelectedItem, AccentColor, -moz-Dialog, -moz-DialogText, -moz-MenuHover;
+ * pref names from widget/nsXPLookAndFeel.cpp). Stock macOS values are not measured yet, so a macOS
+ * profile keeps this computer's.
+ */
+const WINDOWS_COLORS = {
+  "ui.highlight": "#0078d7", "ui.selecteditem": "#0078d7", "ui.accentcolor": "#0060df",
+  "ui.-moz-dialog": "#ffffff", "ui.-moz-dialogtext": "#000000", "ui.-moz_menuhover": "#e0e0e6",
+};
+
+/**
+ * Stock defaults of a Windows or macOS profile that a computer of another OS would replace with its
+ * own: generic and emoji fonts, the monospace size and Thai minimum size that Linux changes, and
+ * on Windows the system colours. A Linux profile keeps this computer's.
+ */
+function personaOsPrefs(os: PersonaOs): Record<string, JsonValue> {
+  if (os === "linux") return {};
+  const { emoji, groups } = PERSONA_FONTS[os];
+  const prefs: Record<string, JsonValue> = { "font.name-list.emoji": emoji, "font.minimum-size.th": 10 };
+  for (const [group, families] of Object.entries(groups)) {
+    families.forEach((family, index) => { prefs[`font.name-list.${GENERIC_FAMILIES[index]}.${group}`] = family; });
+  }
+  for (const group of ["ar", "el", "he", "x-cyrillic", "x-unicode", "x-western"]) prefs[`font.size.monospace.${group}`] = 13;
+  return os === "windows" ? { ...prefs, ...WINDOWS_COLORS } : prefs;
 }
 
 export function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue> = profile.firefox?.config ?? {}): PersonaOs {

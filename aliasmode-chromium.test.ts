@@ -48,9 +48,9 @@ function fakeRelease(options: { archiveHash?: string; executableHash?: string } 
 
 test("installs AliasMode's own 155 build once, beside any earlier runtime", async () => {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-chromium-"));
-  mkdirSync(join(root, ".chromium-155.0.8059.85-aliasmode.2-stale"));
+  mkdirSync(join(root, ".chromium-155.0.8059.85-aliasmode.3-stale"));
   // Earlier runtimes stay put for browsers still running from them.
-  const earlier = ["chromium-155.0.8059.31", "chromium-155.0.8059.31-aliasmode.1", "chromium-155.0.8059.31-aliasmode.2", "chromium-155.0.8059.85-aliasmode.1"];
+  const earlier = ["chromium-155.0.8059.31", "chromium-155.0.8059.31-aliasmode.1", "chromium-155.0.8059.31-aliasmode.2", "chromium-155.0.8059.85-aliasmode.1", "chromium-155.0.8059.85-aliasmode.2"];
   for (const dir of earlier) mkdirSync(join(root, dir));
   const release = fakeRelease();
 
@@ -58,14 +58,14 @@ test("installs AliasMode's own 155 build once, beside any earlier runtime", asyn
   expect(executable).toBe(aliasmodeChromiumExecutable(root, "win32"));
   expect(release.downloads).toEqual([WINDOWS_155.url]);
   expect(WINDOWS_155.url).toBe(
-    "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.85-aliasmode.2/aliasmode-chromium-155.0.8059.85-windows-x64.zip",
+    "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.85-aliasmode.3/aliasmode-chromium-155.0.8059.85-windows-x64.zip",
   );
   expect([WINDOWS_155.archiveSha256, WINDOWS_155.executableSha256]).toEqual([
-    "f52c6db95f039f7c93996e0a0f22687f8260f6fa88a9738eec2557be29e841c3",
-    "c49a5ef03306e4e786d5561143e800ff30b461f3b4298a2817eb364042a79fa2",
+    "80ab530d0c5280b427c58298987636cd003b12183b61f15a99c0a82598ca9580",
+    "0ef4de1bef7c12534031318e07ac89fa7942916a3abc89057985aafefbca619f",
   ]);
-  expect(executable).toBe(join(root, "chromium-155.0.8059.85-aliasmode.2", "chrome.exe"));
-  expect(readdirSync(root).sort()).toEqual([...earlier, "chromium-155.0.8059.85-aliasmode.2"]);
+  expect(executable).toBe(join(root, "chromium-155.0.8059.85-aliasmode.3", "chrome.exe"));
+  expect(readdirSync(root).sort()).toEqual([...earlier, "chromium-155.0.8059.85-aliasmode.3"]);
 
   expect(await ensureAliasmodeChromium(root, release.deps, "win32")).toBe(executable);
   expect(release.downloads).toHaveLength(1);
@@ -97,7 +97,7 @@ test("Linux x64 installs upstream's 155 build from its zstd tar archive", async 
 });
 
 test("Windows pins its own 155.0.8059.85 build while macOS and Linux keep upstream's 155.0.8059.31", () => {
-  expect(aliasmodeChromiumExecutable("/runtimes", "win32")).toBe(join("/runtimes", "chromium-155.0.8059.85-aliasmode.2", "chrome.exe"));
+  expect(aliasmodeChromiumExecutable("/runtimes", "win32")).toBe(join("/runtimes", "chromium-155.0.8059.85-aliasmode.3", "chrome.exe"));
   expect(aliasmodeChromiumExecutable("/runtimes", "darwin"))
     .toBe(join("/runtimes", "chromium-155.0.8059.31", "Chromium.app/Contents/MacOS/Chromium"));
   expect(aliasmodeChromiumExecutable("/runtimes", "linux")).toBe(join("/runtimes", "chromium-155.0.8059.31", "chrome"));

@@ -1262,12 +1262,12 @@ async def run(*, log, **_):
       if ($betaVersion.'User-Agent' -notmatch 'Chrome/155\.') {
         throw "Chromium 155 beta reported an unexpected browser version: $($betaVersion.'User-Agent')"
       }
-      $betaRuntime = Join-Path $appDataRoot "runtimes\chromium-155.0.8059.85-aliasmode.2"
+      $betaRuntime = Join-Path $appDataRoot "runtimes\chromium-155.0.8059.85-aliasmode.3"
       if (-not (Test-Path -LiteralPath (Join-Path $betaRuntime "155.0.8059.85.manifest") -PathType Leaf)) {
         throw "Chromium 155 beta runtime is missing its version manifest"
       }
       $betaHash = (Get-FileHash -LiteralPath (Join-Path $betaRuntime "chrome.exe") -Algorithm SHA256).Hash.ToLowerInvariant()
-      if ($betaHash -ne "c49a5ef03306e4e786d5561143e800ff30b461f3b4298a2817eb364042a79fa2") {
+      if ($betaHash -ne "0ef4de1bef7c12534031318e07ac89fa7942916a3abc89057985aafefbca619f") {
         throw "Chromium 155 beta chrome.exe does not match its pin"
       }
       $betaClosed = (& $helper browser close --profile $betaProfileId | ConvertFrom-Json)

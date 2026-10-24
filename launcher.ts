@@ -260,7 +260,16 @@ export interface SpawnedProcess {
   spawnFailed?: Promise<string | null>;
 }
 
-export type SpawnFn = (binary: string, args: string[]) => SpawnedProcess;
+export type SpawnFn = (binary: string, args: string[], env?: Record<string, string>) => SpawnedProcess;
+
+/**
+ * AliasMode Chromium is built without Google API keys, so its first tab showed a "Google API keys
+ * are missing" bar that stock Chrome never shows (the page 56 px shorter). With these values, as
+ * Chromium's API key documentation gives, the bar stays away. CloakBrowser shows no such bar.
+ */
+export const ALIASMODE_CHROMIUM_ENV: Readonly<Record<string, string>> = {
+  GOOGLE_API_KEY: "no", GOOGLE_DEFAULT_CLIENT_ID: "no", GOOGLE_DEFAULT_CLIENT_SECRET: "no",
+};
 export type FetchFn = (url: string) => Promise<{ ok: boolean; json(): Promise<any> }>;
 export type LaunchNavigator = (ws: string, urls: string[], replacePages?: boolean) => Promise<void>;
 export interface BrowserProcessIdentity {
@@ -1951,7 +1960,7 @@ export class Launcher {
       this.autofill?.install(provisionalLaunch);
       spawnAttempted = true;
       try {
-        proc = this.spawnFn(spawnVerifiedBinary.path, args);
+        proc = this.spawnFn(spawnVerifiedBinary.path, args, profile.chromiumRuntime ? { ...ALIASMODE_CHROMIUM_ENV } : undefined);
       } catch {
         throw new BrowserLaunchError("process_spawn");
       }
@@ -3080,9 +3089,10 @@ export class Launcher {
    * reconcileOrphans deliberately never calls this: merely discovering a live
    * process must not restore its account network before hub claim/certification.
    */
-  private async ensureSurvivorRelay(profile: Profile, launch: LaunchInfo): Promise<void> {
-    if (!needsProxyRelay(profile)) return;
-    if (this.relays.has(profile.id)) return;
+  /** True when this call reattached the relay. */
+  private async ensureSurvivorRelay(profile: Profile, launch: LaunchInfo): Promise<boolean> {
+    if (!needsProxyRelay(profile)) return false;
+    if (this.relays.has(profile.id)) return false;
     if (!launch.relayPort) {
       throw new Error(`proxied survivor ${profile.id} predates the required relay; close it and reopen with the current manager`);
     }
@@ -3107,10 +3117,11 @@ export class Launcher {
     if (!sameGeneration || this.relays.has(profile.id)) {
       relay.close();
       if (!sameGeneration) throw new Error(`launch generation changed while restoring proxy relay for ${profile.id}`);
-      return;
+      return false;
     }
     this.relays.set(profile.id, relay);
     this.log(`reattached proxy relay for ${profile.id}`);
+    return true;
   }
 
   /**
@@ -3464,14 +3475,16 @@ export class Launcher {
     if (!current || `${current.debugPort}:${current.startedAt}` !== generation) {
       throw new Error(`cannot verify survivor ${profileId}: launch generation changed before relay restoration`);
     }
-    await this.ensureSurvivorRelay(profile, current);
+    const wasCertified = this.isIdentityCertified(profileId);
+    const reattached = await this.ensureSurvivorRelay(profile, current);
     profile = this.requireUnchangedProfile(profileId, snapshot, "survivor relay restoration");
     current = this.store.getLaunch(profileId);
     if (!current || `${current.debugPort}:${current.startedAt}` !== generation) {
       throw new Error(`cannot verify survivor ${profileId}: launch generation changed during relay restoration`);
     }
     this.markIdentityCertified(profileId);
-    this.log(`survivor identity verified for ${profileId}: host persona + relay restored`);
+    // Cloud checks a running profile before each checkpoint; only a real restoration is news.
+    if (reattached || !wasCertified) this.log(`survivor identity verified for ${profileId}: host persona + relay restored`);
     void this.watchSurvivorWindow(profileId);
   }
 
@@ -4934,9 +4947,9 @@ async function killProcessGroup(processGroupId: number): Promise<void> {
   await signalUnixTarget(-processGroupId);
 }
 
-export const defaultSpawn: SpawnFn = (binary, args) => {
+export const defaultSpawn: SpawnFn = (binary, args, env) => {
   const detached = process.platform === "linux";
-  const proc = Bun.spawn([binary, ...args], { stdout: "ignore", stderr: "ignore", detached });
+  const proc = Bun.spawn([binary, ...args], { stdout: "ignore", stderr: "ignore", detached, ...(env ? { env: { ...process.env, ...env } } : {}) });
   const root = detached ? readLinuxProcessRecord(proc.pid) : null;
   const ownsGroup = root?.processGroupId === proc.pid;
   return {

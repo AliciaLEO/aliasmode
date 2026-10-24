@@ -142,13 +142,24 @@ export async function lookupExitLocation(
       ...(relay ? { proxy: `http://127.0.0.1:${relay.port}` } : {}),
       signal: AbortSignal.timeout(10_000),
     } as RequestInit;
-    try {
-      const res = await fetchFn("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init);
-      const row = (await res.json()) as { status?: string; timezone?: string; countryCode?: string; query?: string } | null;
-      if (row?.status === "success" && row.timezone) return withIp({ timezone: row.timezone, country: row.countryCode }, row.query);
-    } catch {
-      // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
-    }
+    const ask = async (url: string, signal: AbortSignal, read: (row: any) => ExitLocation | null) => {
+      try {
+        return read(await (await fetchFn(url, { ...init, signal })).json());
+      } catch {
+        return null;
+      }
+    };
+    // IP check sites mostly locate an address with MaxMind's data, and ip-api.com, the app's first
+    // source, names another zone for some addresses. GeoJS answers from MaxMind's free GeoLite2
+    // City data, keyless over HTTPS, so both are asked at once and GeoJS's zone wins when it has
+    // one. Its shorter timeout leaves a launch's 5 s wait for ip-api.com's answer if GeoJS hangs.
+    const maxMind = ask("https://get.geojs.io/v1/ip/geo.json", AbortSignal.timeout(4_000), (row) =>
+      typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country_code }, row.ip) : null);
+    const ipApi = ask("http://ip-api.com/json/?fields=status,timezone,countryCode,query", init.signal!, (row) =>
+      row?.status === "success" && row.timezone ? withIp({ timezone: row.timezone, country: row.countryCode }, row.query) : null);
+    const found = await maxMind ?? await ipApi;
+    if (found) return found;
+    // ip-api.com is IPv4-only; an IPv6-only exit falls through to v6.ipinfo.io.
     const res = await fetchFn("https://v6.ipinfo.io/json", { ...init, signal: AbortSignal.timeout(10_000) });
     const row = (await res.json()) as { timezone?: string; country?: string; ip?: string } | null;
     return typeof row?.timezone === "string" && row.timezone ? withIp({ timezone: row.timezone, country: row.country }, row.ip) : null;

@@ -411,6 +411,28 @@ for (const proxied of [false, true]) {
   });
 }
 
+test("a proxied survivor logs its relay restoration once, not at every Cloud checkpoint check", async () => {
+  const store = seeded();
+  const f = fleet();
+  const prior = newLauncher(store, f, []);
+  const logs: string[] = [];
+  const next = newLauncher(store, f, [], undefined, undefined, { log: (message) => logs.push(message) });
+  const id = "k1d0cd11";
+  try {
+    await prior.start(id);
+    (prior as any).closeRelay(id);
+    await next.reconcileOrphans();
+    for (let check = 0; check < 3; check++) await next.verifyRunningIdentity(id);
+    expect(logs.filter((message) => message.includes("reattached proxy relay"))).toHaveLength(1);
+    expect(logs.filter((message) => message.includes("relay restored"))).toHaveLength(1);
+  } finally {
+    await next.stop(id);
+    (prior as any).closeRelay(id);
+    store.close();
+    rmSync(testDataRoot(store), { recursive: true, force: true });
+  }
+});
+
 for (const changed of ["proxy", "fingerprint", "timezone", "extensions", "ua", "kernel", "headless", "missing digest", "old WebRTC policy"] as const) {
   test(`pre-autofill compatibility still rejects changed ${changed}`, async () => {
     const store = seeded();
@@ -4836,6 +4858,31 @@ test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Wi
   // Each Chromium 155 profile draws its own canvas image. CloakBrowser varies it by itself.
   expect(await launchArgs("win32", "aliasmode")).toContain("--fingerprint-noise");
   expect(await launchArgs("win32", "cloakbrowser")).not.toContain("--fingerprint-noise");
+});
+
+test("AliasMode Chromium starts without the missing Google API keys bar; CloakBrowser keeps its environment", async () => {
+  const launchEnv = async (engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    const profile = engine === "aliasmode" ? chromium155 : cloakbrowser;
+    store.upsertProfile(profile);
+    const f = fleet();
+    const envs: Array<Record<string, string> | undefined> = [];
+    const launcher = newLauncher(store, f, [], undefined, undefined, {
+      hostPlatform: "win32",
+      hostArch: "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      spawn: (bin, args, env) => { envs.push(env); return f.spawn(bin, args); },
+    });
+    await launcher.start(profile.id);
+    await launcher.stop(profile.id);
+    store.close();
+    return envs;
+  };
+  expect(await launchEnv("aliasmode")).toEqual([{ GOOGLE_API_KEY: "no", GOOGLE_DEFAULT_CLIENT_ID: "no", GOOGLE_DEFAULT_CLIENT_SECRET: "no" }]);
+  expect(await launchEnv("cloakbrowser")).toEqual([undefined]);
 });
 
 test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels, as Chrome does there", async () => {

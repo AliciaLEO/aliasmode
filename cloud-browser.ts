@@ -1,4 +1,5 @@
 import { mkdirSync, watch } from "node:fs";
+import { basename } from "node:path";
 import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type {
   CloudProfileSummary,
@@ -171,6 +172,20 @@ const TERMINAL_CONFLICT_WARNING =
   "Cloud rejected it; that session remains encrypted on this device.";
 const RESAVE_PENDING_ERROR =
   "This profile's last session from this device is still being saved to Cloud. Try again shortly.";
+
+/**
+ * Watch one browser storage folder. In Chromium's Network folder only the cookie database holds
+ * logins: Chromium rewrites its own network state there (Network Persistent State, Reporting and
+ * NEL, TransportSecurity) every 20 to 60 s on an idle profile, which would checkpoint as often.
+ */
+export function watchBrowserStorage(path: string, dirty: () => void): { close(): void } {
+  // A new profile creates these folders at its first write; watching must not miss that write.
+  mkdirSync(path, { recursive: true });
+  const cookiesOnly = basename(path) === "Network";
+  return watch(path, { recursive: true }, (_event, file) => {
+    if (!cookiesOnly || !file || basename(String(file)).startsWith("Cookies")) dirty();
+  });
+}
 
 /** A conflict Cloud will never accept, unlike a close that only lost its lease. */
 function isTerminalConflict(capture: PendingClose): boolean {
@@ -2151,11 +2166,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   }
 
   private startStorageWatchers(profileId: string, monitor: CloudDirtyMonitor): void {
-    const watchPath = this.options.watchPath ?? ((path: string, dirty: () => void) => {
-      // A new profile creates these folders at its first write; watching must not miss that write.
-      mkdirSync(path, { recursive: true });
-      return watch(path, { recursive: true }, () => dirty());
-    });
+    const watchPath = this.options.watchPath ?? watchBrowserStorage;
     const generation = ++monitor.watcherGeneration;
     for (const path of this.options.launcher.browserStorageWatchPaths(profileId)) {
       try {

@@ -618,7 +618,7 @@ test("a Firefox profile of this computer's own OS opens without a font pack", as
   await f.launcher.start(f.profile.id);
   expect(f.fontPacks).toEqual([]);
   expect(f.config()).not.toHaveProperty("aliasmode:fontsDir");
-  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile, "win32", "x64"));
 });
 
 test("a Firefox profile of another OS opens with that OS's font pack", async () => {
@@ -629,7 +629,9 @@ test("a Firefox profile of another OS opens with that OS's font pack", async () 
   const fontsDir = join(f.options.chromiumRuntimeRoot!, "firefox-fonts", "macos", "fonts");
   expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, fontsDir));
   expect(f.config()).toMatchObject({ "aliasmode:fontsDir": fontsDir });
-  expect(f.prefs()).toEqual({ ...firefoxStartupPrefs(profile), ...firefoxFontPackPrefs(fontsDir, "win32") });
+  expect(f.prefs()).toEqual({ ...firefoxStartupPrefs(profile, "win32", "x64"), ...firefoxFontPackPrefs(fontsDir, "win32") });
+  // The profile gets the stock fonts of macOS, not the ones of this Windows computer.
+  expect(f.prefs()).toMatchObject({ "font.name-list.emoji": "Apple Color Emoji", "font.name-list.serif.x-western": "Times, Times New Roman" });
   // The saved identity never stores the folder of this computer.
   expect(f.store.getProfile(profile.id)!.firefox!.config).not.toHaveProperty("aliasmode:fontsDir");
 });

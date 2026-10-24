@@ -56,6 +56,9 @@ function firefoxProfile(s: ProfileStore, id: string): Profile {
   };
 }
 
+/** One exit lookup asks GeoJS (MaxMind's data) and ip-api.com at once. */
+const EXIT_LOOKUP_CALLS = [["https://get.geojs.io/v1/ip/geo.json"], ["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]];
+
 function timezoneFetch(timezones: Record<string, string>, calls?: string[][]) {
   return async (url: string, _init: RequestInit) => {
     calls?.push([url]);
@@ -1247,7 +1250,7 @@ test("bulk proxy edits resolve changed timezones", async () => {
   );
 
   expect(res!.status).toBe(200);
-  expect(calls).toHaveLength(2);
+  expect(calls).toEqual([...EXIT_LOOKUP_CALLS, ...EXIT_LOOKUP_CALLS]);
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
   expect(s.getProfile("k1d0cd22")!.timezone).toBe("Europe/London");
   s.close();
@@ -1337,7 +1340,7 @@ test("a changed proxy gets its exit timezone", async () => {
   );
 
   expect(res!.status).toBe(200);
-  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
+  expect(calls).toEqual(EXIT_LOOKUP_CALLS);
   expect(s.getProfile("k1d0cd11")).toMatchObject({
     proxy: { type: "socks5", host: "new-proxy.example", port: "1080", user: "user", pass: "pass" },
     timezone: "Europe/Paris",
@@ -1437,7 +1440,7 @@ test("an explicit timezone action updates a Local proxy timezone", async () => {
   );
   expect(res!.status).toBe(200);
   expect(await res!.json()).toMatchObject({ ok: true, timezone: "Europe/London", locale: "en-GB" });
-  expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
+  expect(calls).toEqual(EXIT_LOOKUP_CALLS);
   expect(s.getProfile("k1d0cd11")!.locale).toBe("en-GB");
   expect(s.getProfile("k1d0cd11")!.timezone).toBe("Europe/London");
   s.close();
@@ -2015,7 +2018,7 @@ test("create (local mode) sets the timezone from the proxy", async () => {
     );
     const body = await res!.json();
     expect(body.ok).toBe(true);
-    expect(calls).toEqual([["http://ip-api.com/json/?fields=status,timezone,countryCode,query"]]);
+    expect(calls).toEqual(EXIT_LOOKUP_CALLS);
     const saved = s.getProfile(body.id)!;
     expect(saved).toMatchObject({ timezone: "Europe/Paris", locale: "fr-FR" });
     if (engine === "firefox") expect(saved.firefox!.config.timezone).toBe("Europe/Paris");

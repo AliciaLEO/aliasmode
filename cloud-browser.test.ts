@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { CloudApiError } from "./cloud-client.ts";
-import { CloudBrowserCoordinator } from "./cloud-browser.ts";
+import { CloudBrowserCoordinator, watchBrowserStorage } from "./cloud-browser.ts";
 import type { OpenProfileResponse, PortableProfileV1 } from "./contracts/cloud-v1.ts";
 import type { Profile } from "./types.ts";
 import { BrowserLaunchError, Launcher as ProductionLauncher } from "./launcher.ts";
@@ -4311,4 +4311,38 @@ test("Cloud releaseAll closes several profiles at once", async () => {
   expect(peak).toBeLessThanOrEqual(4);
   state.queue.close();
   state.store.close();
+});
+
+test("Chromium's own network state files do not mark a Cloud profile dirty; cookies and site storage do", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-storage-watch-"));
+  const network = join(root, "Default", "Network");
+  const localStorage = join(root, "Default", "Local Storage", "leveldb");
+  const changes: string[] = [];
+  const watchers = [
+    watchBrowserStorage(network, () => changes.push("network")),
+    watchBrowserStorage(localStorage, () => changes.push("local-storage")),
+  ];
+  const settle = async (expected: number) => {
+    for (let i = 0; i < 50 && changes.length < expected; i++) await Bun.sleep(20);
+    await Bun.sleep(150);
+  };
+  try {
+    mkdirSync(join(network, "nested"), { recursive: true });
+    for (const file of ["Network Persistent State", "Reporting and NEL", "Reporting and NEL-journal", "TransportSecurity"]) {
+      writeFileSync(join(network, file), "state");
+    }
+    await settle(0);
+    expect(changes).toEqual([]);
+    writeFileSync(join(network, "Cookies-journal"), "cookie");
+    await settle(1);
+    expect(changes.length).toBeGreaterThan(0);
+    expect(new Set(changes)).toEqual(new Set(["network"]));
+    changes.length = 0;
+    writeFileSync(join(localStorage, "000003.log"), "entry");
+    await settle(1);
+    expect(new Set(changes)).toEqual(new Set(["local-storage"]));
+  } finally {
+    for (const watcher of watchers) watcher.close();
+    rmSync(root, { recursive: true, force: true });
+  }
 });

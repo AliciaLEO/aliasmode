@@ -45,9 +45,10 @@ async function removeTemporaryRoot(path: string): Promise<void> {
       rmSync(path, { recursive: true, force: true });
       return;
     } catch (error) {
-      if ((error as { code?: string }).code !== "EBUSY" || attempt === 10) throw error;
+      // Antivirus on Windows runners can hold a fresh temporary file for several seconds.
+      if ((error as { code?: string }).code !== "EBUSY" || attempt === 50) throw error;
       Bun.gc(true);
-      await Bun.sleep(100);
+      await Bun.sleep(200);
     }
   }
 }

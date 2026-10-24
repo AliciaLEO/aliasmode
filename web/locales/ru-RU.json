@@ -417,5 +417,7 @@
   "Enter your email, then select Forgot password.": "Введите email, затем нажмите «Забыли пароль?».",
   "If {email} has an account, a password reset link is on its way. Check spam too.": "Если для {email} есть аккаунт, ссылка для сброса пароля уже отправлена. Проверьте и папку «Спам».",
   "Opening…": "Открытие…",
-  "Optional": "Необязательно"
+  "Optional": "Необязательно",
+  "Downloading browser… {percent}%": "Загрузка браузера… {percent}%",
+  "Browser download progress": "Ход загрузки браузера"
 }

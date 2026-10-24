@@ -152,8 +152,8 @@ test("dashboard recovers saved Cloud sessions without false sign-out", () => {
   expect(app).toContain('type SavedSessionPhase = "restoring" | "manual-signin" | "retryable-failure";');
   expect(app).toContain('useState<SavedSessionPhase>("restoring")');
   expect(app).toContain("Restoring saved session");
-  expect(app).toContain(">Try again</button>");
-  expect(app).toContain(">Sign in instead</button>");
+  expect(app).toContain('>{t("Try again")}</button>');
+  expect(app).toContain('>{t("Sign in instead")}</button>');
   expect(app).toContain("error instanceof CloudSessionRestoreError && !error.retryable");
   expect(app).toContain("setScheduledRefreshPending(true)");
   expect(app).toContain('window.addEventListener("online", retryWhenOnline)');

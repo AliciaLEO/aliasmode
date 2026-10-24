@@ -463,13 +463,17 @@ function Get-ProcessTreeIds([int]$RootId) {
   [void]$ids.Add($RootId)
   $pending.Enqueue($RootId)
   $root = Get-CimInstance Win32_Process -Filter "ProcessId = $RootId" -ErrorAction SilentlyContinue
-  if ($root) { $created[$RootId] = $root.CreationDate }
+  # WMI can miss the root under load; .NET still knows when it started.
+  $rootStart = if ($root) { $root.CreationDate } else { (Get-Process -Id $RootId -ErrorAction SilentlyContinue).StartTime }
+  if ($rootStart) { $created[$RootId] = $rootStart }
   while ($pending.Count -gt 0) {
     $parentId = $pending.Dequeue()
     foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $parentId" -ErrorAction SilentlyContinue)) {
       # Windows reuses process ids, and a process keeps the id of its exited parent. A "child"
-      # older than its parent belongs to an earlier process with that id (system processes too).
+      # older than its parent, or than the root, belongs to an earlier process with that id
+      # (system processes too).
       if ($created.ContainsKey($parentId) -and $child.CreationDate -lt $created[$parentId]) { continue }
+      if ($rootStart -and $child.CreationDate -lt $rootStart) { continue }
       if ($ids.Add([int]$child.ProcessId)) {
         $created[[int]$child.ProcessId] = $child.CreationDate
         $pending.Enqueue([int]$child.ProcessId)

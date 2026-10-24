@@ -205,6 +205,10 @@ test("Node script runner exits when its parent closes stdin", async () => {
   }
 });
 
+// A first Python start on a cold Windows runner can take longer than the 5 s default while
+// antivirus scans the interpreter and the test's fresh files.
+const PYTHON_TEST_TIMEOUT_MS = 30_000;
+
 test("Python script runner passes the CDP objects and stops its driver", async () => {
   const root = workspace();
   try {
@@ -229,7 +233,7 @@ async def run(*, page, profile, inputs, credentials, log, **_):
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, PYTHON_TEST_TIMEOUT_MS);
 
 test("Python script runner connects Firefox through a private Playwright endpoint", async () => {
   const root = workspace();
@@ -251,7 +255,7 @@ test("Python script runner connects Firefox through a private Playwright endpoin
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, PYTHON_TEST_TIMEOUT_MS);
 
 test("Python script runner redacts Firefox endpoint errors", async () => {
   const root = workspace();
@@ -271,7 +275,7 @@ test("Python script runner redacts Firefox endpoint errors", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, PYTHON_TEST_TIMEOUT_MS);
 
 test("Python script runner exits on parent EOF while user code blocks", async () => {
   const root = workspace();
@@ -295,4 +299,4 @@ test("Python script runner exits on parent EOF while user code blocks", async ()
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, PYTHON_TEST_TIMEOUT_MS);

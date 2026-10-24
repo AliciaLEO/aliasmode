@@ -267,7 +267,9 @@ test("dashboard selects browser for new profiles", () => {
   expect(createModal).toContain('aria-label={`${label}: ${runtime}`}');
   expect(createModal).toContain('data-tip={runtime}');
   expect(createModal).not.toContain('<select value={form.engine}');
-  expect(createModal.indexOf('className="browser-options"')).toBeGreaterThan(createModal.indexOf('<FingerprintSettings'));
+  // The browser choice comes before the optional Proxy and Fingerprint sections.
+  expect(createModal.indexOf('className="browser-options"')).toBeLessThan(createModal.indexOf('open={createProxyOpen}'));
+  expect(createModal.indexOf('open={createProxyOpen}')).toBeLessThan(createModal.indexOf('<FingerprintSettings'));
   expect(createModal.indexOf('className="browser-options"')).toBeLessThan(createModal.indexOf('className="modal-foot"'));
   expect(styles).toContain('.browser-info:focus-visible::after');
   expect(styles).toContain('.browser-card:has(input:focus-visible)');

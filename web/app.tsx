@@ -1172,6 +1172,7 @@ function App() {
   const [scriptRunOpen, setScriptRunOpen] = useState(false);
   const [scriptRunProfiles, setScriptRunProfiles] = useState<UiProfile[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [createProxyOpen, setCreateProxyOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [remoteMcp, setRemoteMcp] = useState<RemoteMcpSettings>({ state: "idle" });
   const [remoteMcpTokenVisible, setRemoteMcpTokenVisible] = useState(false);
@@ -2479,6 +2480,8 @@ function App() {
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
+    // A first profile needs no proxy, so the section starts closed until profiles use one.
+    setCreateProxyOpen(profiles.some((profile) => !!profile.proxy));
     setShowCreate(true);
   };
   const closeCreate = () => {
@@ -4539,61 +4542,6 @@ function App() {
                   <PlatformPicker value={form.platform} onChange={(v) => setF("platform", v)} />
                 </label>
               </div>
-              <div className="proxy-paste-row">
-                <label className="fld grow">
-                  <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={proxyPaste}
-                    placeholder={t("Paste here — credentials stay hidden")}
-                    onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
-                    onPaste={(e) => {
-                      const pasted = e.clipboardData.getData("text");
-                      if (pasted) { e.preventDefault(); applyProxyPaste(pasted); }
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
-                  />
-                </label>
-                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
-              </div>
-              {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
-              <div className="fld-row">
-                <label className="fld type">
-                  <span>{t("Proxy type")}</span>
-                  <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="socks5">socks5</option>
-                  </select>
-                </label>
-                <label className="fld grow">
-                  <span>{t("Host")}</span>
-                  <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
-                </label>
-                <label className="fld port">
-                  <span>{t("Port")}</span>
-                  <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
-                </label>
-              </div>
-              <div className="fld-row">
-                <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
-                <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
-              </div>
-              <div className="proxy-check-actions">
-                <button
-                  type="button"
-                  className="btn proxy-check-btn"
-                  disabled={createProxyCheck.checking || !createHasProxy}
-                  aria-busy={createProxyCheck.checking}
-                  onClick={checkCreateProxy}
-                >
-                  <Icon name="activity" className="sm" />
-                  {createProxyCheck.checking ? "Checking…" : t("Check proxy")}
-                </button>
-              </div>
-              <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} ownChromium={ownChromium} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
@@ -4634,6 +4582,69 @@ function App() {
                       : t("Beta. Downloads once (about 190 MB) on each computer that opens it.")}</small>
                 </label>
               )}
+              <details className="fingerprint-settings" open={createProxyOpen} onToggle={(event) => setCreateProxyOpen(event.currentTarget.open)}>
+                <summary>
+                  <span>{t("Proxy")}</span>
+                  <span className="automatic-badge">{createHasProxy ? `${form.host}${form.port ? `:${form.port}` : ""}` : t("Optional")}</span>
+                </summary>
+                <div className="proxy-settings">
+                  <div className="proxy-paste-row">
+                    <label className="fld grow">
+                      <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={proxyPaste}
+                        placeholder={t("Paste here — credentials stay hidden")}
+                        onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
+                        onPaste={(e) => {
+                          const pasted = e.clipboardData.getData("text");
+                          if (pasted) { e.preventDefault(); applyProxyPaste(pasted); }
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
+                      />
+                    </label>
+                    <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
+                  </div>
+                  {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
+                  <div className="fld-row">
+                    <label className="fld type">
+                      <span>{t("Proxy type")}</span>
+                      <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
+                        <option value="http">http</option>
+                        <option value="https">https</option>
+                        <option value="socks5">socks5</option>
+                      </select>
+                    </label>
+                    <label className="fld grow">
+                      <span>{t("Host")}</span>
+                      <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
+                    </label>
+                    <label className="fld port">
+                      <span>{t("Port")}</span>
+                      <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
+                    </label>
+                  </div>
+                  <div className="fld-row">
+                    <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
+                    <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
+                  </div>
+                  <div className="proxy-check-actions">
+                    <button
+                      type="button"
+                      className="btn proxy-check-btn"
+                      disabled={createProxyCheck.checking || !createHasProxy}
+                      aria-busy={createProxyCheck.checking}
+                      onClick={checkCreateProxy}
+                    >
+                      <Icon name="activity" className="sm" />
+                      {createProxyCheck.checking ? t("Checking…") : t("Check proxy")}
+                    </button>
+                  </div>
+                </div>
+              </details>
+              <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
+              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} ownChromium={ownChromium} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>

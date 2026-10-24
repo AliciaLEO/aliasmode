@@ -129,8 +129,24 @@ test("Firefox Cloud edits keep saved identity and session when the timezone look
   expect(updated.payload.session).toEqual(authoritative.payload.session);
 });
 
+test("a Firefox Cloud screen edit saves the screen with its usable area and a window inside it", async () => {
+  const authoritative = { ...response(), payload: firefoxPayload() };
+  let updated: any;
+  const editor = new CloudProfileEditor({
+    getProfile: async () => authoritative,
+    updateProfile: async (_id: string, request: unknown) => { updated = request; },
+  } as any, readOnlyStore());
+  await editor.save("cloud1", 7, { resolution: "1536x864" });
+  expect([updated.payload.profile.screenWidth, updated.payload.profile.screenHeight]).toEqual([1536, 864]);
+  expect(updated.payload.profile.firefox.config).toMatchObject({
+    "screen.width": 1536, "screen.height": 864, "screen.availWidth": 1536, "screen.availHeight": 816,
+    "window.outerWidth": 998, "window.outerHeight": 778,
+  });
+  expect(updated.payload.session).toEqual(authoritative.payload.session);
+});
+
 test("Firefox Cloud edits reject conversion and unsupported identity edits before moving", async () => {
-  for (const set of [{ engine: "chromium" }, { resolution: "1920*1080" }, { platformOs: "macos" }, { extensions: ["chrome-extension"] }]) {
+  for (const set of [{ engine: "chromium" }, { platformOs: "macos" }, { extensions: ["chrome-extension"] }]) {
     const writes: string[] = [];
     const editor = new CloudProfileEditor({
       getProfile: async () => ({ ...response(), payload: firefoxPayload() }),

@@ -767,7 +767,6 @@ function FingerprintSettings({
   ownChromium = false,
   screen,
   onScreenChange,
-  screenReadOnly = false,
   platformOs,
   onPlatformOsChange,
   timezone,
@@ -781,8 +780,6 @@ function FingerprintSettings({
   ownChromium?: boolean;
   screen: string;
   onScreenChange: (value: string) => void;
-  /** A Firefox profile keeps the screen it was created with. */
-  screenReadOnly?: boolean;
   platformOs: string;
   onPlatformOsChange?: (value: string) => void;
   timezone?: string;
@@ -805,11 +802,7 @@ function FingerprintSettings({
         </label>
         <label className="fld">
           <span>Screen</span>
-          {screenReadOnly ? (
-            <input value={screen.replace("*", "x")} readOnly tabIndex={-1} className="ro" />
-          ) : (
-            <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
-          )}
+          <input value={screen} disabled={disabled} placeholder={t("Automatic · e.g. 1920x1080")} onChange={(event) => onScreenChange(event.target.value)} />
         </label>
         <label className="fld">
           <span>{t("Operating system")}</span>
@@ -844,7 +837,7 @@ function FingerprintSettings({
           ? t("Close the browser before changing fingerprint settings.")
           : onTimezoneChange
             ? engine === "firefox"
-              ? t("Only timezone can be changed. The screen is chosen when the profile is created. The rest of the Firefox fingerprint stays coordinated.")
+              ? t("Screen and timezone can be changed. The browser keeps the other values coordinated.")
               : t("Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.")
             : engine === "firefox"
               ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
@@ -4786,7 +4779,7 @@ function App() {
                     </div>
                   )}
                   <FingerprintSettings
-                    engine={editEngine} chromiumRuntime={editChromiumRuntime} ownChromium={ownChromium} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)} screenReadOnly={editEngine === "firefox"}
+                    engine={editEngine} chromiumRuntime={editChromiumRuntime} ownChromium={ownChromium} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
                     platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}

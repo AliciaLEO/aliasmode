@@ -32,7 +32,10 @@ export interface NewProfileInput {
   emailPassword?: string;
   twofa?: string;
   proxy?: { type?: string; host?: string; port?: string; user?: string; pass?: string } | null;
-  /** "1920x1080" / "1920*1080"; empty → a random realistic resolution no smaller than this computer's display. */
+  /**
+   * "1920x1080" / "1920*1080"; empty → this computer's display for Firefox, else a random realistic
+   * resolution no smaller than that display.
+   */
   screen?: string;
   /** Fingerprint OS override: "windows" | "macos" | "linux". Empty/omitted → host OS. */
   platformOs?: string;
@@ -113,7 +116,9 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     ? normalizeChromiumRuntime(input.chromiumRuntime, engine)
     : engine === "chromium" ? defaultChromiumRuntime() : undefined;
   const screen = (input.screen || "").trim();
-  const selected = screen ? parseStrictResolution(screen) : defaultScreen(hostScreenFloor(engine, chromiumRuntime));
+  // A real Firefox reports the display it runs on, and its window then fits that display.
+  const display = hostScreenFloor(engine, chromiumRuntime);
+  const selected = screen ? parseStrictResolution(screen) : engine === "firefox" && display ? display : defaultScreen(display);
   const platformOs = parsePlatformOs(input.platformOs) ?? hostPlatformOs();
   const firefox = engine === "firefox"
     ? createFirefoxProfileConfig(selected.width, selected.height, platformOs, deterministicSeed(id))

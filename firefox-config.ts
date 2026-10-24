@@ -246,14 +246,16 @@ function fitDesktopPersona(config: Record<string, JsonValue>, os: PersonaOs): vo
  * Keep inner <= outer <= available <= screen and the window inside the available area, as
  * upstream Camoufox does (clamp_window_dimensions/clamp_window_position). The engine sizes the
  * real window from these values, so a window larger than its own screen is an impossible geometry.
+ * The window also stays inside `display`, the real display's available area, when it is given.
  */
-export function fitFirefoxWindow(config: Record<string, JsonValue>): void {
+export function fitFirefoxWindow(config: Record<string, JsonValue>, display?: { width: number; height: number }): void {
   const value = (key: string) => typeof config[key] === "number" ? config[key] as number : undefined;
   for (const [axis, position] of [["Width", "window.screenX"], ["Height", "window.screenY"]] as const) {
     const screen = value(`screen.${axis.toLowerCase()}`);
     const avail = value(`screen.avail${axis}`);
     if (screen && avail && avail > screen) config[`screen.avail${axis}`] = screen;
-    const cap = value(`screen.avail${axis}`) ?? screen;
+    const claimed = value(`screen.avail${axis}`) ?? screen;
+    const cap = claimed && display ? Math.min(claimed, axis === "Width" ? display.width : display.height) : claimed;
     const outer = value(`window.outer${axis}`);
     const inner = value(`window.inner${axis}`);
     if (outer && cap && outer > cap) {
@@ -288,10 +290,13 @@ const DROPPED_LAUNCH_KEYS = [
  * The config one launch sends to the engine. Seeds, voices, media devices, the window label and
  * the window fit are derived here and never stored, so saved Local and Cloud profiles keep their
  * exact shape. A value the profile stores itself is kept, unless no real desktop of its system
- * shows it (fitDesktopPersona, a macOS card that is not Apple's).
+ * shows it (fitDesktopPersona, a macOS card that is not Apple's). On a display smaller than the
+ * profile's screen the window fits `hostAvail`, the display's available area, and the screen keeps
+ * its size: a window smaller than its screen is normal.
  */
 export function firefoxLaunchConfig(
   profile: Profile, windowLabel?: string, fontsDir?: string, webRtcIp?: string, intelMac?: { vendor?: MacGraphicsVendor },
+  hostAvail?: { width: number; height: number },
 ): Record<string, JsonValue> {
   const config = { ...profile.firefox!.config };
   for (const key of DROPPED_LAUNCH_KEYS) delete config[key];
@@ -331,8 +336,29 @@ export function firefoxLaunchConfig(
   // Without a proxy, the computer's IPv6 address is the same for every profile on it.
   if (!profile.proxy) config["network:ipv4Only"] ??= true;
   fitDesktopPersona(config, os);
-  fitFirefoxWindow(config);
+  fitFirefoxWindow(config, hostAvail);
   return config;
+}
+
+/**
+ * Give a Firefox profile another screen with the values that follow from it, as creation sets
+ * them: the available area (fitDesktopPersona) and a window at the usual fraction of the screen
+ * (launchWindowSize) with the same frame around the page.
+ */
+export function setFirefoxScreen(profile: Profile, width: number, height: number): void {
+  if (!profile.firefox) throw new Error("Firefox profile is missing its saved configuration");
+  const config: Record<string, JsonValue> = { ...profile.firefox.config, "screen.width": width, "screen.height": height };
+  const [outerWidth, outerHeight] = launchWindowSize(width, height);
+  for (const [axis, outer] of [["Width", outerWidth], ["Height", outerHeight]] as const) {
+    const frame = Number(config[`window.outer${axis}`]) - Number(config[`window.inner${axis}`]);
+    if (frame >= 0) config[`window.inner${axis}`] = Math.max(1, outer - frame);
+    config[`window.outer${axis}`] = outer;
+  }
+  fitDesktopPersona(config, firefoxPersonaOs(profile, config));
+  fitFirefoxWindow(config);
+  profile.firefox = { ...profile.firefox, config };
+  profile.screenWidth = width;
+  profile.screenHeight = height;
 }
 
 const OS_FONT_KEYS: Record<PersonaOs, "win" | "mac" | "lin"> = { windows: "win", macos: "mac", linux: "lin" };

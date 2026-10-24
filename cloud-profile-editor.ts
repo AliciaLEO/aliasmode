@@ -3,7 +3,7 @@ import type { PortableProfile } from "./contracts/cloud-v1.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
 import { parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone } from "./parse.ts";
-import { completeProfileFingerprint, syncFirefoxTimezone } from "./firefox-config.ts";
+import { completeProfileFingerprint, setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
 import { normalizeProfileLocale } from "./profile-locale.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
@@ -110,7 +110,7 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
   if ("resolution" in set) {
     const resolution = parseStrictResolution(set.resolution);
     if (profile.engine === "firefox" && (resolution.width !== profile.screenWidth || resolution.height !== profile.screenHeight)) {
-      throw new CloudProfileEditorError("Firefox fingerprint settings are fixed when the profile is created", 400);
+      setFirefoxScreen(profile, resolution.width, resolution.height);
     }
     profile.screenWidth = resolution.width;
     profile.screenHeight = resolution.height;

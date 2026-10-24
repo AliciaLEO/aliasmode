@@ -62,6 +62,7 @@ import {
   cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
   ensureCloakBrowser,
+  hostDisplayAvail,
   hostDisplayScale,
   pruneBrowserRuntimes,
   supportsChromium155Host,
@@ -479,6 +480,8 @@ export interface LauncherOptions {
   hostArch?: string;
   /** Scale of the host's primary display, such as 1.25 at 125%. Defaults to hostDisplayScale(). */
   hostScale?: number;
+  /** Available area of the host's primary display as Firefox pages measure it. Defaults to hostDisplayAvail(). */
+  hostAvail?: { width: number; height: number };
   /** Label the window with the profile name + serial so operators can identify it. */
   labelWindow?: WindowLabeler;
   /** Keep a Chromium 155 window no larger than the profile's screen. Injectable for tests. */
@@ -803,6 +806,7 @@ export class Launcher {
   private hostPlatform: NodeJS.Platform;
   private hostArch: string;
   private hostScale: number;
+  private hostAvail: { width: number; height: number } | null;
   private labelWindowFn: WindowLabeler;
   private skipDefaultWindowLabel: boolean;
   private watchWindowFitFn?: typeof watchWindowFit;
@@ -919,6 +923,7 @@ export class Launcher {
     this.hostPlatform = opts.hostPlatform ?? process.platform;
     this.hostArch = opts.hostArch ?? process.arch;
     this.hostScale = opts.hostScale ?? hostDisplayScale();
+    this.hostAvail = opts.hostAvail ?? hostDisplayAvail();
     this.labelWindowFn = opts.labelWindow ?? defaultLabelWindow;
     this.skipDefaultWindowLabel = this.unsafeDisableIdentityGates && opts.labelWindow === undefined;
     this.watchWindowFitFn = opts.watchWindowFit ?? (this.unsafeDisableIdentityGates ? undefined : watchWindowFit);
@@ -2328,6 +2333,10 @@ export class Launcher {
     const intelMac = this.hostPlatform === "darwin" && this.hostArch === "x64" && firefoxPersonaOs(profile) === "macos"
       ? { vendor: await this.macGraphicsVendorFn() }
       : undefined;
+    // On a display smaller than the profile's screen the window opens inside the display (firefoxLaunchConfig).
+    const hostAvail = this.hostAvail && (profile.screenWidth > this.hostAvail.width || profile.screenHeight > this.hostAvail.height)
+      ? this.hostAvail
+      : undefined;
     let reserved = false;
     try {
       if (needsProxyRelay(profile)) {
@@ -2354,7 +2363,7 @@ export class Launcher {
         : buildWindowLabel(profile.name, profileDisplayNo(profile.customNo, this.store.getSerial(profileId))).replace(/ — $/, "");
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
-        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac), proxy, headless,
+        userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac, hostAvail), proxy, headless,
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),

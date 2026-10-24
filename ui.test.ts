@@ -1276,26 +1276,49 @@ test("single edits reject malformed resolutions without changing stored identity
   }
 });
 
-test("Firefox profiles reject screen and Chrome extension changes", async () => {
-  for (const set of [{ resolution: "1920x1080" }, { extensions: ["chrome-extension"] }]) {
-    const s = store();
-    const getProfile = s.getProfile.bind(s);
-    (s as any).getProfile = (id: string) => {
-      const profile = getProfile(id);
-      return profile ? { ...profile, engine: "firefox" } : null;
-    };
-    const res = await handleUiRequest(
-      new Request("http://x/ui/api/profiles/k1d0cd11/update", {
-        method: "POST",
-        body: JSON.stringify({ set }),
-      }),
-      {} as any,
-      s,
-    );
-    expect(res!.status).toBe(500);
-    expect((await res!.json()).error).toMatch(/Firefox (screen settings|profiles)/);
-    s.close();
-  }
+test("Firefox profiles reject Chrome extension changes", async () => {
+  const s = store();
+  s.upsertProfile(firefoxProfile(s, "firefox-ext"));
+  const res = await handleUiRequest(
+    new Request("http://x/ui/api/profiles/firefox-ext/update", {
+      method: "POST",
+      body: JSON.stringify({ set: { extensions: ["chrome-extension"] } }),
+    }),
+    {} as any,
+    s,
+  );
+  expect(res!.status).toBe(500);
+  expect((await res!.json()).error).toMatch(/Firefox profiles/);
+  s.close();
+});
+
+test("a Firefox screen edit saves the screen with its usable area and a window inside it, only while closed", async () => {
+  const s = store();
+  const profile = firefoxProfile(s, "firefox-screen");
+  profile.screenWidth = 2560;
+  profile.screenHeight = 1440;
+  profile.firefox!.config = {
+    ...profile.firefox!.config, "navigator.platform": "Win32", "screen.width": 2560, "screen.height": 1440,
+    "window.outerWidth": 1664, "window.outerHeight": 1296, "window.innerWidth": 1648, "window.innerHeight": 1190,
+  };
+  s.upsertProfile(profile);
+  const edit = () => handleUiRequest(
+    new Request("http://x/ui/api/profiles/firefox-screen/update", { method: "POST", body: JSON.stringify({ set: { resolution: "1366x768" } }) }),
+    {} as any,
+    s,
+  );
+  s.recordLaunch({ profileId: "firefox-screen", pid: 1, debugPort: 9412, ws: "firefox://live", startedAt: 123 });
+  expect((await edit())!.status).toBe(409);
+  expect(s.getProfile("firefox-screen")!.screenWidth).toBe(2560);
+  s.clearLaunch("firefox-screen");
+  expect((await edit())!.status).toBe(200);
+  const saved = s.getProfile("firefox-screen")!;
+  expect([saved.screenWidth, saved.screenHeight]).toEqual([1366, 768]);
+  expect(saved.firefox!.config).toMatchObject({
+    "screen.width": 1366, "screen.height": 768, "screen.availWidth": 1366, "screen.availHeight": 720,
+    "window.outerWidth": 888, "window.outerHeight": 691, "window.innerWidth": 872, "window.innerHeight": 585, timezone: "UTC",
+  });
+  s.close();
 });
 
 test("a malformed nonblank proxy edit is rejected without removing the existing proxy", async () => {

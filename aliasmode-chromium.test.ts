@@ -13,6 +13,7 @@ import {
   ensureAliasmodeChromium,
   ensureCloakBrowser,
   hostChromiumRuntime,
+  hostDisplayAvail,
   hostDisplayScale,
   LINUX_CHROMIUM_APPARMOR_PROFILE,
   linuxChromiumSandboxBlocked,
@@ -190,6 +191,15 @@ test("the host display scale comes from the desktop app, and 1 stands in for a m
   for (const value of [undefined, "", "abc", "0", "0.5", "-1.5", "Infinity"]) {
     expect(hostDisplayScale({ ALIASMODE_HOST_SCALE: value })).toBe(1);
   }
+});
+
+test("the host display's available area comes from the desktop app in the CSS pixels Firefox pages measure", () => {
+  expect(hostDisplayAvail({ ALIASMODE_HOST_AVAIL: "1366x728", ALIASMODE_HOST_SCALE: "1" })).toEqual({ width: 1366, height: 728 });
+  expect(hostDisplayAvail({ ALIASMODE_HOST_AVAIL: "1920x1020", ALIASMODE_HOST_SCALE: "1.25" })).toEqual({ width: 1536, height: 816 });
+  expect(hostDisplayAvail({ ALIASMODE_HOST_AVAIL: "2880x1602", ALIASMODE_HOST_SCALE: "2" })).toEqual({ width: 1440, height: 801 });
+  // A fraction rounds down, so a window of that size still fits.
+  expect(hostDisplayAvail({ ALIASMODE_HOST_AVAIL: "1920x1032", ALIASMODE_HOST_SCALE: "1.25" })).toEqual({ width: 1536, height: 825 });
+  for (const value of [undefined, "", "1920", "1920x", "big"]) expect(hostDisplayAvail({ ALIASMODE_HOST_AVAIL: value })).toBeNull();
 });
 
 test("installs the pinned CloakBrowser build for each Mac processor from its tar archive root", async () => {

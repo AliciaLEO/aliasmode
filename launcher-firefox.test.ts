@@ -346,6 +346,29 @@ test("an Intel Mac asks its GPU vendor once for macOS profiles and shows a card 
   expect(await launcher.stop(profile.id)).toBe(true);
 });
 
+test("a Firefox window opens inside a display smaller than the profile's screen, and the saved screen stays", async () => {
+  const f = fixture();
+  const config = { ...f.profile.firefox!.config, "screen.width": 1920, "screen.height": 1080, "window.outerWidth": 1248, "window.outerHeight": 972 };
+  f.store.upsertProfile({ ...f.profile, firefox: { ...f.profile.firefox!, config } });
+  const profile = f.store.getProfile(f.profile.id)!;
+  // 1366x768 at 100%, 1920x1080 at 125% and a 1440x900 Mac, each less its taskbar or menu bar and Dock.
+  for (const [hostAvail, window] of [
+    [{ width: 1366, height: 728 }, [1248, 728]], [{ width: 1536, height: 816 }, [1248, 816]], [{ width: 1440, height: 801 }, [1248, 801]],
+  ] as const) {
+    const launcher = new Launcher({ ...f.options, hostAvail });
+    await launcher.start(profile.id);
+    expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL, undefined, undefined, undefined, hostAvail));
+    expect(f.config()).toMatchObject({ "screen.width": 1920, "screen.height": 1080, "window.outerWidth": window[0], "window.outerHeight": window[1] });
+    expect(await launcher.stop(profile.id)).toBe(true);
+  }
+  // A display that holds the screen leaves the launch as it was.
+  const launcher = new Launcher({ ...f.options, hostAvail: { width: 2560, height: 1392 } });
+  await launcher.start(profile.id);
+  expect(f.config()).toEqual(firefoxLaunchConfig(profile, LABEL));
+  expect(await launcher.stop(profile.id)).toBe(true);
+  expect(f.store.getProfile(profile.id)!.firefox).toEqual(profile.firefox);
+});
+
 test("Firefox rejects unsupported host tuples without changing saved config", async () => {
   for (const [platform, arch] of [["linux", "arm64"], ["win32", "arm64"]] as const) {
     const f = fixture(platform, arch);

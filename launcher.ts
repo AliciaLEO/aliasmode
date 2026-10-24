@@ -572,6 +572,8 @@ export interface LaunchStartResult {
   port: number;
   /** True only when this fresh launch restored at least one native user page. */
   nativeSessionRestored?: boolean;
+  /** True when this fresh Chromium launch opened its own last on-disk session, cookies included. */
+  nativeSessionLoaded?: boolean;
 }
 
 export type LaunchGeneration = Pick<LaunchInfo, "debugPort" | "startedAt">;
@@ -2179,7 +2181,7 @@ export class Launcher {
       if (profile.chromiumRuntime && !headless && this.watchWindowFitFn) {
         this.startWindowFit(profile, ws, sample);
       }
-      return { ws, port, nativeSessionRestored };
+      return { ws, port, nativeSessionRestored, ...(restoreLastSession ? { nativeSessionLoaded: true } : {}) };
     } catch (err) {
       // Roll back partial state so a failed start can't leak a zombie — including the relay, which
       // is brought up before the browser, so an error after that point would strand a listener.

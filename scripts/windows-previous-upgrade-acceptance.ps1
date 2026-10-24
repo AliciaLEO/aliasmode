@@ -304,7 +304,7 @@ try {
   $activeRecord = Wait-AliasModeReady $appPath $previousVersion
   $checks.previousVersionReady = $true
   $mode = Invoke-RestMethod "$($activeRecord.Origin)/ui/api/app-mode"
-  if ($mode.mode -eq "unconfigured") {
+  if ($mode.mode -ne "local") {
     Invoke-RestMethod "$($activeRecord.Origin)/ui/api/app-mode" `
       -Method Post `
       -ContentType "application/json" `

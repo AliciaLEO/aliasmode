@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   cloudLauncherSmokeEngine,
   cloudRuntimeConfiguration,
+  desktopFirstRunMode,
   createCloudCrossDeviceFixtureHandler,
   createCloudRestoreFixtureHandler,
   dispatchReadSessionWorker,
@@ -952,6 +953,12 @@ test("CLI dispatches the session worker before normal command parsing", async ()
     JSON.stringify({ ok: true, bundle: "captured bundle" }),
     "exit:0",
   ]);
+});
+
+test("desktop first run starts on Cloud sign-in; background and CLI runs do not", () => {
+  expect(desktopFirstRunMode(true, {})).toBe("cloud");
+  expect(desktopFirstRunMode(true, { ALIASMODE_BACKGROUND: "1" })).toBe("local");
+  expect(desktopFirstRunMode(false, {})).toBeNull();
 });
 
 test("official Cloud configuration works without environment variables", () => {

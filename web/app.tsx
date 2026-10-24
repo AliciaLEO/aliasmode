@@ -1190,6 +1190,7 @@ function App() {
   const [authErr, setAuthErr] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [confirmationEmail, setConfirmationEmail] = useState("");
+  const [localPrompt, setLocalPrompt] = useState(false);
   const [invitationCode, setInvitationCode] = useState("");
   const [team, setTeam] = useState<CloudTeamState | null>(null);
   const [teamEmail, setTeamEmail] = useState("");
@@ -1803,7 +1804,7 @@ function App() {
       if (authView === "signup") {
         const result = await signUpCloud(authEmail, authPassword);
         setAuthNotice(result.verificationRequired
-          ? "Check your email, verify the account, then sign in."
+          ? `We sent a confirmation link to ${authEmail}. Open it, then come back and select Sign in.`
           : "Account created. You can sign in now.");
         setConfirmationEmail(result.verificationRequired ? authEmail : "");
         setAuthView("signin");
@@ -3051,16 +3052,26 @@ function App() {
           <div className="onboarding-brand"><AliasLoop />AliasMode <span>by Xreacher</span></div>
           {restartRequired ? (
             <>
-              <h1 id="onboarding-title">Your mode is ready</h1>
-              <p>Quit and reopen AliasMode to start in {appMode?.mode === "cloud" ? "Cloud" : "Local"} mode.</p>
-              {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-              <button className="mode-primary" type="button" onClick={() => window.close()}>Quit AliasMode</button>
+              <h1 id="onboarding-title">Switching to {appMode?.mode === "cloud" ? "Cloud" : "Local"} mode</h1>
+              {desktopInvoke() ? (
+                <>
+                  <p role="status">AliasMode restarts to finish the switch.</p>
+                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>Restart AliasMode</button>
+                </>
+              ) : (
+                <>
+                  <p>Quit and reopen AliasMode to finish the switch.</p>
+                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                  <button className="mode-primary" type="button" onClick={() => window.close()}>Quit AliasMode</button>
+                </>
+              )}
             </>
           ) : appMode?.mode === "cloud" ? (
             cloudAuth?.authenticated ? (
               <>
                 <h1 id="onboarding-title">Review the Cloud terms</h1>
-                <p>Accept the current policies before synchronizing this workspace.</p>
+                <p>Accept the terms to start using AliasMode Cloud.</p>
                 <div className="auth-actions">
                   <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">Terms</a>
                   <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">Privacy</a>
@@ -3092,10 +3103,20 @@ function App() {
                   <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>Sign in instead</button>
                 </div>
               </>
+            ) : localPrompt ? (
+              <>
+                <h1 id="onboarding-title">Continue without Cloud?</h1>
+                <p>Local profiles stay on this computer only. They do not sync across your devices. You can switch to Cloud later in Settings.</p>
+                {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                <div className="local-choice">
+                  <button className="mode-primary" type="button" disabled={modeBusy} onClick={() => { setModeErr(null); setLocalPrompt(false); }}>Back to Cloud sign-in</button>
+                  <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? "Switching…" : "Continue locally"}</button>
+                </div>
+              </>
             ) : (
               <>
                 <h1 id="onboarding-title">{authView === "signin" ? "Sign in to AliasMode Cloud" : "Create your Cloud account"}</h1>
-                <p>Verified accounts can synchronize portable profiles across authorized devices.</p>
+                <p>Sync your profiles across your computers and work with your team.</p>
                 <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
                   <label>Email<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
                   <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
@@ -3115,6 +3136,7 @@ function App() {
                   {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>Forgot password?</button>}
                 </div>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                <button type="button" className="continue-local" disabled={authBusy} onClick={() => { setModeErr(null); setLocalPrompt(true); }}>Continue locally instead</button>
               </>
             )
           ) : appMode ? (
@@ -3844,7 +3866,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => act(p.id, openProfile)}
                             >
-                              <Icon name="play" className="sm" />{t("Open")}
+                              <Icon name="play" className="sm" />{busy[p.id] ? t("Opening…") : t("Open")}
                             </button>
                           </>
                         ) : (
@@ -3855,7 +3877,7 @@ function App() {
                             disabled={busy[p.id]}
                             onClick={() => act(p.id, openProfile)}
                           >
-                            <Icon name="play" className="sm" />{t("Open")}
+                            <Icon name="play" className="sm" />{busy[p.id] ? t("Opening…") : t("Open")}
                           </button>
                         )}
                       </span>

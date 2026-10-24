@@ -1805,8 +1805,8 @@ function App() {
       if (authView === "signup") {
         const result = await signUpCloud(authEmail, authPassword);
         setAuthNotice(result.verificationRequired
-          ? `We sent a confirmation link to ${authEmail}. Open it, then come back and select Sign in.`
-          : "Account created. You can sign in now.");
+          ? t("We sent a confirmation link to {email}. Open it, then come back and select Sign in.", { email: authEmail })
+          : t("Account created. You can sign in now."));
         setConfirmationEmail(result.verificationRequired ? authEmail : "");
         setAuthView("signin");
       } else {
@@ -1843,7 +1843,7 @@ function App() {
         setSavedSessionPhase("manual-signin");
         setScheduledRefreshPending(false);
         setAuthPassword("");
-        if (!persisted) setAuthNotice("Signed in for this run; desktop credential storage is unavailable.");
+        if (!persisted) setAuthNotice(t("Signed in for this run; desktop credential storage is unavailable."));
       }
     } catch (error) {
       if (generation === authGeneration.current) {
@@ -1887,7 +1887,7 @@ function App() {
     setAuthErr(null);
     try {
       await resendCloudSignUp(confirmationEmail);
-      setAuthNotice("Confirmation email sent again.");
+      setAuthNotice(t("Confirmation email sent again."));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1900,13 +1900,13 @@ function App() {
     setAuthErr(null);
     setAuthNotice(null);
     if (!email) {
-      setAuthErr("Enter your email, then select Forgot password.");
+      setAuthErr(t("Enter your email, then select Forgot password."));
       return;
     }
     setAuthBusy(true);
     try {
       await requestCloudPasswordReset(email);
-      setAuthNotice(`If ${email} has an account, a password reset link is on its way. Check spam too.`);
+      setAuthNotice(t("If {email} has an account, a password reset link is on its way. Check spam too.", { email }));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -3055,30 +3055,30 @@ function App() {
           <div className="onboarding-brand"><AliasLoop />AliasMode <span>by Xreacher</span></div>
           {restartRequired ? (
             <>
-              <h1 id="onboarding-title">Switching to {appMode?.mode === "cloud" ? "Cloud" : "Local"} mode</h1>
+              <h1 id="onboarding-title">{appMode?.mode === "cloud" ? t("Switching to Cloud mode") : t("Switching to Local mode")}</h1>
               {desktopInvoke() ? (
                 <>
-                  <p role="status">AliasMode restarts to finish the switch.</p>
+                  <p role="status">{t("AliasMode restarts to finish the switch.")}</p>
                   {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>Restart AliasMode</button>
+                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>{t("Restart AliasMode")}</button>
                 </>
               ) : (
                 <>
-                  <p>Quit and reopen AliasMode to finish the switch.</p>
+                  <p>{t("Quit and reopen AliasMode to finish the switch.")}</p>
                   {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                  <button className="mode-primary" type="button" onClick={() => window.close()}>Quit AliasMode</button>
+                  <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit AliasMode")}</button>
                 </>
               )}
             </>
           ) : appMode?.mode === "cloud" ? (
             cloudAuth?.authenticated ? (
               <>
-                <h1 id="onboarding-title">Review the Cloud terms</h1>
-                <p>Accept the terms to start using AliasMode Cloud.</p>
+                <h1 id="onboarding-title">{t("Review the Cloud terms")}</h1>
+                <p>{t("Accept the terms to start using AliasMode Cloud.")}</p>
                 <div className="auth-actions">
-                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">Terms</a>
-                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">Privacy</a>
-                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">Acceptable Use</a>
+                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">{t("Terms")}</a>
+                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">{t("Privacy")}</a>
+                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">{t("Acceptable Use")}</a>
                 </div>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <button
@@ -3087,84 +3087,84 @@ function App() {
                   disabled={authBusy || !cloudAuth.legal}
                   onClick={() => void acceptCurrentLegal()}
                 >
-                  {authBusy ? "Working…" : cloudAuth.legal ? "Accept and continue to Cloud" : "Checking workspace…"}
+                  {authBusy ? t("Working…") : cloudAuth.legal ? t("Accept and continue to Cloud") : t("Checking workspace…")}
                 </button>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
               </>
             ) : savedSessionPhase === "restoring" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p role="status">Checking the saved Cloud session on this device…</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p role="status">{t("Checking the saved Cloud session on this device…")}</p>
               </>
             ) : savedSessionPhase === "retryable-failure" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p>The saved session is still on this device. Reconnect and try again.</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p>{t("The saved session is still on this device. Reconnect and try again.")}</p>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <div className="auth-actions">
-                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>Try again</button>
-                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>Sign in instead</button>
+                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>{t("Try again")}</button>
+                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>{t("Sign in instead")}</button>
                 </div>
               </>
             ) : localPrompt ? (
               <>
-                <h1 id="onboarding-title">Continue without Cloud?</h1>
-                <p>Local profiles stay on this computer only. They do not sync across your devices. You can switch to Cloud later in Settings.</p>
+                <h1 id="onboarding-title">{t("Continue without Cloud?")}</h1>
+                <p>{t("Local profiles stay on this computer only. They do not sync across your devices. You can switch to Cloud later in Settings.")}</p>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
                 <div className="local-choice">
-                  <button className="mode-primary" type="button" disabled={modeBusy} onClick={() => { setModeErr(null); setLocalPrompt(false); }}>Back to Cloud sign-in</button>
-                  <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? "Switching…" : "Continue locally"}</button>
+                  <button className="mode-primary" type="button" disabled={modeBusy} onClick={() => { setModeErr(null); setLocalPrompt(false); }}>{t("Back to Cloud sign-in")}</button>
+                  <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? t("Switching…") : t("Continue locally")}</button>
                 </div>
               </>
             ) : (
               <>
-                <h1 id="onboarding-title">{authView === "signin" ? "Sign in to AliasMode Cloud" : "Create your Cloud account"}</h1>
-                <p>Sync your profiles across your computers and work with your team.</p>
+                <h1 id="onboarding-title">{authView === "signin" ? t("Sign in to AliasMode Cloud") : t("Create your Cloud account")}</h1>
+                <p>{t("Sync your profiles across your computers and work with your team.")}</p>
                 <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
-                  <label>Email<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
+                  <label>{t("Email")}<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
                   <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
                   {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                   {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
                   {confirmationEmail && (
                     <button type="button" className="mode-secondary" disabled={authBusy} onClick={() => void resendConfirmation()}>
-                      Resend confirmation
+                      {t("Resend confirmation")}
                     </button>
                   )}
-                  <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? "Working…" : authView === "signin" ? "Sign in" : "Create account"}</button>
+                  <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? t("Working…") : authView === "signin" ? t("Sign in") : t("Create account")}</button>
                 </form>
                 <div className="auth-actions">
                   <button type="button" onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView(authView === "signin" ? "signup" : "signin"); }}>
-                    {authView === "signin" ? "Create an account" : "Back to sign in"}
+                    {authView === "signin" ? t("Create an account") : t("Back to sign in")}
                   </button>
-                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>Forgot password?</button>}
+                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>{t("Forgot password?")}</button>}
                 </div>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-                <button type="button" className="continue-local" disabled={authBusy} onClick={() => { setModeErr(null); setLocalPrompt(true); }}>Continue locally instead</button>
+                <button type="button" className="continue-local" disabled={authBusy} onClick={() => { setModeErr(null); setLocalPrompt(true); }}>{t("Continue locally instead")}</button>
               </>
             )
           ) : appMode ? (
             <>
-              <h1 id="onboarding-title">How do you want to use AliasMode?</h1>
-              <p>Choose where browser profiles live for this installation.</p>
+              <h1 id="onboarding-title">{t("How do you want to use AliasMode?")}</h1>
+              <p>{t("Choose where browser profiles live for this installation.")}</p>
               <div className="mode-options">
                 <button className="mode-option primary" type="button" disabled={modeBusy} onClick={() => chooseMode("cloud")}>
                   <span className="badge"><Icon name="cloud" className="lg" /></span>
                   <strong>AliasMode Cloud</strong>
-                  <span>Sync profiles across authorized devices and work with your team.</span>
+                  <span>{t("Sync your profiles across your computers and work with your team.")}</span>
                 </button>
                 <button className="mode-option" type="button" disabled={modeBusy} onClick={() => chooseMode("local")}>
                   <span className="badge"><Icon name="laptop" className="lg" /></span>
                   <strong>AliasMode Local</strong>
-                  <span>No account. Profile data stays on this computer and analytics is off.</span>
+                  <span>{t("No account. Profile data stays on this computer and analytics is off.")}</span>
                 </button>
               </div>
               {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
             </>
           ) : (
             <>
-              <h1 id="onboarding-title">Starting AliasMode</h1>
-              <p>{connErr ?? "Loading your configuration…"}</p>
-              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>Try again</button>}
+              <h1 id="onboarding-title">{t("Starting AliasMode")}</h1>
+              <p>{connErr ?? t("Loading your configuration…")}</p>
+              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button>}
             </>
           )}
           </section>
@@ -4509,7 +4509,7 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="create-profile-title">
-              <Icon name="plus" />New profile
+              <Icon name="plus" />{t("New profile")}
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">

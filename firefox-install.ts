@@ -12,29 +12,29 @@ export interface FirefoxRuntimeBuild {
 }
 
 export const FIREFOX_RUNTIME_VERSION = "156.0.1-beta.36";
-const FIREFOX_RUNTIME_RELEASE = `aliasmode-runtime-${FIREFOX_RUNTIME_VERSION}-r8`;
+const FIREFOX_RUNTIME_RELEASE = `aliasmode-runtime-${FIREFOX_RUNTIME_VERSION}-r9`;
 const FIREFOX_RELEASE_BASE = `https://github.com/aliasmode/aliasmode-firefox/releases/download/${FIREFOX_RUNTIME_RELEASE}`;
 
 export const FIREFOX_RUNTIME_BUILDS: readonly FirefoxRuntimeBuild[] = [
   {
     platform: "linux", arch: "x64", executablePath: "aliasmode",
-    archiveSha256: "1a111f0422f73f1c18a00fc9b2af65becbfc60fc3ec9a4da4892833270905c1f",
-    executableSha256: "ad5c532e9fd342368690c66f21b1e4378eadbd36c2572d05b98610fc7846fe40",
+    archiveSha256: "6eba6aadc77d1e7d541637d7e3e78de277b3139370cbf6fe160749af49629504",
+    executableSha256: "7c0686b819f02245654326a3b10798cb3b88707e0bdb2f5f2e10e13710e4bca8",
   },
   {
     platform: "darwin", arch: "arm64", executablePath: "AliasMode.app/Contents/MacOS/aliasmode",
-    archiveSha256: "fa4b4aa068c17fed0e20af7b528365ee512e0e672472492c9cd4831b0ab103d6",
-    executableSha256: "03d2d08d81138abdf1d05209aa1526eeac35de3168f4e3ccf42f78d2e6dca10d",
+    archiveSha256: "b03a0ba2252bb5020509b0193831a7f258f4ed60c6a20883c137e0466ad6689f",
+    executableSha256: "065e1cd51dd18682044a9bf6079ed4456c8c74715ae06cd5b9e37870e8ec4ff3",
   },
   {
     platform: "darwin", arch: "x64", executablePath: "AliasMode.app/Contents/MacOS/aliasmode",
-    archiveSha256: "64321f9cdce6f96b464bf26ddf0cad4cc9b272be858a930d93b7ba7899b2f603",
-    executableSha256: "56f517029844e6df1b0f149bf8a68ba3da20556377d502a6ec50325838663516",
+    archiveSha256: "b290882e20b0000a018d4ad861f77aa18c4a50b9940996942603082359c96891",
+    executableSha256: "788a4f283aa9f132a534d6ebe31a8e8ebb1af16f1ccded47b68d525a77e3cd5e",
   },
   {
     platform: "win32", arch: "x64", executablePath: "aliasmode.exe",
-    archiveSha256: "3062041cbc93ea0d7df7dd75415cd4d40434a9dd0340c041d7e968e754ce65c1",
-    executableSha256: "491ff2ad08cab29be2f7a214e210a06f8fbd8187b6cc33e0905c8bcf8b7c4b81",
+    archiveSha256: "c2fa7d3f1d765654958c4762ecfbc81a169f1e4e91087aa9c7e751183973daae",
+    executableSha256: "448524e5810f7ddd4bb49d41e43b4275e3fd5f4a3139841d9a7f1f7fe752104d",
   },
 ];
 

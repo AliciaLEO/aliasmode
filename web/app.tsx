@@ -2131,7 +2131,10 @@ function App() {
         if (!live) return;
         setRuntimeDownloads(next);
         if (next.length > 0 || anyBusy) timer = window.setTimeout(poll, 1000);
-      }).catch(() => {});
+      }).catch(() => {
+        // A missed check must not freeze the label while a row still opens.
+        if (live && anyBusy) timer = window.setTimeout(poll, 1000);
+      });
     };
     poll();
     return () => { live = false; window.clearTimeout(timer); };

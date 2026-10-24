@@ -9,6 +9,7 @@ import { parseExport } from "./parse.ts";
 import { deriveFingerprintFlags } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest } from "./ui.ts";
 import { supportsChromium155Host } from "./aliasmode-chromium.ts";
+import { trackRuntimeDownload } from "./runtime-download.ts";
 import { readXlsx, writeXlsx } from "./xlsx.ts";
 import { AppConfigStore } from "./app-config.ts";
 import { CloudAuthRuntime } from "./cloud-auth.ts";
@@ -4056,6 +4057,29 @@ test("Cloud diagnostics route returns only sanitized current-process events", as
     s,
   );
   expect(await empty!.json()).toEqual({ events: [] });
+  s.close();
+});
+
+test("runtime downloads route lists each download in progress with the bytes of its part", async () => {
+  const s = store();
+  const read = async () => {
+    const response = await handleUiRequest(new Request("http://x/ui/api/runtime-downloads"), {} as any, s);
+    expect(response!.headers.get("cache-control")).toBe("no-store");
+    return response!.json();
+  };
+  expect(await read()).toEqual({ downloads: [] });
+
+  const dir = mkdtempSync(join(tmpdir(), "aliasmode-runtime-download-"));
+  const partial = join(dir, "runtime.part");
+  writeFileSync(partial, "x".repeat(42));
+  let finish!: () => void;
+  const download = trackRuntimeDownload("aliasmode", partial, 100, () => new Promise<void>((resolve) => { finish = resolve; }));
+  expect(await read()).toEqual({ downloads: [{ runtime: "aliasmode", receivedBytes: 42, totalBytes: 100 }] });
+
+  finish();
+  await download;
+  expect(await read()).toEqual({ downloads: [] });
+  rmSync(dir, { recursive: true, force: true });
   s.close();
 });
 

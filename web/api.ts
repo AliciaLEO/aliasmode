@@ -10,6 +10,7 @@ import type {
 } from "../contracts/cloud-v1.ts";
 import type { ScriptRun } from "../scripts.ts";
 import type { PythonRuntimeStatus } from "../python-runtime.ts";
+import type { RuntimeDownload } from "../runtime-download.ts";
 import type { FolderInfo } from "../folders.ts";
 import {
   CLOUD_DIAGNOSTIC_TYPES,
@@ -17,6 +18,7 @@ import {
 } from "../cloud-diagnostics.ts";
 
 export type { CloudDiagnosticEvent } from "../cloud-diagnostics.ts";
+export type { RuntimeDownload } from "../runtime-download.ts";
 
 export type HealthStatus = "suspended" | "alive" | "no_data";
 
@@ -182,6 +184,15 @@ export async function fetchCloudEvents(): Promise<CloudDiagnosticEvent[]> {
     }
     return { timestamp, type } as CloudDiagnosticEvent;
   });
+}
+
+/** Browser runtimes downloading now, with the bytes received so far. */
+export async function fetchRuntimeDownloads(): Promise<RuntimeDownload[]> {
+  const path = "/ui/api/runtime-downloads";
+  const response = await fetch(path);
+  const body = await apiJson(response, path);
+  if (!response.ok || !Array.isArray(body.downloads)) throw new Error("Browser downloads returned invalid data");
+  return body.downloads as RuntimeDownload[];
 }
 
 export interface CloudLegalState {

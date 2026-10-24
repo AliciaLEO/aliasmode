@@ -11,6 +11,7 @@ import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { renameWhenUnlocked } from "./browser-install.ts";
 import { sha256File } from "./browser-install.ts";
+import { trackRuntimeDownload } from "./runtime-download.ts";
 
 export type FontPackOs = "windows" | "macos" | "linux";
 
@@ -176,7 +177,7 @@ async function install(root: string, pack: FirefoxFontPack, deps: FirefoxFontPac
   mkdirSync(packs, { recursive: true });
   // The same name across attempts and app runs, so a broken download resumes.
   const partial = join(packs, `.${basename(target)}.part`);
-  await download(firefoxFontPackUrl(pack), partial, pack.size, deps);
+  await trackRuntimeDownload("firefox", partial, pack.size, () => download(firefoxFontPackUrl(pack), partial, pack.size, deps));
   if (await sha256File(partial) !== pack.sha256) {
     rmSync(partial, { force: true });
     throw new Error(`${pack.asset} did not match its pinned SHA-256`);

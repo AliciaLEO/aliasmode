@@ -15,6 +15,7 @@ import {
   type FirefoxFontPack,
   type FirefoxFontPackDeps,
 } from "./firefox-fonts.ts";
+import { runtimeDownloads } from "./runtime-download.ts";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const path of cleanup.splice(0)) rmSync(path, { recursive: true, force: true }); });
@@ -119,6 +120,33 @@ test("installs a verified pack atomically and reuses it without downloading agai
 
   expect(await ensureFirefoxFontPack(root, pack, fake.deps)).toBe(fonts);
   expect(remote.requests).toHaveLength(1);
+});
+
+test("a download in progress reports the bytes saved so far against the pack size", async () => {
+  const root = tempRoot();
+  const pack = syntheticPack(PACK_BYTES);
+  let halfway!: () => void;
+  let resume!: () => void;
+  const saved = new Promise<void>((resolve) => { halfway = resolve; });
+  let sent = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (sent === 1) {
+        // The first half is written before the stream is asked for more.
+        halfway();
+        await new Promise<void>((resolve) => { resume = resolve; });
+      }
+      if (sent < 2) controller.enqueue(PACK_BYTES.subarray(sent * 2048, ++sent * 2048));
+      else controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const fake = deps(async () => new Response(stream, { status: 200 }));
+  const installed = ensureFirefoxFontPack(root, pack, fake.deps);
+  await saved;
+  expect(runtimeDownloads()).toEqual([{ runtime: "firefox", receivedBytes: 2048, totalBytes: 4096 }]);
+  resume();
+  await installed;
+  expect(runtimeDownloads()).toEqual([]);
 });
 
 test("concurrent opens share one download", async () => {

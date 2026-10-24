@@ -39,6 +39,8 @@ import {
   fetchAppMode,
   fetchCloudAuth,
   fetchCloudEvents,
+  fetchRuntimeDownloads,
+  type RuntimeDownload,
   fetchCloudTeam,
   cloudWorkspaceAction,
   forgetCloudSession,
@@ -1003,6 +1005,30 @@ function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgre
   );
 }
 
+/** Percent of the bytes these browser downloads have received. */
+function downloadPercent(downloads: RuntimeDownload[]): number {
+  const total = downloads.reduce((sum, download) => sum + download.totalBytes, 0);
+  const received = downloads.reduce((sum, download) => sum + download.receivedBytes, 0);
+  return Math.floor(received * 100 / total);
+}
+
+/** The browser downloads that opening this profile waits for. */
+function profileDownloads(profile: UiProfile, downloads: RuntimeDownload[]): RuntimeDownload[] {
+  const runtime = profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "cloakbrowser";
+  return downloads.filter((download) => download.runtime === runtime);
+}
+
+function RuntimeDownloadProgressView({ downloads }: { downloads: RuntimeDownload[] }) {
+  const { t } = useTranslation();
+  const percent = downloadPercent(downloads);
+  return (
+    <div className="update-progress" role="status">
+      <span>{t("Downloading browser… {percent}%", { percent: String(percent) })}</span>
+      <progress max={100} value={percent} aria-label={t("Browser download progress")} />
+    </div>
+  );
+}
+
 async function readDesktopCloudCredentials(): Promise<{
   refreshToken?: string;
   deviceCredential?: string;
@@ -1227,6 +1253,7 @@ function App() {
   const [tableScrolled, setTableScrolled] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(readTheme);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [runtimeDownloads, setRuntimeDownloads] = useState<RuntimeDownload[]>([]);
   // Two error slots so an auto-refresh can't silently wipe why an action failed:
   // actionErr is sticky (Open/Close/move/import), connErr tracks load() only.
   const [actionErr, setActionErr] = useState<string | null>(null);
@@ -2093,6 +2120,23 @@ function App() {
     return () => clearInterval(t);
   }, [appMode?.mode, restartRequired, workspaceReady]);
 
+  // Browser runtime downloads: read once when the profile count changes (a new profile
+  // starts its download), then every second while one runs or a row is busy opening.
+  const anyBusy = Object.values(busy).some(Boolean);
+  useEffect(() => {
+    let live = true;
+    let timer: number | undefined;
+    const poll = () => {
+      void fetchRuntimeDownloads().then((next) => {
+        if (!live) return;
+        setRuntimeDownloads(next);
+        if (next.length > 0 || anyBusy) timer = window.setTimeout(poll, 1000);
+      }).catch(() => {});
+    };
+    poll();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [anyBusy, profiles.length]);
+
   // Live 2FA code in the Edit modal: fetch the current TOTP, count it down
   // locally, and refetch when the window rolls over.
   useEffect(() => {
@@ -2356,6 +2400,15 @@ function App() {
     } finally {
       setBusy((b) => ({ ...b, [id]: false }));
     }
+  };
+
+  /** While a profile opens, its Open button shows the browser download it waits for. */
+  const openLabel = (profile: UiProfile) => {
+    if (!busy[profile.id]) return t("Open");
+    const waiting = profileDownloads(profile, runtimeDownloads);
+    return waiting.length > 0
+      ? t("Downloading browser… {percent}%", { percent: String(downloadPercent(waiting)) })
+      : t("Opening…");
   };
 
   /**
@@ -3618,6 +3671,7 @@ function App() {
             />
             {q && <button type="button" className="clear" aria-label={t("Clear search")} onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
           </div>
+          {runtimeDownloads.length > 0 && <RuntimeDownloadProgressView downloads={runtimeDownloads} />}
         </div>
 
         {showImportOffer && profilesWithoutProxy > 0 && (
@@ -3869,7 +3923,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => act(p.id, openProfile)}
                             >
-                              <Icon name="play" className="sm" />{busy[p.id] ? t("Opening…") : t("Open")}
+                              <Icon name="play" className="sm" />{openLabel(p)}
                             </button>
                           </>
                         ) : (
@@ -3880,7 +3934,7 @@ function App() {
                             disabled={busy[p.id]}
                             onClick={() => act(p.id, openProfile)}
                           >
-                            <Icon name="play" className="sm" />{busy[p.id] ? t("Opening…") : t("Open")}
+                            <Icon name="play" className="sm" />{openLabel(p)}
                           </button>
                         )}
                       </span>

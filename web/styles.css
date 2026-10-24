@@ -1002,6 +1002,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .update-progress { width: min(360px, 100%); display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
 .update-progress progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .update-settings .update-progress { width: 100%; }
+.filterbar .update-progress { width: 220px; margin-left: auto; }
 
 /* Proxy checker and conditional NobleProxy offer in both profile dialogs. */
 .proxy-check-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }

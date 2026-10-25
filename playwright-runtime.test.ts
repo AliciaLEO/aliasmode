@@ -23,15 +23,17 @@ async function fakePackagedNode(root: string): Promise<void> {
 
 const bunAsNodeTest = process.platform === "win32" ? test.skip : test;
 
-test("Firefox capture distinguishes a closed window from a live blank page", async () => {
-  for (const urls of [[], ["about:blank"], ["https://one.example/", "https://one.example/"]]) {
-    const context = {
-      pages: () => urls.map((url) => ({ url: () => url, evaluate: async () => ({ origin: new URL(url).origin, localStorage: [] }) })),
-      cookies: async () => [],
-    };
-    const captured = JSON.parse(await captureSession({ contexts: () => [context] }, {}, { nativeStorage: true }));
-    expect(captured.tabs).toEqual(urls.length ? urls.filter((url) => url !== "about:blank") : undefined);
-    expect(captured.cookies).toEqual([]);
+test("Firefox and Chromium captures distinguish a closed window from a live blank page", async () => {
+  for (const nativeStorage of [true, false]) {
+    for (const urls of [[], ["about:blank"], ["https://one.example/", "https://one.example/"]]) {
+      const context = {
+        pages: () => urls.map((url) => ({ url: () => url, evaluate: async () => ({ origin: new URL(url).origin, localStorage: [] }) })),
+        cookies: async () => [],
+      };
+      const captured = JSON.parse(await captureSession({ contexts: () => [context] }, {}, { nativeStorage }));
+      expect(captured.tabs).toEqual(urls.length ? urls.filter((url) => url !== "about:blank") : undefined);
+      expect(captured.cookies).toEqual([]);
+    }
   }
 });
 
@@ -654,6 +656,42 @@ test("a Chromium capture keeps site tabs and leaves out the search engine's new 
     origins: [{ origin: "https://site.example", localStorage: [] }],
     tabs: ["https://site.example/"],
   });
+});
+
+test("a Chromium capture reads a site tab's storage in an isolated world, not in the page", async () => {
+  const calls: string[] = [];
+  const page = {
+    url: () => "https://site.example/feed",
+    async evaluate() { throw new Error("capture must not run code in the page's own world"); },
+  };
+  const context = {
+    pages: () => [page],
+    async cookies() { return []; },
+    async newCDPSession() {
+      return {
+        async send(method: string, params: any) {
+          calls.push(method);
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Page.createIsolatedWorld") {
+            expect(params).toEqual({ frameId: "main", worldName: "aliasmode-session-capture" });
+            return { executionContextId: 7 };
+          }
+          if (method === "Runtime.evaluate") {
+            expect(params.contextId).toBe(7);
+            return { result: { value: { origin: "https://site.example", localStorage: [{ name: "k", value: "v" }] } } };
+          }
+          return {};
+        },
+        async detach() { calls.push("detach"); },
+      };
+    },
+  };
+  expect(JSON.parse(await captureSession({ contexts: () => [context] }, {}))).toEqual({
+    cookies: [],
+    origins: [{ origin: "https://site.example", localStorage: [{ name: "k", value: "v" }] }],
+    tabs: ["https://site.example/feed"],
+  });
+  expect(calls).toContain("Runtime.evaluate");
 });
 
 bunAsNodeTest("worker imports all sites without replacing existing cookies and restores complete Cloud jars", async () => {
@@ -1842,18 +1880,16 @@ bunAsNodeTest("worker proves hidden target identity through marker collisions an
       origins: ["https://a.example", "https://b.example"].map((origin) => ({
         origin, localStorage: [{ name: "token", value: origin }],
       })),
-      tabs: [],
     });
     expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
       endpoint: "ws://empty",
-    }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual({ cookies: [], origins: [], tabs: [] });
+    }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual({ cookies: [], origins: [] });
     expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
       endpoint: "ws://cleanup",
       captureSeed: { origins: ["https://closed.example"] },
     }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual({
       cookies: [],
       origins: [{ origin: "https://closed.example", localStorage: [{ name: "token", value: "https://closed.example" }] }],
-      tabs: [],
     });
 
     const modes = [

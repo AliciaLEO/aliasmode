@@ -696,7 +696,8 @@ test("Windows Local preserves native session artifacts without appending platfor
   expect(await launcher.stop("k1d0cd11")).toBe(true);
 
   targets = [{ type: "page", url: "about:blank" }];
-  await launcher.start("k1d0cd11");
+  // Chromium loaded its last session, cookies included, even though no page came back.
+  expect(await launcher.start("k1d0cd11")).toMatchObject({ nativeSessionRestored: false, nativeSessionLoaded: true });
   expect(prepared).toBe(1);
   expect(spawnedArgs[1]).toContain("--restore-last-session");
   expect(navigated).toEqual([

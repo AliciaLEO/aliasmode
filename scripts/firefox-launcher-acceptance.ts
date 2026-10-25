@@ -14,7 +14,9 @@ import { decodePortableProfile, encodePortableProfile } from "../portable-profil
 import { resolvePlaywrightRuntime } from "../playwright-runtime.ts";
 import { PythonRuntime } from "../python-runtime.ts";
 import { applySourceRuntime, type SourceRuntime } from "../source-runtime.ts";
-import { applySessionToEndpoint, readSessionInSubprocess } from "../session.ts";
+import { CloudBrowserCoordinator } from "../cloud-browser.ts";
+import { PendingSyncQueue } from "../pending-sync.ts";
+import { addBrowserCookie, applySessionToEndpoint, readSessionInSubprocess } from "../session.ts";
 import { ProfileStore } from "../store.ts";
 import type { Profile } from "../types.ts";
 
@@ -44,6 +46,7 @@ const concurrentFirefoxPeerId = "firefoxconcurrentpeer";
 let concurrentChromiumId: string | undefined;
 const nativeCloseId = "firefoxnativeclose";
 const lastTabCloseId = "firefoxlasttabclose";
+const windowCloseId = "firefoxcloudwindowclose";
 
 async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
@@ -658,6 +661,59 @@ export default async ({ context, inputs }) => {
         assert.ok(values[0]!.cookie.includes(`native-close=${close}`), "native reopen keeps cookies");
       }
       assert.equal(await localLauncher.stop(nativeCloseId), true);
+    }
+
+    // macOS keeps Firefox running after its last window. Cloud saves that browser, with a login made
+    // after its last checkpoint, and stops it.
+    console.log("firefox-launcher-acceptance:cloud-last-window-close");
+    const windowStore = new ProfileStore(join(root, "window-close.sqlite"));
+    const windowQueue = new PendingSyncQueue(join(root, "window-close-pending.sqlite"), new Uint8Array(32).fill(7));
+    const windowProfile = profile(windowCloseId, createFirefoxProfileConfig(1440, 900));
+    const tab = `http://127.0.0.1:${fixturePort}/first`;
+    let closedSession: { cookies: Array<{ name: string; value: string }>; tabs?: string[] } | undefined;
+    const coordinator = new CloudBrowserCoordinator({
+      cloud: {
+        async openProfile() {
+          return { ok: true, registrationId: "window-close", baseVersion: 1, payload: encodePortableProfile(windowProfile), activeOpens: [] };
+        },
+        async heartbeat() { return { ok: true, revoked: false, activeOpens: [] }; },
+        async closeOpen(_registrationId: string, request: { payload: { session: typeof closedSession } }) {
+          closedSession = request.payload.session;
+          return { ok: true, status: "accepted", version: 2 };
+        },
+        async abandon() { return { ok: true, status: "abandoned" }; },
+      } as any,
+      launcher: new Launcher({
+        store: windowStore,
+        dataRoot: join(root, "window-close-data"),
+        firefoxBinaryPath: binary,
+        expectedFirefoxBinarySha256: expectedSha256,
+        headless: false,
+        portRange: { start: 21000, end: 21999 },
+      }),
+      store: windowStore,
+      queue: () => windowQueue,
+      accountId: () => "acceptance",
+      deviceId: () => "acceptance-device",
+      readSession: (endpoint, captureSeed) => readSessionInSubprocess(endpoint, { captureSeed }),
+      applySession: (endpoint, bundle, urls) => applySessionToEndpoint(endpoint, bundle, urls),
+      heartbeatMs: 60_000,
+    });
+    try {
+      const opened = await coordinator.open(windowCloseId, [tab]);
+      assert.ok(opened.ok, `Cloud opens Firefox for the window-close proof (${opened.error})`);
+      const windowLaunch = windowStore.getLaunch(windowCloseId)!;
+      await addBrowserCookie(windowLaunch.ws, { name: "window-close", value: "fresh", domain: "127.0.0.1", path: "/", expires: Math.floor(Date.now() / 1000) + 86_400 });
+      await closeNativeFirefoxWindow(windowLaunch.pid);
+      const deadline = Date.now() + 30_000;
+      while ((windowStore.getLaunch(windowCloseId) || windowQueue.getOpen(windowCloseId, "acceptance")) && Date.now() < deadline) await Bun.sleep(100);
+      assert.equal(windowStore.getLaunch(windowCloseId), null, "Cloud stops Firefox after its last window closed");
+      assert.ok(closedSession?.cookies.some((cookie) => cookie.name === "window-close" && cookie.value === "fresh"), "Cloud saves the login made after the last checkpoint");
+      assert.deepEqual(closedSession?.tabs, [tab], "Cloud saves the tabs of the closed window");
+    } finally {
+      await coordinator.releaseAll(true);
+      windowQueue.close();
+      windowStore.close();
     }
   }
 

@@ -132,7 +132,7 @@ type CloudBrowserLauncher = Pick<
   Launcher,
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
   "browserStorageWatchPaths" | "failedStartGeneration" |
-  "matchesCloudSession" | "recordCloudSession"
+  "matchesCloudSession" | "recordCloudSession" | "navigate"
 > & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks" | "nativeSessionReadable">>;
 
 export interface CloudBrowserOptions {
@@ -165,6 +165,10 @@ const PROXY_BACKFILL_RETRY_MS = 300_000;
 const RELEASE_CLOSE_LIMIT = 4;
 const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 2_000;
 const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 20_000;
+/** How often a running Cloud browser is checked for a closed last window. */
+const WINDOW_CHECK_MS = 1_000;
+/** Checks in a row without a page before the last window counts as closed. */
+const WINDOW_CLOSED_CHECKS = 3;
 const CLOUD_PROFILE_OPEN_ERROR =
   "This Cloud profile is open in another session. Close it there, or try again shortly if that browser already closed.";
 const TERMINAL_CONFLICT_WARNING =
@@ -323,7 +327,9 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private readonly opening = new Map<string, Promise<CloudBrowserOpenResult>>();
   private readonly startupLeases = new Map<string, { registrationId: string; error?: CloudApiError }>();
   private readonly closing = new Map<string, Promise<CloudBrowserCloseResult>>();
-  private readonly timers = new Map<string, unknown>();
+  /** Per profile: the heartbeat and window-check intervals. */
+  private readonly timers = new Map<string, unknown[]>();
+  private readonly windowChecks = new Set<string>();
   private readonly heartbeatInFlight = new Map<string, CloudLeaseInFlight>();
   private readonly maintenanceInFlight = new Map<string, CloudMaintenanceInFlight>();
   private readonly checkpointSignatures = new Map<string, CloudCheckpointState>();
@@ -795,8 +801,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       try {
         // Portable seeding blanks origin pages and replaces tabs. Native restore
         // already has newer local state and preserves the full Chromium layout.
-        if (!restoreNativeSession || !launched.nativeSessionRestored) {
+        const nativeState = restoreNativeSession && (launched.nativeSessionRestored || launched.nativeSessionLoaded);
+        this.log(`${profileId}: Cloud open restores ${nativeState ? "this device's session" : "the Cloud copy"}`);
+        if (!nativeState) {
           await this.options.applySession(verifiedLaunch.ws, sessionBundle, urls);
+        } else if (!launched.nativeSessionRestored && savedTabs.length + urls.length > 0) {
+          // Chromium loaded this device's last session but showed no page. Its cookies are at least
+          // as new as the Cloud copy, so open the saved tabs without replacing them.
+          await this.options.launcher.navigate(verifiedLaunch.ws, [...savedTabs, ...urls], true)
+            .catch(() => { throw new SessionRestoreError("navigation", "failed"); });
         }
       } catch (error) {
         if (error instanceof SessionRestoreError && error.operation === "navigation") {
@@ -1644,16 +1657,6 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     }
 
     const active = await this.options.launcher.active(profileId).catch(() => true);
-    if (active) {
-      const hasPageTargets = await this.options.launcher.hasPageTargets(profileId).catch(() => true);
-      if (this.confirmNoPageTargets(profileId, registrationId, hasPageTargets)) {
-        this.diagnosticEvents.record("no_page_close_requested");
-        queueMicrotask(() => {
-          void this.close(profileId).catch(() => {});
-        });
-        return;
-      }
-    }
     if (!active) {
       const launch = this.options.store.getLaunch(profileId);
       let dead = !launch;
@@ -2260,20 +2263,74 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const count = previous?.registrationId === registrationId ? previous.count + 1 : 1;
     this.missingPageObservations.set(profileId, { registrationId, count });
     if (count === 1) this.diagnosticEvents.record("no_page_observed");
-    return count >= 2;
+    return count >= WINDOW_CLOSED_CHECKS;
+  }
+
+  /**
+   * A browser that outlives its last window (macOS keeps it running) is invisible to the user.
+   * Save it and stop it as the app's Close does. A script that closes every page and opens a
+   * new one at once keeps its browser: the page comes back before the checks in a row end.
+   */
+  async checkWindowsOnce(profileId: string): Promise<void> {
+    if (this.draining || this.shuttingDown || this.closing.has(profileId) || this.windowChecks.has(profileId)) return;
+    this.windowChecks.add(profileId);
+    try {
+      let context: { queue: PendingSyncQueue; accountId: string };
+      try {
+        context = this.requireContext(false);
+      } catch {
+        return;
+      }
+      const open = context.queue.getOpen(profileId, context.accountId);
+      const launch = this.options.store.getLaunch(profileId);
+      if (!open || open.cleanupMode || !launch || !this.isExactRunningLaunch(open, launch)) return;
+      const hasPageTargets = await this.options.launcher.hasPageTargets(profileId).catch(() => true);
+      if (this.closing.has(profileId) || !this.confirmNoPageTargets(profileId, open.registrationId, hasPageTargets)) return;
+      this.diagnosticEvents.record("no_page_close_requested");
+      this.log(`${profileId}: last browser window closed; saving the profile to Cloud`);
+      const closed = await this.close(profileId).then((result) => result.closed, () => false);
+      if (!closed) await this.stopWithoutCapture(profileId, open.registrationId);
+    } finally {
+      this.windowChecks.delete(profileId);
+    }
+  }
+
+  /** The capture failed: stop the windowless browser now and finish with the last saved checkpoint. */
+  private async stopWithoutCapture(profileId: string, registrationId: string): Promise<void> {
+    await this.withProfileTransition(profileId, async () => {
+      const { queue, accountId } = this.requireContext(false);
+      const open = queue.getOpen(profileId, accountId);
+      const launch = this.options.store.getLaunch(profileId);
+      if (
+        !open || open.registrationId !== registrationId || open.cleanupMode ||
+        !launch || !this.isExactRunningLaunch(open, launch) ||
+        // A page came back during the capture: leave that browser open, as the app's Close does.
+        await this.options.launcher.hasPageTargets(profileId).catch(() => true) ||
+        !queue.setOpenCleanup(profileId, accountId, registrationId, "sync")
+      ) return;
+      const retained = queue.getOpen(profileId, accountId);
+      const stopped = !!retained && await this.retryCleanup(retained, queue);
+      if (!stopped) this.startHeartbeat(profileId);
+      this.log(stopped
+        ? `${profileId}: Cloud capture failed; stopped the browser and kept the last saved copy`
+        : `${profileId}: Cloud capture failed and the browser stop is not confirmed; retrying`);
+    }).catch(() => {});
   }
 
   private startHeartbeat(profileId: string): void {
     this.startDirtyMonitor(profileId);
     if (this.heartbeatMs === 0 || this.timers.has(profileId)) return;
     const set = this.options.setIntervalFn ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
-    const timer = set(() => {
-      void this.heartbeatOnce(profileId);
-    }, this.heartbeatMs);
-    if (timer && typeof timer === "object" && "unref" in timer) {
-      (timer as { unref?: () => void }).unref?.();
+    const timers = [
+      set(() => { void this.heartbeatOnce(profileId); }, this.heartbeatMs),
+      set(() => { void this.checkWindowsOnce(profileId); }, WINDOW_CHECK_MS),
+    ];
+    for (const timer of timers) {
+      if (timer && typeof timer === "object" && "unref" in timer) {
+        (timer as { unref?: () => void }).unref?.();
+      }
     }
-    this.timers.set(profileId, timer);
+    this.timers.set(profileId, timers);
   }
 
   private stopHeartbeatForRegistration(
@@ -2290,10 +2347,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private stopHeartbeat(profileId: string): Promise<CloudLeaseResult> | null {
     this.stopDirtyMonitor(profileId);
     this.missingPageObservations.delete(profileId);
-    const timer = this.timers.get(profileId);
-    if (timer !== undefined) {
+    const timers = this.timers.get(profileId);
+    if (timers !== undefined) {
       const clear = this.options.clearIntervalFn ?? ((handle: unknown) => clearInterval(handle as ReturnType<typeof setInterval>));
-      clear(timer);
+      for (const timer of timers) clear(timer);
       this.timers.delete(profileId);
     }
     return this.heartbeatInFlight.get(profileId)?.promise ?? null;

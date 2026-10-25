@@ -893,6 +893,64 @@ test("native session is unreadable only when DPAPI rejects its cookie key, once 
   store.close();
 });
 
+// Windows Chromium deletes every cookie it cannot decrypt. A Local profile has no other copy.
+test("Windows Local keeps a copy of unreadable cookies and does not open the profile", async () => {
+  for (const readable of [false, true]) {
+    const store = seeded();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform: "win32",
+      dpapiKeysReadable: async () => [readable],
+    });
+    const dir = launcher.userDataDir("k1d0cd11");
+    const localState = JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } });
+    mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+    writeFileSync(join(dir, "Local State"), localState);
+    writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+    writeFileSync(join(dir, "Default", "Network", "Cookies-journal"), "journal");
+    writeFileSync(join(dir, "Default", "Network", "TransportSecurity"), "other");
+    if (readable) {
+      await launcher.start("k1d0cd11");
+      expect(spawnedArgs.length).toBe(1);
+      expect(existsSync(join(dir, "cookie-backups"))).toBe(false);
+      expect(await launcher.stop("k1d0cd11")).toBe(true);
+    } else {
+      const error = await launcher.start("k1d0cd11").catch((caught) => caught);
+      expect(error).toBeInstanceOf(BrowserLaunchError);
+      expect(error.preflightReason).toBe("cookie_key_unreadable");
+      expect(error.guidance).toContain("AliasMode did not open this profile");
+      expect(spawnedArgs).toEqual([]);
+      expect(store.getLaunch("k1d0cd11")).toBeNull();
+      const [dated] = readdirSync(join(dir, "cookie-backups"));
+      const backup = join(dir, "cookie-backups", dated!);
+      expect(readFileSync(join(backup, "Local State"), "utf8")).toBe(localState);
+      expect(readdirSync(join(backup, "Default", "Network")).sort()).toEqual(["Cookies", "Cookies-journal"]);
+      expect(readFileSync(join(backup, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
+      // The originals stay where they were.
+      expect(readFileSync(join(dir, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
+    }
+    store.close();
+  }
+});
+
+test("Cloud opens leave unreadable Windows cookies to the Cloud copy", async () => {
+  const store = seeded();
+  const spawnedArgs: string[][] = [];
+  let checks = 0;
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    hostPlatform: "win32",
+    dpapiKeysReadable: async () => { checks++; return [false]; },
+  });
+  const dir = launcher.userDataDir("k1d0cd11");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
+  await launcher.start("k1d0cd11", [], { restoreLocalSession: false, restoreLastSession: false });
+  expect(spawnedArgs.length).toBe(1);
+  expect(checks).toBe(0);
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  store.close();
+});
+
 test("cloud session authority marker is durable and invalidatable", () => {
   const store = seeded();
   const f = fleet();

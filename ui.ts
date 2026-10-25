@@ -9,7 +9,7 @@
  * cookie values, or proxy credentials. Same rule the `inspect` command follows.
  */
 
-import type { Launcher } from "./launcher.ts";
+import { BrowserLaunchError, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { AutomationHealthStatus } from "./remote-types.ts";
 import type { RemoteCoordinator } from "./remote.ts";
@@ -2333,7 +2333,8 @@ export async function handleUiRequest(
       const r = await launcher.clearCache(id);
       return Response.json({ ok: true, cleared: r.cleared });
     } catch (e) {
-      return Response.json({ ok: false, error: msg(e) }, { status: 500 });
+      // A preflight refusal says what happened and what to do instead of its bare code.
+      return Response.json({ ok: false, error: e instanceof BrowserLaunchError && e.guidance ? e.guidance : msg(e) }, { status: 500 });
     }
   }
 

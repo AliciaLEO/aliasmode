@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
-import { Launcher } from "./launcher.ts";
+import { BrowserLaunchError, Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
 import { deriveFingerprintFlags } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest } from "./ui.ts";
@@ -508,6 +508,15 @@ test("remote open returns an advisory warning as a success", async () => {
     port: 9333,
     warning: "Possible concurrent use; session sync is disabled for this browser.",
   });
+  s.close();
+});
+
+test("a refused Local open shows what happened instead of its bare launch code", async () => {
+  const s = store();
+  const launcher: any = { start: async () => { throw new BrowserLaunchError("preflight", "cookie_key_unreadable"); } };
+  const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/open", { method: "POST" }), launcher, s);
+  expect(res!.status).toBe(500);
+  expect((await res!.json()).error).toBe(new BrowserLaunchError("preflight", "cookie_key_unreadable").guidance);
   s.close();
 });
 

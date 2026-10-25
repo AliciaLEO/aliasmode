@@ -12,6 +12,7 @@
 
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+  copyFileSync,
   createReadStream,
   mkdirSync,
   rmSync,
@@ -255,6 +256,10 @@ const PREFLIGHT_GUIDANCE = {
   chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
+  cookie_key_unreadable: "AliasMode did not open this profile. This Windows account cannot read its saved cookies " +
+    "(they were saved on another computer or Windows account, or before a Windows password reset), and opening it would delete them. " +
+    "A copy is in the cookie-backups folder inside the profile's folder. Open the profile on the computer and Windows account that saved it, " +
+    "or delete the Local State file in the profile's folder to open it here and log in again.",
 } as const;
 
 /** Closed, public-safe browser launch failure. Never attach a raw cause. */
@@ -1863,6 +1868,15 @@ export class Launcher {
     // process holding it. Existing profile directories still require the exact
     // scan before any repair or cleanup touches their files.
     if (existingUserDataDir) await this.reapForeignProfileDirHolders(profileId, userDataDir);
+
+    // Windows Chromium deletes every cookie it cannot decrypt and writes a new key. A Local
+    // profile has no other copy of them, so keep a copy and stop. Cloud opens restore their copy.
+    if (this.hostPlatform === "win32" && existingUserDataDir && opts.restoreLocalSession !== false
+      && !await this.nativeSessionReadable(profileId)) {
+      const backup = backupUnreadableCookies(userDataDir);
+      this.log(`start ${profileId} stopped: this Windows account cannot read its cookie key; copy saved in ${backup}`);
+      throw new BrowserLaunchError("preflight", "cookie_key_unreadable");
+    }
 
     const nativeRestoreRequested = !pendingSession && opts.restoreLastSession !== false;
     let searchBootstrapRevision: number | undefined;
@@ -5146,6 +5160,18 @@ function writeIdentityBookmark(userDataDir: string, name: string, url: string): 
     prefs.bookmark_bar = { ...(prefs.bookmark_bar ?? {}), show_on_all_tabs: true };
     writeFileSync(prefsPath, JSON.stringify(prefs));
   } catch { /* best-effort: identity extras must never fail a launch */ }
+}
+
+/** Copy the cookie key (Local State) and Default/Network/Cookies* into a dated folder in the profile. */
+function backupUnreadableCookies(userDataDir: string, now = new Date()): string {
+  const backup = join(userDataDir, "cookie-backups", now.toISOString().replace(/[:.]/g, "-"));
+  const network = join(userDataDir, "Default", "Network");
+  mkdirSync(join(backup, "Default", "Network"), { recursive: true });
+  copyFileSync(join(userDataDir, "Local State"), join(backup, "Local State"));
+  for (const name of existsSync(network) ? readdirSync(network) : []) {
+    if (name.startsWith("Cookies")) copyFileSync(join(network, name), join(backup, "Default", "Network", name));
+  }
+  return backup;
 }
 
 const defaultNavigate: LaunchNavigator = async (ws, urls, replacePages = false) => {

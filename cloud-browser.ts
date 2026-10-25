@@ -38,6 +38,7 @@ import {
   parseCapturedSessionBundle,
   sessionBundleSignature,
   sessionCaptureSeed,
+  sessionLoginSignature,
   type SessionCaptureSeed,
   SessionRestoreError,
 } from "./session.ts";
@@ -97,6 +98,8 @@ export interface CloudBrowserProfile {
   version: number;
   /** Present while a refused session for this profile is recoverable here. */
   parkedSession?: CloudParkedSession;
+  /** While open: since when live checkpoint uploads keep failing, so Cloud holds an older copy. */
+  cloudUnsavedSince?: number;
 }
 
 export interface CloudBrowserLifecycle {
@@ -126,7 +129,7 @@ export interface CloudBrowserLifecycle {
 type CloudBrowserClient = Pick<
   CloudClient,
   "listProfiles" | "getProfile" | "createProfile" | "importProfiles" | "openProfile" | "heartbeat" | "closeOpen" | "abandon"
->;
+> & Partial<Pick<CloudClient, "checkpointOpen">>;
 
 type CloudBrowserLauncher = Pick<
   Launcher,
@@ -150,6 +153,10 @@ export interface CloudBrowserOptions {
   storageCheckpoints?: boolean;
   checkpointDebounceMs?: number;
   checkpointMinIntervalMs?: number;
+  /** How often a changed checkpoint of an open profile is saved to Cloud. */
+  cloudCheckpointIntervalMs?: number;
+  /** After a login, logout or account switch, save to Cloud once this long after the last save. */
+  cloudCheckpointSoonMs?: number;
   watchPath?: (path: string, onDirty: () => void) => { close(): void };
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
@@ -165,6 +172,10 @@ const PROXY_BACKFILL_RETRY_MS = 300_000;
 const RELEASE_CLOSE_LIMIT = 4;
 const DEFAULT_CHECKPOINT_DEBOUNCE_MS = 2_000;
 const DEFAULT_CHECKPOINT_MIN_INTERVAL_MS = 20_000;
+const DEFAULT_CLOUD_CHECKPOINT_INTERVAL_MS = 180_000;
+const DEFAULT_CLOUD_CHECKPOINT_SOON_MS = 30_000;
+/** Failed checkpoint uploads in a row before the dashboard says the profile is not saved to Cloud yet. */
+const CLOUD_UPLOAD_FAILURES_SHOWN = 2;
 /** How often a running Cloud browser is checked for a closed last window. */
 const WINDOW_CHECK_MS = 1_000;
 /** Checks in a row without a page before the last window counts as closed. */
@@ -216,11 +227,29 @@ interface CloudDirtyMonitor {
   lastCaptureAt: number;
 }
 
+/** Live checkpoint uploads of one open registration. */
+interface CloudUploadState {
+  registrationId: string;
+  /** The local checkpoint changed since Cloud last saved it. */
+  dirty: boolean;
+  /** A login changed since Cloud last saved this session: upload early. */
+  soon: boolean;
+  /** `sessionLoginSignature` of the session Cloud last saved. */
+  loginSignature: string;
+  lastAttemptAt: number;
+  failures: number;
+  failingSince?: number;
+  /** The service has no checkpoint endpoint: Cloud gets this session at close, as before. */
+  unsupported: boolean;
+}
+
 interface CloudLeaseResult {
   accountId: string;
   registrationId: string;
   outcome: "ok" | "transient" | "terminal";
   errorCode?: string;
+  /** On a version conflict: the newest version this registration saved, as Cloud reports it. */
+  currentVersion?: number;
 }
 
 interface CloudLeaseInFlight {
@@ -334,6 +363,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private readonly maintenanceInFlight = new Map<string, CloudMaintenanceInFlight>();
   private readonly checkpointSignatures = new Map<string, CloudCheckpointState>();
   private readonly dirtyMonitors = new Map<string, CloudDirtyMonitor>();
+  private readonly uploads = new Map<string, CloudUploadState>();
   private readonly missingPageObservations = new Map<string, {
     registrationId: string;
     count: number;
@@ -344,6 +374,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private readonly storageCheckpoints: boolean;
   private readonly checkpointDebounceMs: number;
   private readonly checkpointMinIntervalMs: number;
+  private readonly cloudCheckpointIntervalMs: number;
+  private readonly cloudCheckpointSoonMs: number;
   private readonly log: (message: string) => void;
   private readonly diagnosticEvents = new CloudDiagnostics();
   private shuttingDown = false;
@@ -360,6 +392,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     this.storageCheckpoints = options.storageCheckpoints ?? true;
     this.checkpointDebounceMs = Math.max(0, options.checkpointDebounceMs ?? DEFAULT_CHECKPOINT_DEBOUNCE_MS);
     this.checkpointMinIntervalMs = Math.max(0, options.checkpointMinIntervalMs ?? DEFAULT_CHECKPOINT_MIN_INTERVAL_MS);
+    this.cloudCheckpointIntervalMs = Math.max(0, options.cloudCheckpointIntervalMs ?? DEFAULT_CLOUD_CHECKPOINT_INTERVAL_MS);
+    this.cloudCheckpointSoonMs = Math.max(0, options.cloudCheckpointSoonMs ?? DEFAULT_CLOUD_CHECKPOINT_SOON_MS);
     this.log = options.log ?? (() => {});
   }
 
@@ -441,6 +475,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           const launch = this.options.store.getLaunch(profile.id);
           const cached = this.options.store.getProfile(profile.id);
           const parked = parkedSessions.get(profile.id);
+          const upload = launch ? this.uploads.get(profile.id) : undefined;
           const localRegistrationIds = localRegistrations.get(profile.id);
           const otherActiveOpens = profile.activeOpens.filter(
             (open) => !localRegistrationIds?.has(open.registrationId),
@@ -469,6 +504,9 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
             permission: profile.permission,
             version: profile.version,
             ...(parked ? { parkedSession: { savedAt: parked.createdAt, reason: parked.error } } : {}),
+            ...(upload?.failingSince !== undefined && upload.failures >= CLOUD_UPLOAD_FAILURES_SHOWN
+              ? { cloudUnsavedSince: upload.failingSince }
+              : {}),
           };
         }),
       healthSources: [],
@@ -856,6 +894,11 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         payload: encodePortableProfile(this.options.store.getProfile(profileId) ?? profile, sessionBundle),
         readyToSubmit: false,
       });
+      // Cloud already holds the session this open restored.
+      this.uploads.set(profileId, {
+        registrationId, dirty: false, soon: false, loginSignature: sessionLoginSignature(sessionBundle),
+        lastAttemptAt: 0, failures: 0, unsupported: false,
+      });
       const captureSeed = sessionCaptureSeed(sessionBundle);
       this.checkpointSignatures.set(profileId, {
         registrationId,
@@ -869,9 +912,16 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       // Startup navigation already happened inside the single restore attach above.
       this.diagnosticEvents.record("open_running");
       this.startHeartbeat(profileId);
+      const lapsed = opened.lapsedOpens?.[0];
+      const lapsedWarning = !lapsed
+        ? undefined
+        : lapsed.checkpointAt
+          ? `${lapsed.deviceLabel} did not close this profile. This is the copy it saved to Cloud at ${new Date(lapsed.checkpointAt).toLocaleString()}.`
+          : `${lapsed.deviceLabel} did not close this profile. Its changes after it opened the profile are not in Cloud.`;
       const warnings = [
         navigationWarning,
         hasTerminalConflict ? TERMINAL_CONFLICT_WARNING : undefined,
+        lapsedWarning,
       ].filter((warning): warning is string => !!warning);
       return {
         ok: true,
@@ -1356,6 +1406,9 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     if (this.checkpointSignatures.get(open.profileId)?.registrationId === open.registrationId) {
       this.checkpointSignatures.delete(open.profileId);
     }
+    if (this.uploads.get(open.profileId)?.registrationId === open.registrationId) {
+      this.uploads.delete(open.profileId);
+    }
   }
 
   /**
@@ -1464,8 +1517,77 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     state.tabs = bundleTabUrls(sessionBundle);
     this.checkpointSignatures.set(open.profileId, state);
     this.recordCloudSessionSignature(open.profileId, signature);
+    const upload = this.uploadState(open);
+    upload.dirty = true;
+    if (sessionLoginSignature(sessionBundle) !== upload.loginSignature) upload.soon = true;
     this.diagnosticEvents.record("checkpoint_saved");
     return "saved";
+  }
+
+  private uploadState(open: PendingOpenSession): CloudUploadState {
+    const existing = this.uploads.get(open.profileId);
+    if (existing?.registrationId === open.registrationId) return existing;
+    // A registration this run did not open (app restart, lease renewal) may hold changes Cloud lacks.
+    const state: CloudUploadState = {
+      registrationId: open.registrationId, dirty: true, soon: false, loginSignature: "",
+      lastAttemptAt: 0, failures: 0, unsupported: false,
+    };
+    this.uploads.set(open.profileId, state);
+    return state;
+  }
+
+  /**
+   * Save the open's local checkpoint to Cloud while the browser stays open, so another device
+   * opens a recent copy even after a crash, sleep or network loss here. A login change is saved
+   * soon (the storage watcher captures it within seconds); other changes every few minutes, as
+   * each save is a new Cloud version. Runs inside the profile transition, so it never overlaps a
+   * close. Without the service endpoint, Cloud gets the session at close, as before.
+   */
+  private async uploadCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue): Promise<void> {
+    const cloud = this.options.cloud;
+    const state = this.uploadState(open);
+    if (!cloud.checkpointOpen || state.unsupported || !state.dirty) return;
+    const now = Date.now();
+    if (now - state.lastAttemptAt < (state.soon ? this.cloudCheckpointSoonMs : this.cloudCheckpointIntervalMs)) return;
+    state.lastAttemptAt = now;
+    try {
+      // A `behind` reply means an earlier upload was saved but its reply was lost: adopt that
+      // version, then save this checkpoint on top of it.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const current = queue.getOpen(open.profileId, open.accountId);
+        if (!current || current.registrationId !== open.registrationId || current.cleanupMode) return;
+        const capture = this.pendingCapturesForOpen(current, queue)
+          .find((item) => !item.readyToSubmit && item.status !== "conflict");
+        if (!capture) return;
+        const saved = await cloud.checkpointOpen(open.registrationId, {
+          expectedVersion: capture.expectedVersion,
+          payload: capture.payload,
+        });
+        const behind = saved.status === "behind";
+        if (!queue.advanceOpenVersion(
+          open.profileId, open.accountId, open.registrationId, capture.expectedVersion, saved.version,
+          behind ? undefined : capture.id,
+        )) return;
+        if (behind) continue;
+        state.dirty = false;
+        state.soon = false;
+        state.loginSignature = sessionLoginSignature(JSON.stringify(capture.payload.session));
+        state.failures = 0;
+        delete state.failingSince;
+        this.diagnosticEvents.record("checkpoint_uploaded");
+        return;
+      }
+    } catch (error) {
+      if (error instanceof CloudApiError && error.status === 404) {
+        state.unsupported = true;
+        this.log(`${open.profileId}: Cloud has no live checkpoints; the session is saved at close`);
+        return;
+      }
+      state.failures++;
+      state.failingSince ??= now;
+      this.diagnosticEvents.record("checkpoint_upload_failed");
+      this.log(`${open.profileId}: Cloud checkpoint upload failed (${errorCode(error)})`);
+    }
   }
 
   private async refreshCheckpoint(open: PendingOpenSession, queue: PendingSyncQueue, openTabsOnly = false): Promise<void> {
@@ -1494,6 +1616,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         !this.isExactRunningLaunch(latest, captured)
       ) return;
       this.checkpointOpen(latest, queue, sessionBundle);
+      await this.uploadCheckpoint(latest, queue);
     } catch {
       // Keep the last durable checkpoint when a background capture is inconclusive.
     }
@@ -1572,6 +1695,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
             registrationId: open.registrationId,
             outcome: "terminal",
             errorCode: error.code,
+            ...(error.currentVersion === undefined ? {} : { currentVersion: error.currentVersion }),
           };
         }
         this.diagnosticEvents.record("heartbeat_failed");
@@ -1703,7 +1827,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         return;
       }
       if (context.accountId !== lease.accountId) return;
-      const open = context.queue.getOpen(profileId, lease.accountId);
+      let open = context.queue.getOpen(profileId, lease.accountId);
       if (!open || open.registrationId !== lease.registrationId ||
         (open.phase !== "running" && open.phase !== "restoring")) return;
       this.diagnosticEvents.record("access_ended");
@@ -1776,6 +1900,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           ? `${profileId}: Cloud access ended (${lease.errorCode}); browser stopped`
           : `${profileId}: Cloud access ended (${lease.errorCode}); browser was retained`);
         return;
+      }
+      // Cloud reports the newest version this registration saved itself. A higher one than this
+      // device knows means a checkpoint reply was lost; renewing must compare against it.
+      if (
+        lease.errorCode === "version_conflict" && lease.currentVersion !== undefined &&
+        lease.currentVersion > open.expectedVersion &&
+        context.queue.advanceOpenVersion(profileId, lease.accountId, open.registrationId, open.expectedVersion, lease.currentVersion)
+      ) {
+        open = context.queue.getOpen(profileId, lease.accountId) ?? open;
       }
       const renewal = lease.errorCode === "version_conflict" ? await this.renewLapsedOpen(open, context.queue) : "failed";
       if (renewal !== "failed") {
@@ -2038,7 +2171,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     accountId: string,
     current?: () => boolean,
   ): ReturnType<typeof retryPendingSync> {
-    return retryPendingSync(queue, this.options.cloud, accountId, current, this.options.deviceId());
+    return retryPendingSync(queue, this.options.cloud, accountId, current, this.options.deviceId(), this.heartbeatMs / 2);
   }
 
   async retryPending(): Promise<void> {

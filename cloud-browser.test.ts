@@ -83,6 +83,8 @@ function setup(options: {
   storageCheckpoints?: boolean;
   checkpointDebounceMs?: number;
   checkpointMinIntervalMs?: number;
+  cloudCheckpointIntervalMs?: number;
+  cloudCheckpointSoonMs?: number;
   setIntervalFn?: (fn: () => void, ms: number) => unknown;
   clearIntervalFn?: (handle: unknown) => void;
   watchPaths?: string[];
@@ -294,6 +296,8 @@ function setup(options: {
     storageCheckpoints: options.storageCheckpoints ?? false,
     checkpointDebounceMs: options.checkpointDebounceMs,
     checkpointMinIntervalMs: options.checkpointMinIntervalMs,
+    cloudCheckpointIntervalMs: options.cloudCheckpointIntervalMs,
+    cloudCheckpointSoonMs: options.cloudCheckpointSoonMs,
     setIntervalFn: options.setIntervalFn,
     clearIntervalFn: options.clearIntervalFn,
     watchPath: options.watchPath,
@@ -4452,4 +4456,254 @@ test("Chromium's own network state files do not mark a Cloud profile dirty; cook
     for (const watcher of watchers) watcher.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+/** A Cloud checkpoint endpoint that saves each upload on top of the version it holds. */
+function liveCheckpoints(state: ReturnType<typeof setup>, version = 4) {
+  const uploads: Array<{ registrationId: string; expectedVersion: number; cookie: string }> = [];
+  let held = version;
+  (state.coordinator as any).options.cloud.checkpointOpen = async (
+    registrationId: string,
+    request: { expectedVersion: number; payload: PortableProfileV1 },
+  ) => {
+    uploads.push({
+      registrationId,
+      expectedVersion: request.expectedVersion,
+      cookie: request.payload.session.cookies[0]?.value ?? "",
+    });
+    if (request.expectedVersion < held) return { ok: true, status: "behind", version: held };
+    held++;
+    return { ok: true, status: "saved", version: held };
+  };
+  return uploads;
+}
+
+/** `login` is the X auth cookie; `other` changes a cookie that is not a login. */
+function changeSession(state: ReturnType<typeof setup>, login: string, other = "") {
+  (state.coordinator as any).options.readSession = async () => {
+    state.events.push("capture");
+    return JSON.stringify({
+      cookies: [
+        { name: "auth_token", value: login, domain: ".x.com", path: "/" },
+        ...(other ? [{ name: "guest_id", value: other, domain: ".x.com", path: "/" }] : []),
+      ],
+      origins: [],
+    });
+  };
+}
+
+function recordCloses(state: ReturnType<typeof setup>) {
+  const closes: number[] = [];
+  (state.coordinator as any).options.cloud.closeOpen = async (_registrationId: string, request: { expectedVersion: number }) => {
+    closes.push(request.expectedVersion);
+    return { ok: true, status: "accepted", version: request.expectedVersion + 1 };
+  };
+  return closes;
+}
+
+function openCheckpoint(state: ReturnType<typeof setup>) {
+  const [summary] = state.queue.list("account1");
+  return summary ? state.queue.get(summary.id, "account1") : null;
+}
+
+test("Cloud saves a changed checkpoint of an open profile and closes on top of it", async () => {
+  const state = setup();
+  const uploads = liveCheckpoints(state);
+  const closes = recordCloses(state);
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(uploads).toEqual([]);
+
+  changeSession(state, "logged-in");
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(uploads).toEqual([{ registrationId: "registration1", expectedVersion: 4, cookie: "logged-in" }]);
+  expect(state.queue.getOpen("profile1", "account1")).toMatchObject({ registrationId: "registration1", expectedVersion: 5 });
+  expect(openCheckpoint(state)).toMatchObject({ expectedVersion: 5, cloudVersion: 5, readyToSubmit: false });
+  expect(state.coordinator.diagnostics().some((event) => event.type === "checkpoint_uploaded")).toBe(true);
+
+  await state.coordinator.heartbeatOnce("profile1");
+  changeSession(state, "logged-in", "visited");
+  await state.coordinator.heartbeatOnce("profile1");
+  // Changed again, but not a login, and the next periodic save is not due yet.
+  expect(uploads).toHaveLength(1);
+  expect(openCheckpoint(state)).toMatchObject({
+    expectedVersion: 5,
+    payload: { session: { cookies: [{ value: "logged-in" }, { value: "visited" }] } },
+  });
+  expect(openCheckpoint(state)?.cloudVersion).toBeUndefined();
+
+  expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete" });
+  expect(closes).toEqual([5]);
+  state.queue.close();
+  state.store.close();
+});
+
+test("a login seen by the storage watcher is saved to Cloud soon; other changes wait for the interval", async () => {
+  const storageDirty: Array<() => void> = [];
+  const state = setup({
+    storageCheckpoints: true,
+    checkpointDebounceMs: 5,
+    checkpointMinIntervalMs: 0,
+    cloudCheckpointIntervalMs: 60 * 60_000,
+    cloudCheckpointSoonMs: 0,
+    watchPaths: ["Network"],
+    watchPath: (_path: string, onDirty: () => void) => {
+      storageDirty.push(onDirty);
+      return { close() {} };
+    },
+  });
+  const uploads = liveCheckpoints(state);
+  const waitForUploads = async (count: number) => {
+    for (let attempt = 0; attempt < 200 && uploads.length < count; attempt++) await Bun.sleep(5);
+  };
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    changeSession(state, "login");
+    storageDirty[0]!();
+    await waitForUploads(1);
+    expect(uploads.map((upload) => upload.cookie)).toEqual(["login"]);
+
+    changeSession(state, "login", "browsing");
+    storageDirty.at(-1)!();
+    await Bun.sleep(60);
+    await state.coordinator.heartbeatOnce("profile1");
+    expect(state.queue.get(state.queue.list("account1")[0]!.id, "account1")?.payload.session.cookies[1]?.value).toBe("browsing");
+    expect(uploads).toHaveLength(1);
+
+    changeSession(state, "second-login");
+    // Each capture rearms the storage watchers; only the newest callback is live.
+    storageDirty.at(-1)!();
+    await waitForUploads(2);
+    expect(uploads.map((upload) => [upload.cookie, upload.expectedVersion])).toEqual([["login", 4], ["second-login", 5]]);
+  } finally {
+    await state.coordinator.releaseAll(true);
+    state.queue.close();
+    state.store.close();
+  }
+});
+
+test("a lost checkpoint reply is adopted from Cloud and the session saved on top of it", async () => {
+  const state = setup();
+  const calls: number[] = [];
+  (state.coordinator as any).options.cloud.checkpointOpen = async (_registrationId: string, request: { expectedVersion: number }) => {
+    calls.push(request.expectedVersion);
+    return request.expectedVersion < 6
+      ? { ok: true, status: "behind", version: 6 }
+      : { ok: true, status: "saved", version: 7 };
+  };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "logged-in");
+  await state.coordinator.heartbeatOnce("profile1");
+
+  expect(calls).toEqual([4, 6]);
+  expect(state.queue.getOpen("profile1", "account1")?.expectedVersion).toBe(7);
+  expect(openCheckpoint(state)).toMatchObject({ expectedVersion: 7, cloudVersion: 7 });
+  state.queue.close();
+  state.store.close();
+});
+
+test("a Cloud service without live checkpoints keeps saving the session at close", async () => {
+  const state = setup({ cloudCheckpointIntervalMs: 0, cloudCheckpointSoonMs: 0 });
+  let calls = 0;
+  (state.coordinator as any).options.cloud.checkpointOpen = async () => {
+    calls++;
+    throw new CloudApiError("The route does not exist.", "profile_not_found", 404);
+  };
+  const closes = recordCloses(state);
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "first");
+  await state.coordinator.heartbeatOnce("profile1");
+  changeSession(state, "second");
+  await state.coordinator.heartbeatOnce("profile1");
+
+  expect(calls).toBe(1);
+  expect((await rosterReconciled(state.coordinator)).profiles[0]?.cloudUnsavedSince).toBeUndefined();
+  expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete" });
+  expect(closes).toEqual([4]);
+  state.queue.close();
+  state.store.close();
+});
+
+test("the roster says an open profile is not saved to Cloud yet while uploads keep failing", async () => {
+  const state = setup({ cloudCheckpointIntervalMs: 0, cloudCheckpointSoonMs: 0 });
+  let offline = true;
+  let calls = 0;
+  (state.coordinator as any).options.cloud.checkpointOpen = async (_registrationId: string, request: { expectedVersion: number }) => {
+    calls++;
+    if (offline) throw new TypeError("fetch failed");
+    return { ok: true, status: "saved", version: request.expectedVersion + 1 };
+  };
+  const unsavedSince = async () => (await rosterReconciled(state.coordinator)).profiles[0]?.cloudUnsavedSince;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "logged-in");
+
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(await unsavedSince()).toBeUndefined();
+  // The session did not change again, but Cloud still lacks it.
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(calls).toBe(2);
+  expect(typeof await unsavedSince()).toBe("number");
+
+  offline = false;
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(calls).toBe(3);
+  expect(await unsavedSince()).toBeUndefined();
+  state.queue.close();
+  state.store.close();
+});
+
+test("a lapsed lease adopts the version this registration saved before its reply was lost", async () => {
+  const state = setup();
+  const cloud = (state.coordinator as any).options.cloud;
+  // Cloud saved the checkpoint as version 5, but its reply never arrived.
+  cloud.checkpointOpen = async () => { throw new TypeError("fetch failed"); };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "logged-in");
+  await state.coordinator.heartbeatOnce("profile1");
+  expect(state.queue.getOpen("profile1", "account1")?.expectedVersion).toBe(4);
+
+  cloud.heartbeat = async () => { throw new CloudApiError("The open registration expired.", "version_conflict", 409, 5); };
+  cloud.openProfile = async () => freshOpen("registration2", 5);
+  await state.coordinator.heartbeatOnce("profile1");
+
+  expect(state.events).not.toContain("stop");
+  expect(state.queue.getOpen("profile1", "account1")).toMatchObject({
+    registrationId: "registration2",
+    expectedVersion: 5,
+    phase: "running",
+  });
+  expect(openCheckpoint(state)).toMatchObject({
+    registrationId: "registration2",
+    expectedVersion: 5,
+    payload: { session: { cookies: [{ value: "logged-in" }] } },
+  });
+  await state.coordinator.releaseAll(true);
+  state.queue.close();
+  state.store.close();
+});
+
+test("opening a profile another device left open says its last changes may be missing", async () => {
+  const state = setup();
+  const cloud = (state.coordinator as any).options.cloud;
+  const openProfile = cloud.openProfile;
+  cloud.openProfile = async () => ({
+    ...(await openProfile()),
+    lapsedOpens: [{
+      registrationId: "registration0",
+      accountId: "account1",
+      memberEmail: "member@example.test",
+      deviceId: "device2",
+      deviceLabel: "Office PC",
+      openedAt: 1,
+      heartbeatAt: 2,
+      checkpointAt: 3,
+    }],
+  });
+
+  const result = await state.coordinator.open("profile1", ["--window-size=1200,800"]);
+  expect(result.ok).toBe(true);
+  expect(result.warning).toContain("Office PC did not close this profile.");
+  state.queue.close();
+  state.store.close();
 });

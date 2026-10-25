@@ -346,6 +346,11 @@ export interface CloudOpenWarning {
   heartbeatAt: number;
 }
 
+/** Another device's lease that lapsed without a close. Its session after `checkpointAt` is not in Cloud. */
+export interface CloudLapsedOpen extends CloudOpenWarning {
+  checkpointAt: number | null;
+}
+
 export interface CloudStatusResponse {
   ok: true;
   account: CloudAccount;
@@ -522,6 +527,8 @@ export interface OpenProfileResponse {
   baseVersion: number;
   payload: PortableProfile;
   activeOpens: CloudOpenWarning[];
+  /** Leases this open replaced because they lapsed on another device. Absent from older services. */
+  lapsedOpens?: CloudLapsedOpen[];
 }
 
 export interface OpenHeartbeatResponse {
@@ -538,6 +545,21 @@ export interface CloseOpenRequest {
 export interface CloseOpenResponse {
   ok: true;
   status: "accepted";
+  version: number;
+}
+
+/** Save the session of a profile that stays open. `expectedVersion` is the newest version the
+    registration holds: the version it opened, or the version its last checkpoint returned. */
+export interface CheckpointOpenRequest {
+  expectedVersion: number;
+  payload: PortableProfile;
+}
+
+/** `behind`: an earlier checkpoint was already saved as `version`; nothing was written, so save
+    again against `version`. A lapsed or lost lease is a 409 `version_conflict`. */
+export interface CheckpointOpenResponse {
+  ok: true;
+  status: "saved" | "unchanged" | "behind";
   version: number;
 }
 

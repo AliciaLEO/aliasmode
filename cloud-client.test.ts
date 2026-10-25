@@ -427,3 +427,25 @@ test("Cloud client bounds fetch implementations that ignore abort", async () => 
     failure: { kind: "timeout", retryable: true },
   });
 });
+
+test("Cloud checkpoint saves an open session and surfaces an older service's 404", async () => {
+  const seen: Array<{ url: string; method?: string; body: unknown }> = [];
+  let missing = false;
+  const cloud = client(async (url, init) => {
+    seen.push({ url: String(url), method: init?.method, body: JSON.parse(String(init?.body)) });
+    return missing
+      ? Response.json({ ok: false, error: { code: "profile_not_found", message: "The route does not exist." } }, { status: 404 })
+      : Response.json({ ok: true, status: "saved", version: 5 });
+  });
+
+  expect(await cloud.checkpointOpen("registration/1", { expectedVersion: 4, payload }))
+    .toEqual({ ok: true, status: "saved", version: 5 });
+  expect(seen).toEqual([{
+    url: "https://cloud.aliasmode.test/v1/open-sessions/registration%2F1/checkpoint",
+    method: "PUT",
+    body: { expectedVersion: 4, payload },
+  }]);
+  missing = true;
+  await expect(cloud.checkpointOpen("registration/1", { expectedVersion: 4, payload }))
+    .rejects.toMatchObject({ name: "CloudApiError", status: 404, code: "profile_not_found" });
+});

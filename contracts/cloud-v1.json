@@ -64,6 +64,7 @@
     "open": "POST /v1/profiles/:id/open",
     "heartbeat": "POST /v1/open-sessions/:id/heartbeat",
     "close": "PUT /v1/open-sessions/:id/close",
+    "checkpoint": "PUT /v1/open-sessions/:id/checkpoint",
     "abandon": "POST /v1/open-sessions/:id/abandon",
     "trash": "POST /v1/profiles/:id/trash",
     "restore": "POST /v1/profiles/:id/restore",

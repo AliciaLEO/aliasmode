@@ -4305,15 +4305,16 @@ test("start() resets corrupt preferences to {} and replaces Preferences through 
   const secure = join(defaultDir, "Secure Preferences");
   writeFileSync(prefs, JSON.stringify({ profile: { exit_type: "Crashed" }, other: 1 }));
   writeFileSync(secure, "");
-  // An open handle keeps the original inode from being reused by a later file.
-  const original = openSync(prefs, "r");
-  const before = fstatSync(original).ino;
+  // An open handle keeps the original inode from being reused by a later file. Windows refuses
+  // to replace a file that is still open, so the inode check runs elsewhere.
+  const original = process.platform === "win32" ? undefined : openSync(prefs, "r");
+  const before = original === undefined ? undefined : fstatSync(original).ino;
   await launcher.start("k1d0cd11");
-  closeSync(original);
+  if (original !== undefined) closeSync(original);
   expect(readFileSync(secure, "utf8")).toBe("{}");
   const after = JSON.parse(readFileSync(prefs, "utf8"));
   expect(after).toMatchObject({ profile: { exit_type: "Normal" }, other: 1, webrtc: { ip_handling_policy: "disable_non_proxied_udp" } });
-  expect(statSync(prefs).ino).not.toBe(before);
+  if (before !== undefined) expect(statSync(prefs).ino).not.toBe(before);
   expect(readdirSync(defaultDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
   expect(await launcher.stop("k1d0cd11")).toBe(true);
 

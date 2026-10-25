@@ -7,6 +7,8 @@ import {
   type AcceptLegalResponse,
   type BootstrapRequest,
   type BootstrapResponse,
+  type CheckpointOpenRequest,
+  type CheckpointOpenResponse,
   type CloseOpenConflict,
   type CloseOpenRequest,
   type CloseOpenResponse,
@@ -539,6 +541,14 @@ export class CloudClient {
       }
       throw error;
     }
+  }
+
+  /** Save the session of a profile that stays open. A service without live checkpoints answers 404. */
+  checkpointOpen(registrationId: string, request: CheckpointOpenRequest): Promise<CheckpointOpenResponse> {
+    return this.call(`/open-sessions/${encodeURIComponent(registrationId)}/checkpoint`, {
+      method: "PUT",
+      body: JSON.stringify(request),
+    });
   }
 
   abandon(registrationId: string): Promise<AbandonOpenResponse> {

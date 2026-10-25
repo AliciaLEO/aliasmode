@@ -513,6 +513,19 @@ export function stripTelegramOrigin(bundle: string): string {
   return JSON.stringify(parsed);
 }
 
+/**
+ * Changes when a supported site logs in, logs out or switches account, but not on other cookie or
+ * storage churn: the live auth cookie values and the Telegram auth storage.
+ */
+export function sessionLoginSignature(bundle: string, now = Date.now()): string {
+  const parsed = parseBundle(bundle);
+  const cookies = (parsed?.cookies ?? []) as Array<{ name?: string; value?: string; domain?: string; expires?: number }>;
+  const logins = AUTH_COOKIES.flatMap((auth) => cookies
+    .filter((c) => c?.name === auth.cookie && cookieDomainMatches(c.domain, auth.parentDomain) && cookieIsLive(c, now))
+    .map((c) => `${auth.parentDomain}:${auth.cookie}=${c.value ?? ""}`)).sort();
+  return createHash("sha256").update(JSON.stringify({ logins, telegram: telegramAuthSignature(bundle) })).digest("hex");
+}
+
 /** Which supported platforms this bundle is actually logged in for, derived from the bundle's auth material. */
 export function bundleLoggedInPlatforms(bundle: string, now: number): Set<string> {
   const set = new Set<string>();

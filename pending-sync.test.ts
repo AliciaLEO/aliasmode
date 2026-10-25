@@ -887,3 +887,107 @@ test("an unreadable lease-expired capture stops blocking its profile", async () 
   expect(isResavableConflict(summary)).toBe(false);
   state.queue.close();
 });
+
+test("a live checkpoint moves the open and its checkpoint to the version Cloud saved", () => {
+  const state = queue();
+  state.queue.recordOpen({ accountId: "account1", profileId: "profile1", registrationId: "registration1", expectedVersion: 4 });
+  const id = state.queue.enqueue({
+    accountId: "account1",
+    profileId: "profile1",
+    registrationId: "registration1",
+    expectedVersion: 4,
+    payload: payload("checkpoint"),
+    readyToSubmit: false,
+  });
+  expect(state.queue.advanceOpenVersion("profile1", "account1", "registration2", 4, 5, id)).toBe(false);
+  expect(state.queue.advanceOpenVersion("profile1", "account1", "registration1", 3, 5, id)).toBe(false);
+  expect(() => state.queue.advanceOpenVersion("profile1", "account1", "registration1", 4, 3)).toThrow();
+
+  expect(state.queue.advanceOpenVersion("profile1", "account1", "registration1", 4, 5, id)).toBe(true);
+  expect(state.queue.getOpen("profile1", "account1")).toMatchObject({ registrationId: "registration1", expectedVersion: 5 });
+  const checkpoint = () => state.queue.get(state.queue.list("account1")[0]!.id, "account1");
+  expect(state.queue.list("account1")).toHaveLength(1);
+  expect(checkpoint()).toMatchObject({
+    registrationId: "registration1",
+    expectedVersion: 5,
+    cloudVersion: 5,
+    readyToSubmit: false,
+    payload: { session: { cookies: [{ value: "checkpoint" }] } },
+  });
+
+  // An adopted version from a lost reply does not claim Cloud holds this exact checkpoint there.
+  expect(state.queue.advanceOpenVersion("profile1", "account1", "registration1", 5, 7)).toBe(true);
+  expect(checkpoint()).toMatchObject({ expectedVersion: 7, cloudVersion: 5 });
+  expect(state.queue.finalizeOpenCheckpoint("profile1", "account1", "registration1")).toBe(true);
+  expect(checkpoint()).toMatchObject({ readyToSubmit: true, expectedVersion: 7, cloudVersion: 5 });
+  state.queue.close();
+});
+
+test.each([
+  ["another device continued from it", 6],
+  ["only its lease lapsed", 5],
+])("a close whose exact session a live checkpoint saved is dropped, not parked, when %s", async (_case, currentVersion) => {
+  const state = queue();
+  const id = state.queue.enqueue({
+    accountId: "account1",
+    profileId: "profile1",
+    registrationId: "registration1",
+    expectedVersion: 5,
+    payload: payload("saved-live"),
+    cloudVersion: 5,
+  });
+  const seen: string[] = [];
+  const cloud = {
+    async closeOpen(registrationId: string, request: { expectedVersion: number }) {
+      seen.push(`close:${registrationId}:${request.expectedVersion}`);
+      return { ok: false as const, error: { code: "version_conflict" as const, message: "stale", currentVersion } };
+    },
+    async openProfile(): Promise<never> {
+      seen.push("open");
+      throw new Error("a saved session must not be resaved");
+    },
+    async abandon() {
+      seen.push("abandon");
+      return { ok: true as const };
+    },
+  };
+
+  expect(await retryPendingSync(state.queue, cloud, "account1", () => true, "device1"))
+    .toEqual({ accepted: 1, conflicts: 0, failed: 0 });
+  expect(seen).toEqual(["close:registration1:5"]);
+  expect(state.queue.get(id, "account1")).toBeNull();
+  state.queue.close();
+});
+
+test("a queued close renews its lease while a slow upload runs", async () => {
+  const state = queue();
+  state.queue.enqueue({
+    accountId: "account1",
+    profileId: "profile1",
+    registrationId: "registration1",
+    expectedVersion: 2,
+    payload: payload(),
+  });
+  const beats: string[] = [];
+  let beatsDuringClose = 0;
+  const cloud = {
+    async heartbeat(registrationId: string) {
+      beats.push(registrationId);
+      return {};
+    },
+    async closeOpen(_registrationId: string, request: { expectedVersion: number }) {
+      await Bun.sleep(80);
+      beatsDuringClose = beats.length;
+      return { ok: true as const, status: "accepted" as const, version: request.expectedVersion + 1 };
+    },
+  };
+
+  expect(await retryPendingSync(state.queue, cloud, "account1", () => true, "device1", 15))
+    .toEqual({ accepted: 1, conflicts: 0, failed: 0 });
+  expect(beatsDuringClose).toBeGreaterThanOrEqual(2);
+  expect(new Set(beats)).toEqual(new Set(["registration1"]));
+  const afterClose = beats.length;
+  await Bun.sleep(50);
+  expect(beats).toHaveLength(afterClose);
+  state.queue.close();
+});

@@ -53,6 +53,8 @@ export const CLOUD_DIAGNOSTIC_TYPES = [
   "session_sync_conflict",
   "access_ended",
   "parked_session_restored",
+  "checkpoint_uploaded",
+  "checkpoint_upload_failed",
 ] as const;
 
 export type CloudDiagnosticType = typeof CLOUD_DIAGNOSTIC_TYPES[number];

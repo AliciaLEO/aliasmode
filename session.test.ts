@@ -18,6 +18,7 @@ import {
   restoreOriginStorage,
   SessionRestoreError,
   sessionBundleSignature,
+  sessionLoginSignature,
   TELEGRAM_AUTH_INDEXEDDB_RULES,
   telegramAuthSignature,
   writeSession,
@@ -1491,4 +1492,25 @@ test("an origin that the browser cannot open keeps its saved storage", () => {
   // A capture with no such origin passes through unchanged.
   const plain = JSON.stringify({ cookies: [], origins: [] });
   expect(keepUnreadableOrigins(plain, seed.saved)).toBe(plain);
+});
+
+test("the login signature changes on a login, logout or account switch but not on other cookies", () => {
+  const bundle = (cookies: Array<{ name: string; value: string; domain: string; expires?: number }>) =>
+    JSON.stringify({ cookies: cookies.map((cookie) => ({ path: "/", ...cookie })), origins: [] });
+  const loggedOut = sessionLoginSignature(bundle([{ name: "guest_id", value: "1", domain: ".x.com" }]));
+  const loggedIn = sessionLoginSignature(bundle([
+    { name: "guest_id", value: "1", domain: ".x.com" },
+    { name: "auth_token", value: "account-a", domain: ".x.com" },
+  ]));
+  expect(loggedIn).not.toBe(loggedOut);
+  expect(sessionLoginSignature(bundle([
+    { name: "guest_id", value: "2", domain: ".x.com" },
+    { name: "auth_token", value: "account-a", domain: ".x.com" },
+    { name: "personalization_id", value: "3", domain: ".x.com" },
+  ]))).toBe(loggedIn);
+  expect(sessionLoginSignature(bundle([{ name: "auth_token", value: "account-b", domain: ".x.com" }]))).not.toBe(loggedIn);
+  expect(sessionLoginSignature(bundle([
+    { name: "guest_id", value: "1", domain: ".x.com" },
+    { name: "auth_token", value: "account-a", domain: ".x.com", expires: 1 },
+  ]))).toBe(loggedOut);
 });

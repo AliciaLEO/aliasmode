@@ -38,6 +38,8 @@ export interface PendingCloseInput {
   expectedVersion: number;
   payload: PortableProfile;
   readyToSubmit?: boolean;
+  /** Cloud already holds this exact payload as this version (a live checkpoint saved it). */
+  cloudVersion?: number;
 }
 
 export interface PendingClose extends PendingCloseInput {
@@ -113,6 +115,7 @@ interface PendingRow {
   created_at: number;
   updated_at: number;
   error: string | null;
+  cloud_version: number | null;
 }
 
 function aad(id: string, accountId: string, profileId: string, expectedVersion: number): Buffer {
@@ -185,6 +188,11 @@ export class PendingSyncQueue {
     } catch {
       // Existing queue already has the lifecycle-ready column.
     }
+    try {
+      this.db.exec("ALTER TABLE pending_closes ADD COLUMN cloud_version INTEGER");
+    } catch {
+      // Existing queue already has the live-checkpoint column.
+    }
   }
 
   assertEncryptionKey(): void {
@@ -227,8 +235,8 @@ export class PendingSyncQueue {
       this.db.query(`
         INSERT INTO pending_closes
           (id, account_id, profile_id, expected_version, ready_to_submit, status,
-           nonce, ciphertext, auth_tag, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
+           nonce, ciphertext, auth_tag, created_at, updated_at, cloud_version)
+        VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         input.accountId,
@@ -240,6 +248,7 @@ export class PendingSyncQueue {
         authTag,
         now,
         now,
+        input.cloudVersion ?? null,
       );
       if (!readyToSubmit) {
         this.db.query(`
@@ -292,6 +301,7 @@ export class PendingSyncQueue {
         expectedVersion: row.expected_version,
         payload: encrypted.payload,
         readyToSubmit: row.ready_to_submit === 1,
+        ...(row.cloud_version === null ? {} : { cloudVersion: row.cloud_version }),
         status: row.status,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -509,6 +519,7 @@ export class PendingSyncQueue {
           expectedVersion: checkpoint.expectedVersion,
           payload: checkpoint.payload,
           readyToSubmit: false,
+          ...(checkpoint.cloudVersion === undefined ? {} : { cloudVersion: checkpoint.cloudVersion }),
         });
       }
       return true;
@@ -516,24 +527,75 @@ export class PendingSyncQueue {
     return replace();
   }
 
-  private writeOpenSecret(open: PendingOpenSession, secret: EncryptedPendingOpen): boolean {
+  /**
+   * Move a running open and its unsubmitted checkpoint to a newer version that Cloud saved for
+   * the same registration. `uploadedCaptureId` names the checkpoint whose exact payload Cloud
+   * now holds as `toVersion`.
+   */
+  advanceOpenVersion(
+    profileId: string,
+    accountId: string,
+    registrationId: string,
+    fromVersion: number,
+    toVersion: number,
+    uploadedCaptureId?: string,
+  ): boolean {
+    if (!Number.isSafeInteger(toVersion) || toVersion < fromVersion) {
+      throw new Error("a checkpoint version must not move back");
+    }
+    const advance = this.db.transaction(() => {
+      const open = this.getOpen(profileId, accountId);
+      if (!open || open.registrationId !== registrationId || open.expectedVersion !== fromVersion) return false;
+      const checkpoint = this.list(accountId)
+        .filter((summary) => summary.profileId === profileId && !summary.readyToSubmit &&
+          summary.status !== "conflict" && summary.expectedVersion === fromVersion)
+        .map((summary) => this.get(summary.id, accountId))
+        .find((capture) => capture?.registrationId === registrationId);
+      if (toVersion !== fromVersion && !this.writeOpenSecret(open, {
+        registrationId,
+        ...(open.cleanupMode ? { cleanupMode: open.cleanupMode } : {}),
+      }, toVersion)) return false;
+      const cloudVersion = checkpoint?.id === uploadedCaptureId ? toVersion : checkpoint?.cloudVersion;
+      if (checkpoint && (toVersion !== fromVersion || cloudVersion !== checkpoint.cloudVersion)) {
+        this.enqueue({
+          accountId,
+          profileId,
+          registrationId,
+          expectedVersion: toVersion,
+          payload: checkpoint.payload,
+          readyToSubmit: false,
+          ...(cloudVersion === undefined ? {} : { cloudVersion }),
+        });
+      }
+      return true;
+    });
+    return advance();
+  }
+
+  private writeOpenSecret(
+    open: PendingOpenSession,
+    secret: EncryptedPendingOpen,
+    expectedVersion = open.expectedVersion,
+  ): boolean {
     const nonce = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", this.key, nonce);
-    cipher.setAAD(openAad(open.accountId, open.profileId, open.expectedVersion));
+    cipher.setAAD(openAad(open.accountId, open.profileId, expectedVersion));
     const plaintext = Buffer.from(JSON.stringify(secret));
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     plaintext.fill(0);
     return this.db.query(`
       UPDATE pending_open_sessions
-      SET nonce = ?, ciphertext = ?, auth_tag = ?, updated_at = ?
-      WHERE profile_id = ? AND account_id = ?
+      SET expected_version = ?, nonce = ?, ciphertext = ?, auth_tag = ?, updated_at = ?
+      WHERE profile_id = ? AND account_id = ? AND expected_version = ?
     `).run(
+      expectedVersion,
       nonce,
       ciphertext,
       cipher.getAuthTag(),
       Date.now(),
       open.profileId,
       open.accountId,
+      open.expectedVersion,
     ).changes === 1;
   }
 
@@ -762,6 +824,24 @@ export interface PendingCloseSubmitter {
   /** Needed to resave a close whose lease expired while nobody else wrote the profile. */
   openProfile?(profileId: string, request: OpenProfileRequest): Promise<OpenProfileResponse>;
   abandon?(registrationId: string): Promise<AbandonOpenResponse>;
+  /** Keeps a close's lease while its upload runs. */
+  heartbeat?(registrationId: string): Promise<unknown>;
+}
+
+/**
+ * Renew a close's lease while its upload runs: a large session on a slow link can take longer
+ * than the lease, and another device must not open the older copy meanwhile.
+ */
+function closeHoldingLease<T>(
+  cloud: PendingCloseSubmitter,
+  registrationId: string,
+  keepAliveMs: number,
+  close: () => Promise<T>,
+): Promise<T> {
+  if (keepAliveMs <= 0 || !cloud.heartbeat) return close();
+  const timer = setInterval(() => { void cloud.heartbeat!(registrationId).catch(() => {}); }, keepAliveMs);
+  (timer as { unref?: () => void }).unref?.();
+  return close().finally(() => clearInterval(timer));
 }
 
 export interface PendingSyncRetryResult {
@@ -813,6 +893,7 @@ async function resaveLapsedClose(
   cloud: PendingCloseSubmitter,
   pending: PendingClose,
   deviceId: string | undefined,
+  keepAliveMs: number,
 ): Promise<ResaveOutcome> {
   const keep = (error: string, outcome: ResaveOutcome): ResaveOutcome =>
     queue.setConflictError(pending.id, pending.accountId, error) ? outcome : "gone";
@@ -837,10 +918,10 @@ async function resaveLapsedClose(
     return keep(versionConflictError(opened.baseVersion), "conflict");
   }
   try {
-    const response = await cloud.closeOpen(opened.registrationId, {
+    const response = await closeHoldingLease(cloud, opened.registrationId, keepAliveMs, () => cloud.closeOpen(opened.registrationId, {
       expectedVersion: opened.baseVersion,
       payload: pending.payload,
-    });
+    }));
     if (response.ok) return queue.remove(pending.id, pending.accountId) ? "accepted" : "gone";
     return keep(versionConflictError(response.error.currentVersion), "conflict");
   } catch (error) {
@@ -859,6 +940,7 @@ export async function retryPendingSync(
   accountId: string,
   current: () => boolean = () => true,
   deviceId?: string,
+  keepAliveMs = 30_000,
 ): Promise<PendingSyncRetryResult> {
   const result: PendingSyncRetryResult = { accepted: 0, conflicts: 0, failed: 0 };
   /** Count a resave and report whether the pass should stop for transport loss. */
@@ -887,16 +969,20 @@ export async function retryPendingSync(
     }
     if (!pending) continue;
     if (resavable) {
-      if (countResave(await resaveLapsedClose(queue, cloud, pending, deviceId))) break;
+      if (countResave(await resaveLapsedClose(queue, cloud, pending, deviceId, keepAliveMs))) break;
       continue;
     }
     queue.markRetrying(pending.id, accountId);
     try {
-      const response = await cloud.closeOpen(pending.registrationId, {
+      const response = await closeHoldingLease(cloud, pending.registrationId, keepAliveMs, () => cloud.closeOpen(pending.registrationId, {
         expectedVersion: pending.expectedVersion,
         payload: pending.payload,
-      });
+      }));
       if (response.ok) {
+        if (queue.remove(pending.id, accountId)) result.accepted++;
+      } else if (pending.cloudVersion !== undefined && response.error.currentVersion >= pending.cloudVersion) {
+        // A live checkpoint already saved this exact session, and any newer version continues
+        // from it, so Cloud lacks nothing: drop it instead of parking it as a conflict.
         if (queue.remove(pending.id, accountId)) result.accepted++;
       } else if (response.error.currentVersion === pending.expectedVersion) {
         // Nobody else wrote the profile; only this registration's lease expired.
@@ -904,7 +990,7 @@ export async function retryPendingSync(
           queue.setConflictError(pending.id, accountId, LEASE_EXPIRED);
           break;
         }
-        if (countResave(await resaveLapsedClose(queue, cloud, pending, deviceId))) break;
+        if (countResave(await resaveLapsedClose(queue, cloud, pending, deviceId, keepAliveMs))) break;
       } else if (queue.markConflict(
         pending.id,
         accountId,

@@ -303,6 +303,8 @@ const CLOUD_DIAGNOSTIC_LABELS: Record<CloudDiagnosticEvent["type"], string> = {
   session_sync_conflict: "Session synchronization has a terminal conflict",
   access_ended: "Cloud access ended",
   parked_session_restored: "Saved session restored to Cloud",
+  checkpoint_uploaded: "Open session saved to Cloud",
+  checkpoint_upload_failed: "Open session could not be saved to Cloud",
 };
 
 function cloudDiagnosticFailed(type: CloudDiagnosticEvent["type"]): boolean {
@@ -3897,6 +3899,11 @@ function App() {
                           {p.lockedBy && (
                             <span className="lockedby" title={`in use by ${p.lockedBy}`}>
                               <Icon name="lock" className="sm" />{p.lockedBy}
+                            </span>
+                          )}
+                          {p.running && p.cloudUnsavedSince && (
+                            <span className="unsaved" title={t("Cloud has an older copy since {time}. This device keeps the latest session and retries.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })}>
+                              <Icon name="warning" className="sm" />{t("not saved to Cloud yet")}
                             </span>
                           )}
                         </span>

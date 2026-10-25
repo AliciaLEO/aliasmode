@@ -874,7 +874,7 @@ td.col-no .no-text.custom { color: var(--accent-2-ink); }
 .name-cell .n { color: var(--ink); font-weight: 600; font-size: var(--t-base); letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; }
 .name-cell .sub { display: flex; align-items: center; gap: 6px; color: var(--faint); font-size: 11.5px; font-family: var(--mono); letter-spacing: -0.01em; }
 .name-cell .sub .live { display: inline-flex; align-items: center; gap: 4px; color: var(--success-ink); font-family: var(--font); font-weight: 600; }
-.name-cell .sub .lockedby {
+.name-cell .sub .lockedby, .name-cell .sub .unsaved {
   display: inline-flex; align-items: center; gap: 4px;
   color: var(--warn-ink); font-family: var(--font); font-size: 11px; font-weight: 550; white-space: nowrap;
 }

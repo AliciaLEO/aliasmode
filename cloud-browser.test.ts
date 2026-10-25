@@ -90,6 +90,7 @@ function setup(options: {
   const events: string[] = [];
   const logs: string[] = [];
   const navigatedUrls: string[][] = [];
+  const nativeNavigations: Array<{ urls: string[]; replacePages?: boolean }> = [];
   const navigateEndpoints: string[] = [];
   const restoreEndpoints: string[] = [];
   const captureSeeds: any[] = [];
@@ -250,6 +251,10 @@ function setup(options: {
         nativeSessionRestored: !!startOptions.restoreLastSession && !!options.nativeSessionAvailable,
       };
     },
+    async navigate(_ws: string, urls: string[], replacePages?: boolean) {
+      events.push("navigate");
+      nativeNavigations.push({ urls: [...urls], ...(replacePages === undefined ? {} : { replacePages }) });
+    },
     async stop(profileId: string) {
       events.push("stop");
       if (options.stopResult === false) return false;
@@ -317,6 +322,7 @@ function setup(options: {
     imports,
     logs,
     navigatedUrls,
+    nativeNavigations,
     navigateEndpoints,
     restoreEndpoints,
     captureSeeds,
@@ -981,14 +987,14 @@ for (const closeMethod of ["managed", "window"] as const) {
   });
 }
 
-for (const reason of ["missing files", "newer Cloud session", "explicit URL"] as const) {
+for (const reason of ["missing files", "newer Cloud session", "newer Cloud session and a start URL"] as const) {
   test(`Cloud native restore falls back to portable state for ${reason}`, async () => {
     const state = setup({ nativeSessionAvailable: reason !== "missing files" });
     const options = (state.coordinator as any).options;
     const original = payload();
     options.launcher.recordCloudSession("profile1", sessionBundleSignature(JSON.stringify(original.session)));
     const authoritative = structuredClone(original);
-    if (reason === "newer Cloud session") {
+    if (reason !== "missing files") {
       authoritative.session.tabs = ["https://new.example/", "https://new.example/"];
       options.cloud.openProfile = async () => ({
         ok: true, registrationId: "registration1", baseVersion: 6,
@@ -996,17 +1002,55 @@ for (const reason of ["missing files", "newer Cloud session", "explicit URL"] as
       });
     }
     let restored: unknown;
-    options.applySession = async (_endpoint: string, bundle: string) => { restored = JSON.parse(bundle); };
+    let restoredUrls: readonly string[] = [];
+    options.applySession = async (_endpoint: string, bundle: string, urls: readonly string[]) => {
+      restored = JSON.parse(bundle);
+      restoredUrls = urls;
+    };
     const args = ["--window-size=1200,800"];
-    if (reason === "explicit URL") args.push("https://explicit.example/");
+    if (reason === "newer Cloud session and a start URL") args.push("https://explicit.example/");
     expect((await state.coordinator.open("profile1", args)).ok).toBe(true);
     expect(state.startOptionsSeen[0].restoreLastSession).toBe(reason === "missing files");
     expect(restored).toEqual(authoritative.session);
+    if (reason === "newer Cloud session and a start URL") expect(restoredUrls).toEqual(["https://explicit.example/"]);
+    expect(state.nativeNavigations).toEqual([]);
     await state.coordinator.close("profile1");
     state.queue.close();
     state.store.close();
   });
 }
+
+// Local API and MCP opens pass a start URL. It must not swap this device's newer session for the Cloud copy.
+test("Cloud open with a start URL keeps this device's session and opens the URL beside it", async () => {
+  const state = setup({ nativeSessionAvailable: true });
+  const options = (state.coordinator as any).options;
+  options.launcher.recordCloudSession("profile1", sessionBundleSignature(JSON.stringify(payload().session)));
+  let restored: unknown;
+  options.applySession = async (_endpoint: string, bundle: string) => { restored = JSON.parse(bundle); };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800", "https://explicit.example/"])).ok).toBe(true);
+  expect(state.startOptionsSeen[0]).toMatchObject({ restoreLastSession: true, resetStorage: false });
+  expect(restored).toBeUndefined();
+  expect(state.nativeNavigations).toEqual([{ urls: ["https://explicit.example/"] }]);
+  await state.coordinator.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud open with a start URL reports a failed page open but keeps the session", async () => {
+  const state = setup({ nativeSessionAvailable: true });
+  const options = (state.coordinator as any).options;
+  options.launcher.recordCloudSession("profile1", sessionBundleSignature(JSON.stringify(payload().session)));
+  options.launcher.navigate = async () => { throw new Error("page did not load"); };
+  const result = await state.coordinator.open("profile1", ["--window-size=1200,800", "https://explicit.example/"]);
+  expect(result.ok).toBe(true);
+  expect(result.warning).toContain("startup navigation failed");
+  expect(state.events).not.toContain("restore");
+  // The next open must still trust this device's session.
+  expect(options.launcher.matchesCloudSession("profile1", sessionBundleSignature(JSON.stringify(payload().session)))).toBe(true);
+  await state.coordinator.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
 
 for (const readable of [true, false]) {
   test(`Cloud native restore ${readable ? "reuses a readable" : "skips another Windows account's"} cookie key`, async () => {

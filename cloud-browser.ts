@@ -132,7 +132,7 @@ type CloudBrowserLauncher = Pick<
   Launcher,
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
   "browserStorageWatchPaths" | "failedStartGeneration" |
-  "matchesCloudSession" | "recordCloudSession"
+  "matchesCloudSession" | "recordCloudSession" | "navigate"
 > & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks" | "nativeSessionReadable">>;
 
 export interface CloudBrowserOptions {
@@ -705,8 +705,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       logStage("browser_launch");
       const { chromeArgs, startupUrls } = splitLaunchUrls(launchArgs);
       const signature = sessionBundleSignature(sessionBundle);
-      let restoreNativeSession = startupUrls.length === 0 &&
-        this.options.launcher.matchesCloudSession(profileId, signature);
+      // Start URLs open beside the session; they never choose the older Cloud copy over this device's.
+      let restoreNativeSession = this.options.launcher.matchesCloudSession(profileId, signature);
       // Native cookies written under another Windows account are unreadable here.
       if (restoreNativeSession && (await this.options.launcher.nativeSessionReadable?.(profileId)) === false) {
         restoreNativeSession = false;
@@ -792,11 +792,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           ? [home]
           : [];
       let navigationWarning: string | undefined;
+      const nativeRestored = restoreNativeSession && !!launched.nativeSessionRestored;
       try {
         // Portable seeding blanks origin pages and replaces tabs. Native restore
         // already has newer local state and preserves the full Chromium layout.
-        if (!restoreNativeSession || !launched.nativeSessionRestored) {
+        if (!nativeRestored) {
           await this.options.applySession(verifiedLaunch.ws, sessionBundle, urls);
+        } else if (startupUrls.length > 0) {
+          await this.options.launcher.navigate(verifiedLaunch.ws, startupUrls)
+            .catch(() => { throw new SessionRestoreError("navigation", "failed"); });
         }
       } catch (error) {
         if (error instanceof SessionRestoreError && error.operation === "navigation") {
@@ -851,7 +855,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         origins: new Set(captureSeed.origins),
         ...(captureSeed.telegramClient ? { telegramClient: captureSeed.telegramClient } : {}),
       });
-      if (!navigationWarning) this.recordCloudSessionSignature(profileId, signature);
+      // A failed start URL leaves this device's restored session untouched, so it stays trusted.
+      if (!navigationWarning || nativeRestored) this.recordCloudSessionSignature(profileId, signature);
 
       // Startup navigation already happened inside the single restore attach above.
       this.diagnosticEvents.record("open_running");

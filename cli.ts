@@ -2117,6 +2117,7 @@ function createCloudCrossDeviceSyntheticRuntime(
     browserStorageWatchPaths() {
       return [];
     },
+    async navigate() {},
   };
   const coordinator = new CloudBrowserCoordinator({
     cloud: connection.client,

@@ -27,6 +27,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  statfsSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen, ptr } from "bun:ffi";
@@ -1006,6 +1007,16 @@ export class Launcher {
       throw new Error(`profile user-data directory escapes configured root for id ${JSON.stringify(profileId)}`);
     }
     return dir;
+  }
+
+  /** Free bytes on the drive that holds profile data; null when it cannot be read. */
+  dataDriveFreeBytes(): number | null {
+    try {
+      const stats = statfsSync(resolve(this.dataRoot));
+      return stats.bavail * stats.bsize;
+    } catch {
+      return null;
+    }
   }
 
   /** The font pack this Firefox profile needs on this computer, if any. */

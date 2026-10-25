@@ -56,6 +56,8 @@ import {
   fetchProfiles,
   serialLoader,
   fetchHealth,
+  fetchDiskSpace,
+  type DiskSpace,
   fetchLogs,
   fetchDiagnose,
   checkProxy,
@@ -1230,6 +1232,8 @@ function App() {
   const [desktopUpdateProgress, setDesktopUpdateProgress] = useState<DesktopUpdateProgress | null>(null);
   const [desktopUpdateErr, setDesktopUpdateErr] = useState<string | null>(null);
   const [logDir, setLogDir] = useState<string | undefined>(undefined);
+  const [diskSpace, setDiskSpace] = useState<DiskSpace | null>(null);
+  const [diskWarningDismissed, setDiskWarningDismissed] = useState(false);
   const [logView, setLogView] = useState<{ file: string; content: string } | null>(null);
   const [logErr, setLogErr] = useState<string | null>(null);
   const [diag, setDiag] = useState<DiagnoseReport | null>(null);
@@ -2133,6 +2137,15 @@ function App() {
     const t = setInterval(pollRoster, REFRESH_MS);
     return () => clearInterval(t);
   }, [appMode?.mode, restartRequired, workspaceReady]);
+
+  // Both browsers delete saved site data when the profiles drive is almost full.
+  useEffect(() => {
+    let live = true;
+    const check = () => void fetchDiskSpace().then((next) => { if (live) setDiskSpace(next); }).catch(() => {});
+    check();
+    const timer = setInterval(check, 60_000);
+    return () => { live = false; clearInterval(timer); };
+  }, []);
 
   // Browser runtime downloads: read once when the profile count changes (a new profile
   // starts its download), then every second while one runs or a row is busy opening.
@@ -3639,6 +3652,18 @@ function App() {
           {exportProgress.completed >= exportProgress.total
             ? "Building export file…"
             : `Preparing export: ${exportProgress.completed.toLocaleString()} / ${exportProgress.total.toLocaleString()} profiles`}
+        </div>
+      )}
+      {diskSpace?.low && diskSpace.freeBytes !== null && !diskWarningDismissed && (
+        <div className="update-banner update-result warning" role="alert">
+          <Icon name="warning" />
+          <div className="update-copy">
+            <strong>{t("Low disk space: {free} GB free on the drive that holds your profiles.", { free: (diskSpace.freeBytes / 1024 ** 3).toFixed(1) })}</strong>
+            <span>{t("When the disk is almost full, browsers delete saved site data, which can log profiles out. Free up space on this drive.")}</span>
+          </div>
+          <button className="update-result-dismiss" type="button" aria-label={t("Dismiss disk space warning")} onClick={() => setDiskWarningDismissed(true)}>
+            <Icon name="close" className="sm" />
+          </button>
         </div>
       )}
       {desktopUpdateResultSummary && !desktopUpdateResultDismissed && (

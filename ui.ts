@@ -188,6 +188,12 @@ async function readLatestDiagnose(reportsRoot = "reports"): Promise<unknown | nu
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
+/**
+ * Below 2 GB free Chromium gives sites no new storage, below 1 GB it evicts their data, and
+ * Firefox's site-data limit is half the free space. 5 GB warns before either starts.
+ */
+export const LOW_DISK_SPACE_BYTES = 5 * 1024 ** 3;
+
 type CloudRestoreStage = "auth_refresh" | "cloud_status" | "lifecycle_resume";
 type CloudRestoreCategory = "network" | "service" | "authentication";
 
@@ -675,6 +681,12 @@ export async function handleUiRequest(
     return Response.json(options.health
       ? { ok: true, ...options.health, ...(logDir ? { logDir } : {}) }
       : { ok: true, version: await appVersion(), root: APPLICATION_ROOT, ...(logDir ? { logDir } : {}) });
+  }
+
+  // Warning only: under storage pressure both engines evict saved site data.
+  if (pathname === "/ui/api/disk-space" && req.method === "GET") {
+    const freeBytes = launcher.dataDriveFreeBytes();
+    return noStoreJson({ ok: true, freeBytes, low: freeBytes !== null && freeBytes < LOW_DISK_SPACE_BYTES });
   }
 
   if (pathname === "/ui/api/logs" && req.method === "GET") {

@@ -425,5 +425,8 @@
   "Confirm your email first. Enter the code from the email, or send a new code.": "Сначала подтвердите email. Введите код из письма или отправьте новый.",
   "The code is wrong or has expired. Check the newest email, or send a new code.": "Код неверный или устарел. Проверьте последнее письмо или отправьте новый код.",
   "We sent a new email to {email}.": "Мы отправили новое письмо на {email}.",
-  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "Письма нет? Проверьте папку «Спам» или отправьте новый код. Если в письме ссылка, а не код, откройте ее, затем войдите."
+  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "Письма нет? Проверьте папку «Спам» или отправьте новый код. Если в письме ссылка, а не код, откройте ее, затем войдите.",
+  "Low disk space: {free} GB free on the drive that holds your profiles.": "Мало места на диске: на диске с вашими профилями свободно {free} ГБ.",
+  "When the disk is almost full, browsers delete saved site data, which can log profiles out. Free up space on this drive.": "Когда диск почти заполнен, браузеры удаляют сохраненные данные сайтов, и профили могут выйти из аккаунтов. Освободите место на этом диске.",
+  "Dismiss disk space warning": "Скрыть предупреждение о месте на диске"
 }

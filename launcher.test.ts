@@ -893,6 +893,17 @@ test("native session is unreadable only when DPAPI rejects its cookie key, once 
   store.close();
 });
 
+test("free space is read from the drive that holds profile data", () => {
+  const store = seeded();
+  const root = join(tmpdir(), `cloak-disk-${crypto.randomUUID()}`);
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, { dataRoot: root });
+  expect(launcher.dataDriveFreeBytes()).toBeNull(); // not created yet
+  mkdirSync(root, { recursive: true });
+  expect(launcher.dataDriveFreeBytes()).toBeGreaterThan(0);
+  rmSync(root, { recursive: true, force: true });
+  store.close();
+});
+
 // Windows Chromium deletes every cookie it cannot decrypt. A Local profile has no other copy.
 test("Windows Local keeps a copy of unreadable cookies and does not open the profile", async () => {
   for (const readable of [false, true]) {

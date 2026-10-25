@@ -9,11 +9,12 @@ import {
   CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
   CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, renameWhenUnlocked, sha256File,
 } from "./browser-install.ts";
+import { trackRuntimeDownload } from "./runtime-download.ts";
 
 // AliasMode's own Windows build of the patch series. Its package includes Chromium's
 // version manifest, which upstream's Windows archive omits. Each build gets its
 // own directory, so a browser still running from an earlier build keeps its files.
-// A new build changes the version, the release tag and the two SHA-256 values of its release.
+// A new build changes the version, the release tag, and the two SHA-256 values and archive size of its release.
 const WINDOWS_VERSION = "155.0.8059.85";
 const WINDOWS_RELEASE = "aliasmode.3";
 const WINDOWS_BUILD = {
@@ -21,6 +22,7 @@ const WINDOWS_BUILD = {
   url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${WINDOWS_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${WINDOWS_VERSION}-windows-x64.zip`,
   dir: `chromium-${WINDOWS_VERSION}-${WINDOWS_RELEASE}`,
   archiveSha256: "80ab530d0c5280b427c58298987636cd003b12183b61f15a99c0a82598ca9580",
+  size: 203519818,
   executable: "chrome.exe",
   executableSha256: "0ef4de1bef7c12534031318e07ac89fa7942916a3abc89057985aafefbca619f",
   // Pages read and draw at --force-device-scale-factor, and
@@ -39,6 +41,7 @@ const MACOS_BUILD = {
   url: `${APOSTATE_RELEASE}/apostate-${APOSTATE_VERSION}-macos-arm64.zip`,
   dir: `chromium-${APOSTATE_VERSION}`,
   archiveSha256: "58176ba9b3e9cfd74029165bdf716c636e618af17a48bd905fe6d5f1552d901a",
+  size: 158101227,
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: "2dfa8b148e6d06598981c4a1e1bc0d7c2c7860d74401ad0d934d21a10c7916d7",
   hostScale: false,
@@ -50,6 +53,7 @@ const LINUX_BUILD = {
   url: `${APOSTATE_RELEASE}/apostate-${APOSTATE_VERSION}-linux-x64.tar.zst`,
   dir: `chromium-${APOSTATE_VERSION}`,
   archiveSha256: "351955271b7ba1aed314bf14c2d64f6bd59bfdcb5c4a1541c9c921c570ff97bb",
+  size: 196782260,
   executable: "chrome",
   executableSha256: "c0b906dc621cec05330aed9d3b09bbb7b655a9c8546e4c61d222705fabfde6d3",
   hostScale: false,
@@ -74,9 +78,13 @@ export const ALIASMODE_CHROMIUM_WEBRTC_IP = WINDOWS_BUILD.webRtcIp;
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {
   label: string;
+  /** The profiles that wait for it, as the dashboard matches a download to its rows. */
+  runtime: "aliasmode" | "cloakbrowser";
   dir: string;
   url: string;
   archiveSha256: string;
+  /** Archive size in bytes; only download progress uses it. */
+  size: number;
   /** Directory inside the archive that holds the runtime; empty when the archive root is the runtime. */
   archiveRoot: string;
   executable: string;
@@ -87,9 +95,11 @@ function chromium155(platform: NodeJS.Platform): PinnedRuntime {
   const build = chromiumBuild(platform);
   return {
     label: "Chromium 155",
+    runtime: "aliasmode",
     dir: build.dir,
     url: build.url,
     archiveSha256: build.archiveSha256,
+    size: build.size,
     archiveRoot: build.root,
     executable: build.executable,
     executableSha256: build.executableSha256,
@@ -100,9 +110,11 @@ function chromium155(platform: NodeJS.Platform): PinnedRuntime {
 export const CLOAKBROWSER_MACOS_EXECUTABLE_SHA256 = "79ddf7e7a7be8087319390ed79266387f6499b8a2e45ccfbaa724d7e7fff6b79";
 const CLOAKBROWSER_MACOS: PinnedRuntime = {
   label: "CloakBrowser",
+  runtime: "cloakbrowser",
   dir: `cloakbrowser-${CLOAKBROWSER_MACOS_VERSION}`,
   url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_MACOS_VERSION}/cloakbrowser-darwin-arm64.tar.gz`,
   archiveSha256: "505582aa1bd3971c577f70e0cbbe016431702bdb693529abfd943b5bd9120c1c",
+  size: 147384149,
   archiveRoot: "",
   executable: "Chromium.app/Contents/MacOS/Chromium",
   executableSha256: CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
@@ -112,6 +124,7 @@ const CLOAKBROWSER_MACOS_X64: PinnedRuntime = {
   ...CLOAKBROWSER_MACOS,
   url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_MACOS_VERSION}/cloakbrowser-darwin-x64.tar.gz`,
   archiveSha256: "a0a061b1945db55b3bbe95986a82b67803311c0fedabb3946e7ab0172273daac",
+  size: 158989564,
   executableSha256: CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256,
 };
 
@@ -119,9 +132,11 @@ const CLOAKBROWSER_MACOS_X64: PinnedRuntime = {
 export const CLOAKBROWSER_LINUX_EXECUTABLE_SHA256 = "715722e8605ae3ce81523c1218aba1ec89425786ab33ceaf99f8a6cb5e70e6e8";
 const CLOAKBROWSER_LINUX: PinnedRuntime = {
   label: "CloakBrowser",
+  runtime: "cloakbrowser",
   dir: `cloakbrowser-${CLOAKBROWSER_VERSION}`,
   url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_VERSION}/cloakbrowser-linux-x64.tar.gz`,
   archiveSha256: "4a12bcde95fa1bb1beef2b41ab5e5c27c36be78e3be3d0dac8c64d705216670e",
+  size: 216890134,
   archiveRoot: "",
   executable: "chrome",
   executableSha256: CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
@@ -130,9 +145,11 @@ const CLOAKBROWSER_LINUX: PinnedRuntime = {
 // The Windows app downloads the build it bundled before, so profiles keep their exact kernel.
 const CLOAKBROWSER_WINDOWS: PinnedRuntime = {
   label: "CloakBrowser",
+  runtime: "cloakbrowser",
   dir: `cloakbrowser-${CLOAKBROWSER_VERSION}`,
   url: `https://github.com/CloakHQ/CloakBrowser/releases/download/chromium-v${CLOAKBROWSER_VERSION}/cloakbrowser-windows-x64.zip`,
   archiveSha256: CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
+  size: 562004238,
   archiveRoot: "",
   executable: "chrome.exe",
   executableSha256: CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256,
@@ -315,12 +332,12 @@ async function install(spec: PinnedRuntime, root: string, deps: AliasmodeChromiu
     if (entry.startsWith(tempPrefix)) rmSync(join(root, entry), { recursive: true, force: true });
   }
   const partial = join(root, partialName(spec));
-  await downloadWithRetry(
+  await trackRuntimeDownload(spec.runtime, partial, spec.size, () => downloadWithRetry(
     spec.url,
     partial,
     deps.download ?? ((url, output) => curlDownload(url, output, platform)),
     deps.sleep ?? Bun.sleep,
-  );
+  ));
   if (await hashFile(partial) !== spec.archiveSha256) {
     rmSync(partial, { force: true });
     throw new Error(`${spec.label} archive did not match its pinned SHA-256`);

@@ -14,6 +14,8 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "AliasMode",
+    "copyright": "Copyright © 2026 Xreacher",
     "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
@@ -32,6 +34,8 @@
         "template": "windows/installer.nsi",
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico",
+        "headerImage": "windows/header.bmp",
+        "sidebarImage": "windows/sidebar.bmp",
         "installerHooks": "windows/installer-hooks.nsh"
       }
     }

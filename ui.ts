@@ -62,6 +62,7 @@ import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
+import { runtimeDownloads } from "./runtime-download.ts";
 
 /** Readiness metadata supplied by the desktop parent process. */
 export interface UiHealthMetadata {
@@ -723,6 +724,11 @@ export async function handleUiRequest(
       { events: normalizeCloudDiagnostics(options.cloudBrowser?.diagnostics?.() ?? []) },
       { headers: { "Cache-Control": "no-store" } },
     );
+  }
+
+  // Browser runtimes downloading now, so the dashboard can show their progress.
+  if (pathname === "/ui/api/runtime-downloads" && req.method === "GET") {
+    return noStoreJson({ downloads: runtimeDownloads() });
   }
 
   if (pathname === "/ui/api/proxy/check" && req.method === "POST") {

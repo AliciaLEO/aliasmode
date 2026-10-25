@@ -55,22 +55,35 @@ jobs:
       - name: Build the app bundle
         run: bun run desktop:prepare:macos && bunx tauri build --bundles app
       # Tauri's .dmg script mounts its image, and on the Intel runner the detach always timed out
-      # ("timeout for DiskArbitration expired"). hdiutil makes the same image from a folder.
+      # ("timeout for DiskArbitration expired"). dmgbuild attaches without Finder and retries the
+      # detach to add the background and icon layout. If it still fails, hdiutil makes a plain
+      # image from a folder, so the layout can never block a release.
       - name: Make the disk image
         shell: bash
         run: |
           set -euo pipefail
           version="$(jq -er .version src-tauri/tauri.conf.json)"
-          stage="$RUNNER_TEMP/dmg-stage"
-          mkdir -p "$stage" "$BUNDLE/dmg"
-          ditto "$BUNDLE/macos/AliasMode.app" "$stage/AliasMode.app"
-          ln -s /Applications "$stage/Applications"
+          mkdir -p "$BUNDLE/dmg"
           dmg="$BUNDLE/dmg/AliasMode_${version}_${ARCH}.dmg"
-          for attempt in 1 2 3; do
-            hdiutil create -volname AliasMode -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
-            [[ "$attempt" == 3 ]] && exit 1
-            sleep 30
-          done
+          venv="$RUNNER_TEMP/dmgbuild"
+          if python3 -m venv "$venv" &&
+            "$venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r src-tauri/macos/dmg-requirements.txt &&
+            "$venv/bin/dmgbuild" -s src-tauri/macos/dmg-settings.py \
+              -D app="$BUNDLE/macos/AliasMode.app" -D background=src-tauri/macos/dmg-background.png \
+              AliasMode "$dmg"; then
+            echo "dmgbuild made the styled disk image"
+          else
+            echo "::warning::dmgbuild failed; making a plain disk image"
+            stage="$RUNNER_TEMP/dmg-stage"
+            mkdir -p "$stage"
+            ditto "$BUNDLE/macos/AliasMode.app" "$stage/AliasMode.app"
+            ln -s /Applications "$stage/Applications"
+            for attempt in 1 2 3; do
+              hdiutil create -volname AliasMode -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
+              [[ "$attempt" == 3 ]] && exit 1
+              sleep 30
+            done
+          fi
           hdiutil verify "$dmg"
       - name: Verify bundle layout and signatures
         shell: bash

@@ -11,6 +11,7 @@ import {
   fetchAppMode,
   fetchCloudAuth,
   fetchCloudEvents,
+  fetchRuntimeDownloads,
   fetchCloudTeam,
   fetchGroupExtensionDefaults,
   setGroupExtensionDefaults,
@@ -274,6 +275,20 @@ test("Cloud diagnostics client accepts only the fixed event schema", async () =>
     events: [{ timestamp: 123, type: "unknown" }],
   })) as unknown as typeof fetch;
   await expect(fetchCloudEvents()).rejects.toThrow("invalid data");
+});
+
+test("runtime downloads client reads the downloads in progress", async () => {
+  let requested: RequestInfo | URL | undefined;
+  const downloads = [{ runtime: "aliasmode" as const, receivedBytes: 42, totalBytes: 100 }];
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requested = input;
+    return Response.json({ downloads });
+  }) as unknown as typeof fetch;
+  expect(await fetchRuntimeDownloads()).toEqual(downloads);
+  expect(requested).toBe("/ui/api/runtime-downloads");
+
+  globalThis.fetch = (async () => Response.json({ ok: false, error: "not found" }, { status: 404 })) as unknown as typeof fetch;
+  await expect(fetchRuntimeDownloads()).rejects.toThrow("invalid data");
 });
 
 test("Cloud auth client reads status and sends credentials as JSON", async () => {

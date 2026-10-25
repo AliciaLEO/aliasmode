@@ -21,6 +21,7 @@ import {
   supportsChromium155Host,
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
+import { runtimeDownloads } from "./runtime-download.ts";
 
 const WINDOWS_155 = aliasmodeChromiumArchive("win32");
 import { buildNewProfile } from "./create.ts";
@@ -70,6 +71,29 @@ test("installs AliasMode's own 155 build once, beside any earlier runtime", asyn
 
   expect(await ensureAliasmodeChromium(root, release.deps, "win32")).toBe(executable);
   expect(release.downloads).toHaveLength(1);
+});
+
+test("a download in progress reports the bytes of its part against the pinned archive size", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-chromium-"));
+  const release = fakeRelease();
+  let finish!: () => void;
+  let started!: () => void;
+  const running = new Promise<void>((resolve) => { started = resolve; });
+  const download = release.deps.download!;
+  const installed = ensureAliasmodeChromium(root, {
+    ...release.deps,
+    download: async (url, output) => {
+      writeFileSync(output, "12345");
+      started();
+      await new Promise<void>((resolve) => { finish = resolve; });
+      await download(url, output);
+    },
+  }, "win32");
+  await running;
+  expect(runtimeDownloads()).toEqual([{ runtime: "aliasmode", receivedBytes: 5, totalBytes: 203519818 }]);
+  finish();
+  await installed;
+  expect(runtimeDownloads()).toEqual([]);
 });
 
 test("Linux x64 installs upstream's 155 build from its zstd tar archive", async () => {

@@ -152,8 +152,8 @@ test("dashboard recovers saved Cloud sessions without false sign-out", () => {
   expect(app).toContain('type SavedSessionPhase = "restoring" | "manual-signin" | "retryable-failure";');
   expect(app).toContain('useState<SavedSessionPhase>("restoring")');
   expect(app).toContain("Restoring saved session");
-  expect(app).toContain(">Try again</button>");
-  expect(app).toContain(">Sign in instead</button>");
+  expect(app).toContain('>{t("Try again")}</button>');
+  expect(app).toContain('>{t("Sign in instead")}</button>');
   expect(app).toContain("error instanceof CloudSessionRestoreError && !error.retryable");
   expect(app).toContain("setScheduledRefreshPending(true)");
   expect(app).toContain('window.addEventListener("online", retryWhenOnline)');
@@ -267,7 +267,9 @@ test("dashboard selects browser for new profiles", () => {
   expect(createModal).toContain('aria-label={`${label}: ${runtime}`}');
   expect(createModal).toContain('data-tip={runtime}');
   expect(createModal).not.toContain('<select value={form.engine}');
-  expect(createModal.indexOf('className="browser-options"')).toBeGreaterThan(createModal.indexOf('<FingerprintSettings'));
+  // The browser choice comes before the optional Proxy and Fingerprint sections.
+  expect(createModal.indexOf('className="browser-options"')).toBeLessThan(createModal.indexOf('open={createProxyOpen}'));
+  expect(createModal.indexOf('open={createProxyOpen}')).toBeLessThan(createModal.indexOf('<FingerprintSettings'));
   expect(createModal.indexOf('className="browser-options"')).toBeLessThan(createModal.indexOf('className="modal-foot"'));
   expect(styles).toContain('.browser-info:focus-visible::after');
   expect(styles).toContain('.browser-card:has(input:focus-visible)');

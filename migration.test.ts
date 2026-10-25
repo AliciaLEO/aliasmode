@@ -110,6 +110,7 @@ test("migration preserves all database values and session-bearing Chromium bytes
   expect(migrated.query("SELECT * FROM extensions").get()).toEqual({ id: "ext1", name: "Extension", load_dir: join(destination.extensions, "ext1"), future_extension_value: "unknown-extension-value" });
   migrated.close();
   expect(readFileSync(destination.operatorId, "utf8")).toBe("legacy-device\n");
+  expect(JSON.parse(readFileSync(destination.config, "utf8")).mode).toBe("local");
   await expect(migrateLegacyState(source, destination, stopped)).rejects.toThrow("already contains imported local profile data");
 });
 
@@ -185,10 +186,20 @@ test("initialized-empty local destination is accepted and harmless files are pre
   expect(readFileSync(destination.config, "utf8")).toContain('"mode":"local"');
 });
 
-test("nonempty, Cloud, pending-sync, launch, remote, live, and inconclusive states reject", async () => {
+test("a Cloud-mode destination without Cloud state imports as Local", async () => {
+  const { source, destination } = roots();
+  sourceDb(source).close();
+  addBrowserState(join(source, "profiles"), "legacy1");
+  mkdirSync(destination.root);
+  writeFileSync(destination.config, '{"version":1,"mode":"cloud","cloudUrl":"https://cloud.aliasmode.com","localAnalytics":false}');
+
+  expect(await migrateLegacyState(source, destination, stopped)).toEqual({ status: "migrated", profileCount: 1 });
+  expect(JSON.parse(readFileSync(destination.config, "utf8"))).toEqual({ version: 1, mode: "local", localAnalytics: false });
+});
+
+test("nonempty, Cloud cache, pending-sync, launch, remote, live, and inconclusive states reject", async () => {
   const cases: Array<[string, (source: string, destination: ReturnType<typeof statePaths>) => void, Pick<MigrationOptions, "scanProcesses"> | undefined, string]> = [
     ["profiles", (_s, d) => { mkdirSync(join(d.profiles, "old"), { recursive: true }); writeFileSync(join(d.profiles, "old", "Cookies"), "x"); }, stopped, "destination"],
-    ["cloud config", (_s, d) => { mkdirSync(d.root); writeFileSync(d.config, '{"version":1,"mode":"cloud","cloudUrl":"https://cloud.aliasmode.com","localAnalytics":false}'); }, stopped, "Cloud"],
     ["cloud cache", (_s, d) => { mkdirSync(join(d.root, "cloud-cache"), { recursive: true }); writeFileSync(d.cloudDatabase, "state"); }, stopped, "Cloud"],
     ["pending", (_s, d) => { mkdirSync(d.root); writeFileSync(d.pendingSync, "state"); }, stopped, "pending"],
     ["launch", (s) => { const db = new Database(join(s, "profiles.sqlite")); db.query("INSERT INTO launches VALUES (?,?)").run("legacy1", 1); db.close(); }, stopped, "launch"],

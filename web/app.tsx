@@ -39,6 +39,8 @@ import {
   fetchAppMode,
   fetchCloudAuth,
   fetchCloudEvents,
+  fetchRuntimeDownloads,
+  type RuntimeDownload,
   fetchCloudTeam,
   cloudWorkspaceAction,
   forgetCloudSession,
@@ -996,6 +998,30 @@ function DesktopUpdateProgressView({ progress }: { progress: DesktopUpdateProgre
   );
 }
 
+/** Percent of the bytes these browser downloads have received. */
+function downloadPercent(downloads: RuntimeDownload[]): number {
+  const total = downloads.reduce((sum, download) => sum + download.totalBytes, 0);
+  const received = downloads.reduce((sum, download) => sum + download.receivedBytes, 0);
+  return Math.floor(received * 100 / total);
+}
+
+/** The browser downloads that opening this profile waits for. */
+function profileDownloads(profile: UiProfile, downloads: RuntimeDownload[]): RuntimeDownload[] {
+  const runtime = profile.engine === "firefox" ? "firefox" : profile.chromiumRuntime ?? "cloakbrowser";
+  return downloads.filter((download) => download.runtime === runtime);
+}
+
+function RuntimeDownloadProgressView({ downloads }: { downloads: RuntimeDownload[] }) {
+  const { t } = useTranslation();
+  const percent = downloadPercent(downloads);
+  return (
+    <div className="update-progress" role="status">
+      <span>{t("Downloading browser… {percent}%", { percent: String(percent) })}</span>
+      <progress max={100} value={percent} aria-label={t("Browser download progress")} />
+    </div>
+  );
+}
+
 async function readDesktopCloudCredentials(): Promise<{
   refreshToken?: string;
   deviceCredential?: string;
@@ -1165,6 +1191,7 @@ function App() {
   const [scriptRunOpen, setScriptRunOpen] = useState(false);
   const [scriptRunProfiles, setScriptRunProfiles] = useState<UiProfile[]>([]);
   const [showCreate, setShowCreate] = useState(false);
+  const [createProxyOpen, setCreateProxyOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("account");
   const [remoteMcp, setRemoteMcp] = useState<RemoteMcpSettings>({ state: "idle" });
   const [remoteMcpTokenVisible, setRemoteMcpTokenVisible] = useState(false);
@@ -1183,6 +1210,7 @@ function App() {
   const [authErr, setAuthErr] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [confirmationEmail, setConfirmationEmail] = useState("");
+  const [localPrompt, setLocalPrompt] = useState(false);
   const [invitationCode, setInvitationCode] = useState("");
   const [team, setTeam] = useState<CloudTeamState | null>(null);
   const [teamEmail, setTeamEmail] = useState("");
@@ -1218,6 +1246,7 @@ function App() {
   const [tableScrolled, setTableScrolled] = useState(false);
   const [theme, setTheme] = useState<ThemeChoice>(readTheme);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
+  const [runtimeDownloads, setRuntimeDownloads] = useState<RuntimeDownload[]>([]);
   // Two error slots so an auto-refresh can't silently wipe why an action failed:
   // actionErr is sticky (Open/Close/move/import), connErr tracks load() only.
   const [actionErr, setActionErr] = useState<string | null>(null);
@@ -1796,8 +1825,8 @@ function App() {
       if (authView === "signup") {
         const result = await signUpCloud(authEmail, authPassword);
         setAuthNotice(result.verificationRequired
-          ? "Check your email, verify the account, then sign in."
-          : "Account created. You can sign in now.");
+          ? t("We sent a confirmation link to {email}. Open it, then come back and select Sign in.", { email: authEmail })
+          : t("Account created. You can sign in now."));
         setConfirmationEmail(result.verificationRequired ? authEmail : "");
         setAuthView("signin");
       } else {
@@ -1834,7 +1863,7 @@ function App() {
         setSavedSessionPhase("manual-signin");
         setScheduledRefreshPending(false);
         setAuthPassword("");
-        if (!persisted) setAuthNotice("Signed in for this run; desktop credential storage is unavailable.");
+        if (!persisted) setAuthNotice(t("Signed in for this run; desktop credential storage is unavailable."));
       }
     } catch (error) {
       if (generation === authGeneration.current) {
@@ -1878,7 +1907,7 @@ function App() {
     setAuthErr(null);
     try {
       await resendCloudSignUp(confirmationEmail);
-      setAuthNotice("Confirmation email sent again.");
+      setAuthNotice(t("Confirmation email sent again."));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1891,13 +1920,13 @@ function App() {
     setAuthErr(null);
     setAuthNotice(null);
     if (!email) {
-      setAuthErr("Enter your email, then select Forgot password.");
+      setAuthErr(t("Enter your email, then select Forgot password."));
       return;
     }
     setAuthBusy(true);
     try {
       await requestCloudPasswordReset(email);
-      setAuthNotice(`If ${email} has an account, a password reset link is on its way. Check spam too.`);
+      setAuthNotice(t("If {email} has an account, a password reset link is on its way. Check spam too.", { email }));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2083,6 +2112,26 @@ function App() {
     const t = setInterval(pollRoster, REFRESH_MS);
     return () => clearInterval(t);
   }, [appMode?.mode, restartRequired, workspaceReady]);
+
+  // Browser runtime downloads: read once when the profile count changes (a new profile
+  // starts its download), then every second while one runs or a row is busy opening.
+  const anyBusy = Object.values(busy).some(Boolean);
+  useEffect(() => {
+    let live = true;
+    let timer: number | undefined;
+    const poll = () => {
+      void fetchRuntimeDownloads().then((next) => {
+        if (!live) return;
+        setRuntimeDownloads(next);
+        if (next.length > 0 || anyBusy) timer = window.setTimeout(poll, 1000);
+      }).catch(() => {
+        // A missed check must not freeze the label while a row still opens.
+        if (live && anyBusy) timer = window.setTimeout(poll, 1000);
+      });
+    };
+    poll();
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [anyBusy, profiles.length]);
 
   // Live 2FA code in the Edit modal: fetch the current TOTP, count it down
   // locally, and refetch when the window rolls over.
@@ -2349,6 +2398,15 @@ function App() {
     }
   };
 
+  /** While a profile opens, its Open button shows the browser download it waits for. */
+  const openLabel = (profile: UiProfile) => {
+    if (!busy[profile.id]) return t("Open");
+    const waiting = profileDownloads(profile, runtimeDownloads);
+    return waiting.length > 0
+      ? t("Downloading browser… {percent}%", { percent: String(downloadPercent(waiting)) })
+      : t("Opening…");
+  };
+
   /**
    * A session Cloud refused is kept encrypted here. Restoring writes it back as
    * the profile's current session, replacing the logins Cloud holds now.
@@ -2471,6 +2529,8 @@ function App() {
     setProxyPaste("");
     setProxyPasteOk(null);
     setCreateErr(null);
+    // A first profile needs no proxy, so the section starts closed until profiles use one.
+    setCreateProxyOpen(profiles.some((profile) => !!profile.proxy));
     setShowCreate(true);
   };
   const closeCreate = () => {
@@ -3044,20 +3104,30 @@ function App() {
           <div className="onboarding-brand"><AliasLoop />AliasMode <span>by Xreacher</span></div>
           {restartRequired ? (
             <>
-              <h1 id="onboarding-title">Your mode is ready</h1>
-              <p>Quit and reopen AliasMode to start in {appMode?.mode === "cloud" ? "Cloud" : "Local"} mode.</p>
-              {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
-              <button className="mode-primary" type="button" onClick={() => window.close()}>Quit AliasMode</button>
+              <h1 id="onboarding-title">{appMode?.mode === "cloud" ? t("Switching to Cloud mode") : t("Switching to Local mode")}</h1>
+              {desktopInvoke() ? (
+                <>
+                  <p role="status">{t("AliasMode restarts to finish the switch.")}</p>
+                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                  <button className="mode-primary" type="button" onClick={() => void desktopInvoke()?.("restart_after_mode_change").catch((error) => setModeErr(String(error)))}>{t("Restart AliasMode")}</button>
+                </>
+              ) : (
+                <>
+                  <p>{t("Quit and reopen AliasMode to finish the switch.")}</p>
+                  {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                  <button className="mode-primary" type="button" onClick={() => window.close()}>{t("Quit AliasMode")}</button>
+                </>
+              )}
             </>
           ) : appMode?.mode === "cloud" ? (
             cloudAuth?.authenticated ? (
               <>
-                <h1 id="onboarding-title">Review the Cloud terms</h1>
-                <p>Accept the current policies before synchronizing this workspace.</p>
+                <h1 id="onboarding-title">{t("Review the Cloud terms")}</h1>
+                <p>{t("Accept the terms to start using AliasMode Cloud.")}</p>
                 <div className="auth-actions">
-                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">Terms</a>
-                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">Privacy</a>
-                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">Acceptable Use</a>
+                  <a href="https://aliasmode.com/terms/" target="_blank" rel="noreferrer">{t("Terms")}</a>
+                  <a href="https://aliasmode.com/privacy/" target="_blank" rel="noreferrer">{t("Privacy")}</a>
+                  <a href="https://aliasmode.com/acceptable-use/" target="_blank" rel="noreferrer">{t("Acceptable Use")}</a>
                 </div>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <button
@@ -3066,73 +3136,84 @@ function App() {
                   disabled={authBusy || !cloudAuth.legal}
                   onClick={() => void acceptCurrentLegal()}
                 >
-                  {authBusy ? "Working…" : cloudAuth.legal ? "Accept and continue to Cloud" : "Checking workspace…"}
+                  {authBusy ? t("Working…") : cloudAuth.legal ? t("Accept and continue to Cloud") : t("Checking workspace…")}
                 </button>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
               </>
             ) : savedSessionPhase === "restoring" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p role="status">Checking the saved Cloud session on this device…</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p role="status">{t("Checking the saved Cloud session on this device…")}</p>
               </>
             ) : savedSessionPhase === "retryable-failure" ? (
               <>
-                <h1 id="onboarding-title">Restoring saved session</h1>
-                <p>The saved session is still on this device. Reconnect and try again.</p>
+                <h1 id="onboarding-title">{t("Restoring saved session")}</h1>
+                <p>{t("The saved session is still on this device. Reconnect and try again.")}</p>
                 {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                 <div className="auth-actions">
-                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>Try again</button>
-                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>Sign in instead</button>
+                  <button className="mode-primary" type="button" disabled={authBusy} onClick={() => void restoreSavedSession(true)}>{t("Try again")}</button>
+                  <button className="mode-secondary" type="button" disabled={authBusy} onClick={() => void signInInstead()}>{t("Sign in instead")}</button>
+                </div>
+              </>
+            ) : localPrompt ? (
+              <>
+                <h1 id="onboarding-title">{t("Continue without Cloud?")}</h1>
+                <p>{t("Local profiles stay on this computer only. They do not sync across your devices. You can switch to Cloud later in Settings.")}</p>
+                {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                <div className="local-choice">
+                  <button className="mode-primary" type="button" disabled={modeBusy} onClick={() => { setModeErr(null); setLocalPrompt(false); }}>{t("Back to Cloud sign-in")}</button>
+                  <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? t("Switching…") : t("Continue locally")}</button>
                 </div>
               </>
             ) : (
               <>
-                <h1 id="onboarding-title">{authView === "signin" ? "Sign in to AliasMode Cloud" : "Create your Cloud account"}</h1>
-                <p>Verified accounts can synchronize portable profiles across authorized devices.</p>
+                <h1 id="onboarding-title">{authView === "signin" ? t("Sign in to AliasMode Cloud") : t("Create your Cloud account")}</h1>
+                <p>{t("Sync your profiles across your computers and work with your team.")}</p>
                 <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
-                  <label>Email<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
+                  <label>{t("Email")}<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} /></label>
                   <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
                   {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                   {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
                   {confirmationEmail && (
                     <button type="button" className="mode-secondary" disabled={authBusy} onClick={() => void resendConfirmation()}>
-                      Resend confirmation
+                      {t("Resend confirmation")}
                     </button>
                   )}
-                  <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? "Working…" : authView === "signin" ? "Sign in" : "Create account"}</button>
+                  <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? t("Working…") : authView === "signin" ? t("Sign in") : t("Create account")}</button>
                 </form>
                 <div className="auth-actions">
                   <button type="button" onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView(authView === "signin" ? "signup" : "signin"); }}>
-                    {authView === "signin" ? "Create an account" : "Back to sign in"}
+                    {authView === "signin" ? t("Create an account") : t("Back to sign in")}
                   </button>
-                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>Forgot password?</button>}
+                  {authView === "signin" && <button type="button" disabled={authBusy} onClick={() => void forgotPassword()}>{t("Forgot password?")}</button>}
                 </div>
                 {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
+                <button type="button" className="continue-local" disabled={authBusy} onClick={() => { setModeErr(null); setLocalPrompt(true); }}>{t("Continue locally instead")}</button>
               </>
             )
           ) : appMode ? (
             <>
-              <h1 id="onboarding-title">How do you want to use AliasMode?</h1>
-              <p>Choose where browser profiles live for this installation.</p>
+              <h1 id="onboarding-title">{t("How do you want to use AliasMode?")}</h1>
+              <p>{t("Choose where browser profiles live for this installation.")}</p>
               <div className="mode-options">
                 <button className="mode-option primary" type="button" disabled={modeBusy} onClick={() => chooseMode("cloud")}>
                   <span className="badge"><Icon name="cloud" className="lg" /></span>
                   <strong>AliasMode Cloud</strong>
-                  <span>Sync profiles across authorized devices and work with your team.</span>
+                  <span>{t("Sync your profiles across your computers and work with your team.")}</span>
                 </button>
                 <button className="mode-option" type="button" disabled={modeBusy} onClick={() => chooseMode("local")}>
                   <span className="badge"><Icon name="laptop" className="lg" /></span>
                   <strong>AliasMode Local</strong>
-                  <span>No account. Profile data stays on this computer and analytics is off.</span>
+                  <span>{t("No account. Profile data stays on this computer and analytics is off.")}</span>
                 </button>
               </div>
               {modeErr && <div className="mode-error" role="alert">{modeErr}</div>}
             </>
           ) : (
             <>
-              <h1 id="onboarding-title">Starting AliasMode</h1>
-              <p>{connErr ?? "Loading your configuration…"}</p>
-              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>Try again</button>}
+              <h1 id="onboarding-title">{t("Starting AliasMode")}</h1>
+              <p>{connErr ?? t("Loading your configuration…")}</p>
+              {connErr && <button className="mode-primary" type="button" onClick={() => window.location.reload()}>{t("Try again")}</button>}
             </>
           )}
           </section>
@@ -3586,6 +3667,7 @@ function App() {
             />
             {q && <button type="button" className="clear" aria-label={t("Clear search")} onClick={() => setQ("")}><Icon name="close" className="sm" /></button>}
           </div>
+          {runtimeDownloads.length > 0 && <RuntimeDownloadProgressView downloads={runtimeDownloads} />}
         </div>
 
         {showImportOffer && profilesWithoutProxy > 0 && (
@@ -3837,7 +3919,7 @@ function App() {
                               disabled={busy[p.id]}
                               onClick={() => act(p.id, openProfile)}
                             >
-                              <Icon name="play" className="sm" />{t("Open")}
+                              <Icon name="play" className="sm" />{openLabel(p)}
                             </button>
                           </>
                         ) : (
@@ -3848,7 +3930,7 @@ function App() {
                             disabled={busy[p.id]}
                             onClick={() => act(p.id, openProfile)}
                           >
-                            <Icon name="play" className="sm" />{t("Open")}
+                            <Icon name="play" className="sm" />{openLabel(p)}
                           </button>
                         )}
                       </span>
@@ -4477,7 +4559,7 @@ function App() {
         <div className="modal-backdrop">
           <div className="modal" role="dialog" aria-modal="true" aria-labelledby="create-profile-title" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head" id="create-profile-title">
-              <Icon name="plus" />New profile
+              <Icon name="plus" />{t("New profile")}
               <button type="button" className="modal-close" aria-label={t("Close")} onClick={closeCreate}><Icon name="close" className="sm" /></button>
             </div>
             <div className="modal-body">
@@ -4510,61 +4592,6 @@ function App() {
                   <PlatformPicker value={form.platform} onChange={(v) => setF("platform", v)} />
                 </label>
               </div>
-              <div className="proxy-paste-row">
-                <label className="fld grow">
-                  <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    value={proxyPaste}
-                    placeholder={t("Paste here — credentials stay hidden")}
-                    onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
-                    onPaste={(e) => {
-                      const pasted = e.clipboardData.getData("text");
-                      if (pasted) { e.preventDefault(); applyProxyPaste(pasted); }
-                    }}
-                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
-                  />
-                </label>
-                <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
-              </div>
-              {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
-              <div className="fld-row">
-                <label className="fld type">
-                  <span>{t("Proxy type")}</span>
-                  <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
-                    <option value="http">http</option>
-                    <option value="https">https</option>
-                    <option value="socks5">socks5</option>
-                  </select>
-                </label>
-                <label className="fld grow">
-                  <span>{t("Host")}</span>
-                  <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
-                </label>
-                <label className="fld port">
-                  <span>{t("Port")}</span>
-                  <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
-                </label>
-              </div>
-              <div className="fld-row">
-                <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
-                <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
-              </div>
-              <div className="proxy-check-actions">
-                <button
-                  type="button"
-                  className="btn proxy-check-btn"
-                  disabled={createProxyCheck.checking || !createHasProxy}
-                  aria-busy={createProxyCheck.checking}
-                  onClick={checkCreateProxy}
-                >
-                  <Icon name="activity" className="sm" />
-                  {createProxyCheck.checking ? "Checking…" : t("Check proxy")}
-                </button>
-              </div>
-              <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
-              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} ownChromium={ownChromium} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
               <div className="browser-options" role="radiogroup" aria-label={t("Browser")}>
                 {([
                   {
@@ -4605,6 +4632,69 @@ function App() {
                       : t("Beta. Downloads once (about 190 MB) on each computer that opens it.")}</small>
                 </label>
               )}
+              <details className="fingerprint-settings" open={createProxyOpen} onToggle={(event) => setCreateProxyOpen(event.currentTarget.open)}>
+                <summary>
+                  <span>{t("Proxy")}</span>
+                  <span className="automatic-badge">{createHasProxy ? `${form.host}${form.port ? `:${form.port}` : ""}` : t("Optional")}</span>
+                </summary>
+                <div className="proxy-settings">
+                  <div className="proxy-paste-row">
+                    <label className="fld grow">
+                      <span>{t("Paste proxy to autofill")} <span className="muted">{t("(select type first · host:port:username:password)")}</span></span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={proxyPaste}
+                        placeholder={t("Paste here — credentials stay hidden")}
+                        onChange={(e) => { setProxyPaste(e.target.value); setProxyPasteOk(null); }}
+                        onPaste={(e) => {
+                          const pasted = e.clipboardData.getData("text");
+                          if (pasted) { e.preventDefault(); applyProxyPaste(pasted); }
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); applyProxyPaste(proxyPaste); } }}
+                      />
+                    </label>
+                    <button type="button" className="btn accent" disabled={!proxyPaste.trim()} onClick={() => applyProxyPaste(proxyPaste)}>{t("Autofill")}</button>
+                  </div>
+                  {proxyPasteOk && <div className="proxy-paste-ok"><Icon name="check" className="sm" />{proxyPasteOk}</div>}
+                  <div className="fld-row">
+                    <label className="fld type">
+                      <span>{t("Proxy type")}</span>
+                      <select value={form.proxyType} onChange={(e) => setF("proxyType", e.target.value)}>
+                        <option value="http">http</option>
+                        <option value="https">https</option>
+                        <option value="socks5">socks5</option>
+                      </select>
+                    </label>
+                    <label className="fld grow">
+                      <span>{t("Host")}</span>
+                      <input value={form.host} placeholder={t("blank = no proxy")} onChange={(e) => setF("host", e.target.value)} />
+                    </label>
+                    <label className="fld port">
+                      <span>{t("Port")}</span>
+                      <input value={form.port} inputMode="numeric" placeholder="8080" onChange={(e) => setF("port", e.target.value)} />
+                    </label>
+                  </div>
+                  <div className="fld-row">
+                    <label className="fld grow"><span>{t("Proxy user")}</span><input value={form.user} onChange={(e) => setF("user", e.target.value)} /></label>
+                    <label className="fld grow"><span>{t("Proxy pass")}</span><input type="password" value={form.pass} onChange={(e) => setF("pass", e.target.value)} /></label>
+                  </div>
+                  <div className="proxy-check-actions">
+                    <button
+                      type="button"
+                      className="btn proxy-check-btn"
+                      disabled={createProxyCheck.checking || !createHasProxy}
+                      aria-busy={createProxyCheck.checking}
+                      onClick={checkCreateProxy}
+                    >
+                      <Icon name="activity" className="sm" />
+                      {createProxyCheck.checking ? t("Checking…") : t("Check proxy")}
+                    </button>
+                  </div>
+                </div>
+              </details>
+              <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
+              <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} ownChromium={ownChromium} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
             </div>
             <div className="modal-foot">
               <button className="btn ghost" onClick={closeCreate}>{t("Cancel")}</button>

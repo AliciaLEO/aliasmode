@@ -13,6 +13,9 @@ const root = resolve(rootArg);
 const agentNonce = "a".repeat(64);
 const desktopNonce = "b".repeat(64);
 await mkdir(root, { recursive: false });
+// A desktop first run defaults to Cloud; this smoke drives Local profiles.
+await mkdir(join(root, "state"));
+await writeFile(join(root, "state", "config.json"), '{"version":1,"mode":"local","localAnalytics":false}\n');
 
 async function freeLoopbackPort() {
   const server = createServer();

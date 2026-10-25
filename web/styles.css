@@ -1002,6 +1002,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .update-progress { width: min(360px, 100%); display: flex; flex-direction: column; gap: 3px; color: var(--muted); font-size: 12px; }
 .update-progress progress { width: 100%; height: 8px; accent-color: var(--accent); }
 .update-settings .update-progress { width: 100%; }
+.filterbar .update-progress { width: 220px; margin-left: auto; }
 
 /* Proxy checker and conditional NobleProxy offer in both profile dialogs. */
 .proxy-check-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
@@ -1257,6 +1258,7 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 }
 .fingerprint-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px 13px; border-top: 1px solid var(--line); }
 .fingerprint-grid .hint { grid-column: 1 / -1; }
+.proxy-settings { display: flex; flex-direction: column; gap: 14px; padding: 14px 13px; border-top: 1px solid var(--line); }
 
 /* Segmented control: a small either/or choice that shows its options at rest,
    unlike a select. Used to pick one import source instead of stacking both. */
@@ -1488,6 +1490,10 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .auth-actions a:hover { text-decoration: underline; }
 .auth-actions button { padding: 0; color: var(--accent); background: none; border: 0; font-size: 12.5px; }
 .auth-actions button:hover:not(:disabled) { text-decoration: underline; }
+.local-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
+.onboarding-card .local-choice .mode-primary { margin-top: 0; }
+.continue-local { display: block; margin-top: 26px; padding: 0; color: var(--faint); background: none; border: 0; font-size: 12px; cursor: pointer; }
+.continue-local:hover:not(:disabled) { color: var(--muted); text-decoration: underline; }
 .mode-confirm { max-width: 460px; }
 .mode-confirm .modal-body p { margin: 0; color: var(--ink-soft); line-height: 1.65; }
 

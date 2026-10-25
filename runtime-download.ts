@@ -99,3 +99,40 @@ export async function downloadResumable(
   }
   throw lastError;
 }
+
+/** A browser runtime download in progress, as the dashboard shows it. */
+export interface RuntimeDownload {
+  /** The profiles that wait for it: "aliasmode" (Chromium 155), "cloakbrowser", or "firefox" (a font pack). */
+  runtime: "aliasmode" | "cloakbrowser" | "firefox";
+  receivedBytes: number;
+  totalBytes: number;
+}
+
+const activeDownloads = new Map<string, Omit<RuntimeDownload, "receivedBytes">>();
+
+/**
+ * Report the download into `partial` as in progress until `download` settles. Its
+ * progress is the size of `partial`, so this only observes the download.
+ */
+export async function trackRuntimeDownload<T>(
+  runtime: RuntimeDownload["runtime"],
+  partial: string,
+  totalBytes: number,
+  download: () => Promise<T>,
+): Promise<T> {
+  activeDownloads.set(partial, { runtime, totalBytes });
+  try {
+    return await download();
+  } finally {
+    activeDownloads.delete(partial);
+  }
+}
+
+/** The browser runtime downloads in progress now. */
+export function runtimeDownloads(): RuntimeDownload[] {
+  return [...activeDownloads].map(([partial, { runtime, totalBytes }]) => ({
+    runtime,
+    receivedBytes: Math.min(statSync(partial, { throwIfNoEntry: false })?.size ?? 0, totalBytes),
+    totalBytes,
+  }));
+}

@@ -13,6 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { AppConfigStore } from "./app-config.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { readHostProcessSnapshot, type HostProcessSnapshot } from "./launcher.ts";
 import { isSafeProfileId } from "./profile-id.ts";
@@ -69,13 +70,12 @@ function hasContent(path: string): boolean {
 function validateDestination(destination: StatePaths): void {
   if (!existsSync(destination.root)) return;
   if (existsSync(destination.config)) {
-    let config: { mode?: unknown };
+    // A Cloud-mode install with no Cloud state (the checks below) imports as Local.
     try {
-      config = JSON.parse(readFileSync(destination.config, "utf8"));
+      JSON.parse(readFileSync(destination.config, "utf8"));
     } catch {
       throw new Error("AliasMode destination config is unreadable");
     }
-    if (config.mode === "cloud") throw new Error("AliasMode Cloud destinations cannot import Cloakpit data");
   }
   if (databaseHasRows(destination.database) || hasContent(destination.profiles) || hasContent(destination.extensions)) {
     throw new Error("AliasMode destination already contains local profile data");
@@ -365,6 +365,9 @@ export async function migrateLegacyState(
     const sourceExtensions = join(source, "extensions");
     if (existsSync(sourceExtensions)) assertNoLinks(sourceExtensions);
     if (existsSync(destination.root)) copyPreservedDestination(destination, staging);
+    // Imported profiles are Local: a desktop first run starts on Cloud sign-in, which would hide them.
+    const stagedConfig = new AppConfigStore(staging.config);
+    if (stagedConfig.read().mode !== "local") stagedConfig.setMode("local");
     const stagedDb = new Database(staging.database);
     try {
       integrityCheck(stagedDb);

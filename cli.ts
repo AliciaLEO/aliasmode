@@ -145,6 +145,16 @@ export function selectedCloudUrl(
   return nonblank(env.ALIASMODE_CLOUD_URL) ?? config.cloudUrl ?? OFFICIAL_CLOUD_URL;
 }
 
+/** A person opening the desktop app starts on Cloud sign-in, so signing in
+ *  needs no restart. Background (agent) launches stay Local. */
+export function desktopFirstRunMode(
+  desktop: boolean,
+  env: Record<string, string | undefined> = process.env,
+): "local" | "cloud" | null {
+  if (!desktop) return null;
+  return env.ALIASMODE_BACKGROUND === "1" ? "local" : "cloud";
+}
+
 export function cloudRuntimeConfiguration(
   config: AppConfig,
   env: Record<string, string | undefined> = process.env,
@@ -2596,12 +2606,9 @@ async function main() {
   }
   const appConfig = new AppConfigStore(paths.config);
   let savedMode = appConfig.read();
-  if (
-    desktop &&
-    process.env.ALIASMODE_BACKGROUND === "1" &&
-    savedMode.mode === "unconfigured"
-  ) {
-    savedMode = appConfig.setMode("local");
+  const firstRunMode = savedMode.mode === "unconfigured" ? desktopFirstRunMode(desktop) : null;
+  if (firstRunMode) {
+    savedMode = appConfig.setMode(firstRunMode, firstRunMode === "cloud" ? selectedCloudUrl(savedMode) : undefined);
   }
   const defaultCloudUrl = selectedCloudUrl(savedMode);
   const cloudConfig = cloudRuntimeConfiguration(savedMode);

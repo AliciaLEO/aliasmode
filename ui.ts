@@ -189,8 +189,8 @@ async function readLatestDiagnose(reportsRoot = "reports"): Promise<unknown | nu
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
- * Below 2 GB free Chromium gives sites no new storage, below 1 GB it evicts their data, and
- * Firefox's site-data limit is half the free space. 5 GB warns before either starts.
+ * Below 2 GB free Chromium gives sites no new storage and below 1 GB it evicts their data;
+ * Firefox evicts the least recently used sites when the disk runs low. 5 GB warns before that.
  */
 export const LOW_DISK_SPACE_BYTES = 5 * 1024 ** 3;
 

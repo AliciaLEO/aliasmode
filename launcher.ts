@@ -1885,8 +1885,9 @@ export class Launcher {
     if (existingUserDataDir) await this.reapForeignProfileDirHolders(profileId, userDataDir);
 
     // Windows Chromium deletes every cookie it cannot decrypt and writes a new key. A Local
-    // profile has no other copy of them, so keep a copy and stop. Cloud opens restore their copy.
-    if (this.hostPlatform === "win32" && opts.restoreLocalSession !== false
+    // profile has no other copy of them, so keep a copy and stop. Cloud opens and a pending session
+    // bundle restore their own copy.
+    if (this.hostPlatform === "win32" && opts.restoreLocalSession !== false && !pendingSession
       && existsSync(join(userDataDir, "Default", "Network", "Cookies")) && !await this.nativeSessionReadable(profileId)) {
       const backup = backupUnreadableCookies(userDataDir);
       this.log(`start ${profileId} stopped: this Windows account cannot read its cookie key; copy saved in ${backup}`);
@@ -5185,7 +5186,13 @@ async function writeIdentityBookmark(userDataDir: string, name: string, url: str
 
 /** Copy the cookie key (Local State) and Default/Network/Cookies* into a dated folder in the profile. */
 function backupUnreadableCookies(userDataDir: string, now = new Date()): string {
-  const backup = join(userDataDir, "cookie-backups", now.toISOString().replace(/[:.]/g, "-"));
+  const root = join(userDataDir, "cookie-backups");
+  const key = localStateDpapiKey(join(userDataDir, "Local State"));
+  // One copy per cookie key, so repeated opens do not fill the disk with the same cookies.
+  const existing = (existsSync(root) ? readdirSync(root) : [])
+    .find((name) => localStateDpapiKey(join(root, name, "Local State")) === key);
+  if (existing) return join(root, existing);
+  const backup = join(root, now.toISOString().replace(/[:.]/g, "-"));
   const network = join(userDataDir, "Default", "Network");
   mkdirSync(join(backup, "Default", "Network"), { recursive: true });
   copyFileSync(join(userDataDir, "Local State"), join(backup, "Local State"));

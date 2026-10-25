@@ -939,6 +939,9 @@ test("Windows Local keeps a copy of unreadable cookies and does not open the pro
       expect(readFileSync(join(backup, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
       // The originals stay where they were.
       expect(readFileSync(join(dir, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
+      // Another try keeps the one copy of these cookies.
+      await expect(launcher.start("k1d0cd11")).rejects.toBeInstanceOf(BrowserLaunchError);
+      expect(readdirSync(join(dir, "cookie-backups"))).toEqual([dated!]);
     }
     store.close();
   }
@@ -963,22 +966,30 @@ test("Cloud opens leave unreadable Windows cookies to the Cloud copy", async () 
   store.close();
 });
 
-test("a Local Windows profile with no saved cookies opens without the cookie key check", async () => {
-  const store = seeded();
-  const spawnedArgs: string[][] = [];
-  let checks = 0;
-  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
-    hostPlatform: "win32",
-    dpapiKeysReadable: async () => { checks++; return [false]; },
-  });
-  const dir = launcher.userDataDir("k1d0cd11");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
-  await launcher.start("k1d0cd11");
-  expect(spawnedArgs.length).toBe(1);
-  expect(checks).toBe(0);
-  expect(await launcher.stop("k1d0cd11")).toBe(true);
-  store.close();
+test("a Local Windows profile with no saved cookies or with a pending session opens without the cookie key check", async () => {
+  for (const pending of [false, true]) {
+    const store = seeded();
+    const spawnedArgs: string[][] = [];
+    let checks = 0;
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform: "win32",
+      dpapiKeysReadable: async () => { checks++; return [false]; },
+      applySession: async () => {},
+    });
+    const dir = launcher.userDataDir("k1d0cd11");
+    mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+    writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
+    if (pending) {
+      // The pending bundle replaces the cookies, so losing the unreadable ones does no harm.
+      writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+      store.upsertProfiles([store.getProfile("k1d0cd11")!], new Map([["k1d0cd11", JSON.stringify({ cookies: [], origins: [], tabs: [] })]]));
+    }
+    await launcher.start("k1d0cd11");
+    expect(spawnedArgs.length).toBe(1);
+    expect(checks).toBe(0);
+    expect(await launcher.stop("k1d0cd11")).toBe(true);
+    store.close();
+  }
 });
 
 test("cloud session authority marker is durable and invalidatable", () => {

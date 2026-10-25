@@ -656,6 +656,42 @@ test("a Chromium capture keeps site tabs and leaves out the search engine's new 
   });
 });
 
+test("a Chromium capture reads a site tab's storage in an isolated world, not in the page", async () => {
+  const calls: string[] = [];
+  const page = {
+    url: () => "https://site.example/feed",
+    async evaluate() { throw new Error("capture must not run code in the page's own world"); },
+  };
+  const context = {
+    pages: () => [page],
+    async cookies() { return []; },
+    async newCDPSession() {
+      return {
+        async send(method: string, params: any) {
+          calls.push(method);
+          if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+          if (method === "Page.createIsolatedWorld") {
+            expect(params).toEqual({ frameId: "main", worldName: "aliasmode-session-capture" });
+            return { executionContextId: 7 };
+          }
+          if (method === "Runtime.evaluate") {
+            expect(params.contextId).toBe(7);
+            return { result: { value: { origin: "https://site.example", localStorage: [{ name: "k", value: "v" }] } } };
+          }
+          return {};
+        },
+        async detach() { calls.push("detach"); },
+      };
+    },
+  };
+  expect(JSON.parse(await captureSession({ contexts: () => [context] }, {}))).toEqual({
+    cookies: [],
+    origins: [{ origin: "https://site.example", localStorage: [{ name: "k", value: "v" }] }],
+    tabs: ["https://site.example/feed"],
+  });
+  expect(calls).toContain("Runtime.evaluate");
+});
+
 bunAsNodeTest("worker imports all sites without replacing existing cookies and restores complete Cloud jars", async () => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-worker-cookie-import-"));
   const existing = { name: "session", value: "rotated", domain: "example.org", path: "/", secure: true };

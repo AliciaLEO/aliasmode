@@ -132,7 +132,7 @@ type CloudBrowserLauncher = Pick<
   Launcher,
   "start" | "stop" | "active" | "hasPageTargets" | "verifyRunningIdentity" | "reconcileOrphan" |
   "browserStorageWatchPaths" | "failedStartGeneration" |
-  "matchesCloudSession" | "recordCloudSession"
+  "matchesCloudSession" | "recordCloudSession" | "navigate"
 > & Partial<Pick<Launcher, "closedFirefoxTabs" | "prefetchFirefoxFontPacks" | "nativeSessionReadable">>;
 
 export interface CloudBrowserOptions {
@@ -795,8 +795,15 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       try {
         // Portable seeding blanks origin pages and replaces tabs. Native restore
         // already has newer local state and preserves the full Chromium layout.
-        if (!restoreNativeSession || !launched.nativeSessionRestored) {
+        const nativeState = restoreNativeSession && (launched.nativeSessionRestored || launched.nativeSessionLoaded);
+        this.log(`${profileId}: Cloud open restores ${nativeState ? "this device's session" : "the Cloud copy"}`);
+        if (!nativeState) {
           await this.options.applySession(verifiedLaunch.ws, sessionBundle, urls);
+        } else if (!launched.nativeSessionRestored && savedTabs.length + urls.length > 0) {
+          // Chromium loaded this device's last session but showed no page. Its cookies are at least
+          // as new as the Cloud copy, so open the saved tabs without replacing them.
+          await this.options.launcher.navigate(verifiedLaunch.ws, [...savedTabs, ...urls], true)
+            .catch(() => { throw new SessionRestoreError("navigation", "failed"); });
         }
       } catch (error) {
         if (error instanceof SessionRestoreError && error.operation === "navigation") {

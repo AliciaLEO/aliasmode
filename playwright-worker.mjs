@@ -327,6 +327,41 @@ function capturedWebOriginStorage(origin, storage) {
   return normalizeWebOriginStorage(origin, storage);
 }
 
+function readOwnLocalStorage(expectedOrigin) {
+  const currentOrigin = globalThis.location.origin;
+  if (currentOrigin !== expectedOrigin) return { origin: currentOrigin };
+  return {
+    origin: currentOrigin,
+    localStorage: Object.keys(globalThis.localStorage).map((name) => ({ name, value: globalThis.localStorage.getItem(name) })),
+  };
+}
+
+// A Chromium page reads its storage in an isolated world, so the site's own scripts never see
+// automation code run in their page, as they would with page.evaluate during every checkpoint.
+async function readLiveLocalStorage(context, page, origin, isFirefox) {
+  if (!isFirefox && typeof context.newCDPSession === "function") {
+    let cdp;
+    try {
+      cdp = await context.newCDPSession(page);
+      const { frameTree } = await cdp.send("Page.getFrameTree");
+      const { executionContextId } = await cdp.send("Page.createIsolatedWorld", {
+        frameId: frameTree.frame.id,
+        worldName: "aliasmode-session-capture",
+      });
+      const { result, exceptionDetails } = await cdp.send("Runtime.evaluate", {
+        expression: `(${readOwnLocalStorage})(${JSON.stringify(origin)})`,
+        contextId: executionContextId,
+        returnByValue: true,
+      });
+      if (!exceptionDetails && result?.value) return result.value;
+    } catch {
+    } finally {
+      await cdp?.detach().catch(() => {});
+    }
+  }
+  return page.evaluate(readOwnLocalStorage, origin);
+}
+
 async function captureLiveOrigin(context, origin, isFirefox = false) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const page = context.pages().find((candidate) => {
@@ -340,14 +375,7 @@ async function captureLiveOrigin(context, origin, isFirefox = false) {
     });
     if (!page) return null;
     try {
-      const live = await page.evaluate((expectedOrigin) => {
-        const currentOrigin = globalThis.location.origin;
-        if (currentOrigin !== expectedOrigin) return { origin: currentOrigin };
-        return {
-          origin: currentOrigin,
-          localStorage: Object.keys(globalThis.localStorage).map((name) => ({ name, value: globalThis.localStorage.getItem(name) })),
-        };
-      }, origin);
+      const live = await readLiveLocalStorage(context, page, origin, isFirefox);
       if (live?.origin !== origin) continue;
       let storage = { localStorage: live.localStorage };
       if (origin === TELEGRAM_ORIGIN) {

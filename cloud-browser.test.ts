@@ -74,6 +74,7 @@ function setup(options: {
   verifyWebSockets?: string[];
   expectedHeadless?: boolean;
   nativeSessionAvailable?: boolean;
+  nativeTabsRestored?: boolean;
   platform?: string;
   proxy?: PortableProfileV1["profile"]["proxy"];
   session?: PortableProfileV1["session"];
@@ -90,6 +91,7 @@ function setup(options: {
   const events: string[] = [];
   const logs: string[] = [];
   const navigatedUrls: string[][] = [];
+  const nativeNavigations: Array<{ urls: string[]; replacePages: boolean }> = [];
   const navigateEndpoints: string[] = [];
   const restoreEndpoints: string[] = [];
   const captureSeeds: any[] = [];
@@ -247,8 +249,14 @@ function setup(options: {
       }
       return {
         ws: "ws://browser", port: 9222,
-        nativeSessionRestored: !!startOptions.restoreLastSession && !!options.nativeSessionAvailable,
+        nativeSessionRestored: !!startOptions.restoreLastSession && !!options.nativeSessionAvailable &&
+          options.nativeTabsRestored !== false,
+        nativeSessionLoaded: !!startOptions.restoreLastSession && !!options.nativeSessionAvailable,
       };
+    },
+    async navigate(_ws: string, urls: string[], replacePages: boolean) {
+      events.push("navigate");
+      nativeNavigations.push({ urls: [...urls], replacePages });
     },
     async stop(profileId: string) {
       events.push("stop");
@@ -317,6 +325,7 @@ function setup(options: {
     imports,
     logs,
     navigatedUrls,
+    nativeNavigations,
     navigateEndpoints,
     restoreEndpoints,
     captureSeeds,
@@ -1007,6 +1016,22 @@ for (const reason of ["missing files", "newer Cloud session", "explicit URL"] as
     state.store.close();
   });
 }
+
+test("Cloud native restore keeps this device's cookies when Chromium shows no restored page", async () => {
+  const state = setup({ nativeSessionAvailable: true, nativeTabsRestored: false });
+  const options = (state.coordinator as any).options;
+  const original = payload();
+  options.launcher.recordCloudSession("profile1", sessionBundleSignature(JSON.stringify(original.session)));
+  let restored: unknown;
+  options.applySession = async (_endpoint: string, bundle: string) => { restored = JSON.parse(bundle); };
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  expect(state.startOptionsSeen[0]).toMatchObject({ restoreLastSession: true, resetStorage: false });
+  expect(restored).toBeUndefined();
+  expect(state.nativeNavigations).toEqual([{ urls: ["https://x.com/home"], replacePages: true }]);
+  await state.coordinator.close("profile1");
+  state.queue.close();
+  state.store.close();
+});
 
 for (const readable of [true, false]) {
   test(`Cloud native restore ${readable ? "reuses a readable" : "skips another Windows account's"} cookie key`, async () => {

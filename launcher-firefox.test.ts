@@ -557,6 +557,20 @@ test("Firefox restores session cookies from the newest session file when native 
   }
 });
 
+test("Firefox does not claim its session loaded when its session cookies could not be added", async () => {
+  const f = fixture();
+  const root = f.launcher.userDataDir(f.profile.id);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4({
+    windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }],
+    cookies: [{ host: "app.example", name: "sid", value: "lost", originAttributes: {} }],
+  }));
+  const launcher = new Launcher({ ...f.options, ensureCookies: async () => { throw new Error("cookie rejected"); } });
+  // A Cloud open then writes its copy, which still has these cookies.
+  expect((await launcher.start(f.profile.id, [], { autoNavigate: false })).nativeSessionLoaded).toBeUndefined();
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+});
+
 test("Firefox leaves session cookies to Firefox or the Cloud copy when it does not turn native restore off", async () => {
   const cookies = [{ host: "app.example", name: "sid", value: "native", originAttributes: {} }];
   for (const options of [{}, { restoreLastSession: false }]) {

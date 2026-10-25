@@ -179,7 +179,7 @@ function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
  * site that uses them. Container, private and partitioned cookies are left out.
  */
 function firefoxSessionCookies(userDataDir: string): CookieRecord[] {
-  const files = ["sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/recovery.baklz4"]
+  const files = FIREFOX_SESSION_FILES
     .flatMap((file) => { try { return [{ path: join(userDataDir, file), mtime: statSync(join(userDataDir, file)).mtimeMs }]; } catch { return []; } })
     .sort((a, b) => b.mtime - a.mtime);
   for (const { path } of files) {
@@ -2385,12 +2385,14 @@ export class Launcher {
     mkdirSync(userDataDir, { recursive: true });
     const nativeRestoreRequested = !pendingSession && opts.restoreLastSession !== false;
     const closedTabs = nativeRestoreRequested ? this.closedFirefoxTabs(profileId) : undefined;
-    // Firefox opens its own last session (cookies included) whether or not it reopens its pages.
-    const nativeSessionLoaded = nativeRestoreRequested && [
+    const sessionFileExists = nativeRestoreRequested && [
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
     ].some((file) => existsSync(join(userDataDir, file)));
-    const restoreLastSession = nativeSessionLoaded && !(this.hostPlatform === "darwin" && closedTabs !== undefined) &&
-      firefoxSessionRestoresPage(userDataDir) !== false;
+    const sessionRestoresPage = sessionFileExists ? firefoxSessionRestoresPage(userDataDir) : null;
+    const restoreLastSession = sessionFileExists && !(this.hostPlatform === "darwin" && closedTabs !== undefined) &&
+      sessionRestoresPage !== false;
+    // Firefox opens its own readable last session (cookies included) whether or not it reopens its pages.
+    let nativeSessionLoaded = sessionFileExists && sessionRestoresPage !== null;
     // Read before spawn: Firefox replaces its session files soon after it starts.
     const sessionCookies = nativeSessionLoaded && !restoreLastSession ? firefoxSessionCookies(userDataDir) : [];
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
@@ -2475,6 +2477,8 @@ export class Launcher {
       // Before any saved page loads, so the pages open logged in.
       if (sessionCookies.length) {
         await this.ensureCookiesFn(launch.ws, sessionCookies).catch(() => {
+          // A Cloud open then writes its copy instead of keeping a session without these cookies.
+          nativeSessionLoaded = false;
           this.log(`${profileId}: session cookies from the last Firefox session could not be restored`);
         });
       }

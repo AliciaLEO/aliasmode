@@ -53,6 +53,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     store, dataRoot: root, chromiumRuntimeRoot: join(root, "runtimes"), firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
     enforceHostCompatibility: true, hostPlatform, hostArch, captureFingerprint: async () => null,
     navigate: async (_endpoint, urls) => { navigated.push([...urls]); }, ensureCookies: async () => ({ injected: false }),
+    addNativeSessionCookies: async () => ({ injected: false }),
     labelWindow: async () => { labeled++; },
     applySession: async () => {}, log: () => {},
     ensureFirefoxFontPack: async (packRoot, pack) => {
@@ -546,7 +547,9 @@ test("Firefox restores session cookies from the newest session file when native 
     const steps: unknown[] = [];
     const launcher = new Launcher({
       ...f.options,
-      ensureCookies: async (_ws, added) => { steps.push(["cookies", added]); return { injected: true }; },
+      // Cloud mode turns ensureCookies off; the native session cookies still come back.
+      ensureCookies: async () => ({ injected: false }),
+      addNativeSessionCookies: async (_ws, added) => { steps.push(["cookies", added]); return { injected: true }; },
       navigate: async (_ws, urls) => { steps.push(["navigate", urls]); },
     });
     const opened = await launcher.start(f.profile.id);
@@ -565,7 +568,7 @@ test("Firefox does not claim its session loaded when its session cookies could n
     windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }],
     cookies: [{ host: "app.example", name: "sid", value: "lost", originAttributes: {} }],
   }));
-  const launcher = new Launcher({ ...f.options, ensureCookies: async () => { throw new Error("cookie rejected"); } });
+  const launcher = new Launcher({ ...f.options, addNativeSessionCookies: async () => { throw new Error("cookie rejected"); } });
   // A Cloud open then writes its copy, which still has these cookies.
   expect((await launcher.start(f.profile.id, [], { autoNavigate: false })).nativeSessionLoaded).toBeUndefined();
   expect(await launcher.stop(f.profile.id)).toBe(true);
@@ -581,7 +584,7 @@ test("Firefox leaves session cookies to Firefox or the Cloud copy when it does n
       windows: [{ tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }], cookies,
     }));
     const ensured: unknown[] = [];
-    const launcher = new Launcher({ ...f.options, ensureCookies: async (_ws, added) => { ensured.push(added); return { injected: true }; } });
+    const launcher = new Launcher({ ...f.options, addNativeSessionCookies: async (_ws, added) => { ensured.push(added); return { injected: true }; } });
     const opened = await launcher.start(f.profile.id, [], { autoNavigate: false, ...options });
     expect(ensured).toEqual([]);
     // Startup page 3 loads this device's session; the Cloud coordinator's request for its copy does not.

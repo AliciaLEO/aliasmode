@@ -501,6 +501,11 @@ export interface LauncherOptions {
   spawn?: SpawnFn;
   fetch?: FetchFn;
   ensureCookies?: CookieEnsurer;
+  /**
+   * Adds the session cookies of Firefox's own last session. Cloud mode turns ensureCookies off;
+   * this stays on, because this device's session is kept only when its cookies came back.
+   */
+  addNativeSessionCookies?: CookieEnsurer;
   /** Repair Chromium's missing/No Search default. Omitted in low-level tests. */
   ensureSearchProvider?: SearchProviderEnsurer;
   /** Navigate initial platform URLs after session seeding, never as argv URLs. */
@@ -837,6 +842,7 @@ export class Launcher {
   private spawnFn: SpawnFn;
   private fetchFn: FetchFn;
   private ensureCookiesFn: CookieEnsurer;
+  private addNativeSessionCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
   private lookupExitLocationFn?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
@@ -952,6 +958,7 @@ export class Launcher {
     // both callers treat a rejection as "not ready" (active→false, waitForCdp→keep polling).
     this.fetchFn = opts.fetch ?? ((url) => fetch(url, { signal: AbortSignal.timeout(800) }) as any);
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
+    this.addNativeSessionCookiesFn = opts.addNativeSessionCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
     this.lookupExitLocationFn = opts.lookupExitLocation ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitLocation(proxy));
@@ -2477,7 +2484,7 @@ export class Launcher {
       }
       // Before any saved page loads, so the pages open logged in.
       if (sessionCookies.length) {
-        await this.ensureCookiesFn(launch.ws, sessionCookies).catch(() => {
+        await this.addNativeSessionCookiesFn(launch.ws, sessionCookies).catch(() => {
           // A Cloud open then writes its copy instead of keeping a session without these cookies.
           nativeSessionLoaded = false;
           this.log(`${profileId}: session cookies from the last Firefox session could not be restored`);

@@ -1584,15 +1584,13 @@ test("Cloud roster is not held by a slow close of an open browser", async () => 
   state.store.close();
 });
 
-test("Cloud roster polls cannot accelerate the heartbeat no-page confirmation", async () => {
+test("Cloud roster polls cannot accelerate the closed-window confirmation", async () => {
   const state = setup({ hasPageTargets: false });
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   state.events.length = 0;
 
-  await state.coordinator.heartbeatOnce("profile1");
-  expect(state.events).toEqual(["heartbeat", "capture"]);
-  state.events.length = 0;
-
+  await state.coordinator.checkWindowsOnce("profile1");
+  await state.coordinator.checkWindowsOnce("profile1");
   const firstRoster = await rosterReconciled(state.coordinator);
   const secondRoster = await rosterReconciled(state.coordinator);
 
@@ -1601,8 +1599,7 @@ test("Cloud roster polls cannot accelerate the heartbeat no-page confirmation", 
   expect(secondRoster.profiles[0]?.running).toBe(true);
   expect(state.queue.getOpen("profile1", "account1")).not.toBeNull();
 
-  await state.coordinator.heartbeatOnce("profile1");
-  await Bun.sleep(0);
+  await state.coordinator.checkWindowsOnce("profile1");
   expect(state.store.getLaunch("profile1")).toBeNull();
   expect(state.queue.getOpen("profile1", "account1")).toBeNull();
   state.queue.close();
@@ -1807,43 +1804,83 @@ test("Cloud heartbeat records confirmed browser death", async () => {
   state.store.close();
 });
 
-test("Cloud heartbeat requires two consecutive no-page observations before closing", async () => {
+test("Cloud saves and stops a browser after its last window closed", async () => {
   const state = setup({ hasPageTargets: false });
+  const options = (state.coordinator as any).options;
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const fresh = { name: "auth_token", value: "fresh-login", domain: ".x.com", path: "/" };
+  const readSession = options.readSession;
+  options.readSession = async (...args: unknown[]) => {
+    await readSession(...args);
+    return JSON.stringify({ cookies: [fresh], origins: [] });
+  };
+  let closedSession: any;
+  const closeOpen = options.cloud.closeOpen;
+  options.cloud.closeOpen = async (registrationId: string, request: any) => {
+    closedSession = request.payload.session;
+    return closeOpen(registrationId, request);
+  };
   state.events.length = 0;
 
-  await state.coordinator.heartbeatOnce("profile1");
-
-  expect(state.events).toEqual(["heartbeat", "capture"]);
+  await state.coordinator.checkWindowsOnce("profile1");
+  await state.coordinator.checkWindowsOnce("profile1");
+  expect(state.events).toEqual([]);
   expect(state.store.getLaunch("profile1")).not.toBeNull();
-  expect(state.queue.getOpen("profile1", "account1")).not.toBeNull();
 
-  await state.coordinator.heartbeatOnce("profile1");
-  await Bun.sleep(0);
+  await state.coordinator.checkWindowsOnce("profile1");
 
-  expect(state.events.slice(-4)).toEqual(["reconcile", "capture", "stop", "cloud-close"]);
+  expect(state.events).toEqual(["reconcile", "capture", "stop", "cloud-close"]);
+  expect(closedSession.cookies).toEqual([fresh]);
   expect(state.store.getLaunch("profile1")).toBeNull();
   expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  expect(state.queue.list("account1")).toEqual([]);
   expect(state.coordinator.diagnostics().map((event) => event.type)).toEqual(
-    expect.arrayContaining(["no_page_observed", "no_page_close_requested"]),
+    expect.arrayContaining(["no_page_observed", "no_page_close_requested", "session_synced"]),
   );
   state.queue.close();
   state.store.close();
 });
 
-test("Cloud heartbeat resets no-page confirmation after a visible page returns", async () => {
+test("Cloud stops a windowless browser at once when its capture fails and keeps the last checkpoint", async () => {
+  const state = setup({ hasPageTargets: false });
+  const options = (state.coordinator as any).options;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const checkpoint = { name: "auth_token", value: "checkpoint", domain: ".x.com", path: "/" };
+  options.readSession = async () => JSON.stringify({ cookies: [checkpoint], origins: [] });
+  await state.coordinator.heartbeatOnce("profile1");
+  options.readSession = async () => {
+    state.events.push("capture");
+    throw new PlaywrightWorkerError("timeout", "capture timed out");
+  };
+  let closedSession: any;
+  const closeOpen = options.cloud.closeOpen;
+  options.cloud.closeOpen = async (registrationId: string, request: any) => {
+    closedSession = request.payload.session;
+    return closeOpen(registrationId, request);
+  };
+  state.events.length = 0;
+
+  for (let check = 0; check < 3; check++) await state.coordinator.checkWindowsOnce("profile1");
+
+  expect(state.events).toEqual(["reconcile", "capture", "stop", "cloud-close"]);
+  expect(closedSession.cookies).toEqual([checkpoint]);
+  expect(state.store.getLaunch("profile1")).toBeNull();
+  expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  expect(state.logs).toContain("profile1: Cloud capture failed; stopped the browser and kept the last saved copy");
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud keeps the browser of a script that closes every page and opens a new one", async () => {
   const state = setup();
-  const observations = [false, true, false];
+  const observations = [false, false, true, false, false, true];
   (state.coordinator as any).options.launcher.hasPageTargets = async () => observations.shift()!;
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   state.events.length = 0;
 
-  await state.coordinator.heartbeatOnce("profile1");
-  await state.coordinator.heartbeatOnce("profile1");
-  await state.coordinator.heartbeatOnce("profile1");
-  await Bun.sleep(0);
+  for (let check = 0; check < 6; check++) await state.coordinator.checkWindowsOnce("profile1");
 
-  expect(state.events.filter((event) => event === "cloud-close")).toEqual([]);
+  expect(state.events).toEqual([]);
   expect(state.store.getLaunch("profile1")).not.toBeNull();
   expect(state.queue.getOpen("profile1", "account1")).not.toBeNull();
   await state.coordinator.releaseAll(true);
@@ -1851,7 +1888,31 @@ test("Cloud heartbeat resets no-page confirmation after a visible page returns",
   state.store.close();
 });
 
-test("Cloud production timers arm only the heartbeat and watch browser storage", async () => {
+test("Cloud window checks leave the app's Close alone", async () => {
+  const state = setup({ hasPageTargets: false });
+  const options = (state.coordinator as any).options;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  const readSession = options.readSession;
+  let finishCapture: (() => void) | undefined;
+  options.readSession = async (...args: unknown[]) => {
+    await new Promise<void>((resolve) => { finishCapture = resolve; });
+    return readSession(...args);
+  };
+  state.events.length = 0;
+
+  const closing = state.coordinator.close("profile1");
+  while (!finishCapture) await Bun.sleep(1);
+  for (let check = 0; check < 3; check++) await state.coordinator.checkWindowsOnce("profile1");
+  finishCapture();
+
+  expect(await closing).toEqual({ closed: true, sync: "complete" });
+  expect(state.events).toEqual(["reconcile", "capture", "stop", "cloud-close"]);
+  expect(state.coordinator.diagnostics().map((event) => event.type)).not.toContain("no_page_close_requested");
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud production timers arm the heartbeat, the window check and the storage watch", async () => {
   const state = setup();
   const intervals: number[] = [];
   const watched: string[] = [];
@@ -1870,7 +1931,7 @@ test("Cloud production timers arm only the heartbeat and watch browser storage",
   const coordinator = new CloudBrowserCoordinator(options);
 
   expect((await coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
-  expect(intervals).toEqual([60_000]);
+  expect(intervals).toEqual([60_000, 1_000]);
   expect(watched).toEqual(["local-storage"]);
 
   await coordinator.close("profile1");
@@ -3583,27 +3644,27 @@ test("Cloud authentication replaces checkpoint monitors after an account switch"
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   const internals = state.coordinator as any;
   const firstMonitor = internals.dirtyMonitors.get("profile1");
-  const firstHeartbeat = internals.timers.get("profile1");
+  const firstTimers: number[] = internals.timers.get("profile1");
   expect(firstMonitor).toBeDefined();
-  expect(activeTimers.has(firstHeartbeat)).toBe(true);
+  expect([...activeTimers]).toEqual(firstTimers);
 
   accountId = "account2";
   await state.coordinator.secureAfterAuthentication();
 
   expect(internals.dirtyMonitors.has("profile1")).toBe(false);
   expect(internals.timers.has("profile1")).toBe(false);
-  expect(activeTimers.has(firstHeartbeat)).toBe(false);
+  expect(activeTimers.size).toBe(0);
   expect(watcherCloses).toBe(1);
 
   accountId = "account1";
   await state.coordinator.resumeAfterAuthentication();
   expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
   const secondMonitor = internals.dirtyMonitors.get("profile1");
-  const secondHeartbeat = internals.timers.get("profile1");
+  const secondTimers: number[] = internals.timers.get("profile1");
   expect(secondMonitor).toBeDefined();
   expect(secondMonitor).not.toBe(firstMonitor);
-  expect(secondHeartbeat).not.toBe(firstHeartbeat);
-  expect(activeTimers.has(secondHeartbeat)).toBe(true);
+  expect(secondTimers).toHaveLength(2);
+  expect(secondTimers.every((timer) => activeTimers.has(timer) && !firstTimers.includes(timer))).toBe(true);
 
   const capturesBeforeDirtySignal = state.events.filter((event) => event === "capture").length;
   dirtyCallbacks[0]!();

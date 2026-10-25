@@ -708,8 +708,9 @@ export async function captureSession(browser, payload, options = {}) {
   const context = contextOf(browser);
   const pages = context.pages();
   const shown = await shownPageUrls(context, pages, !!options.nativeStorage);
-  // No window is not an intentional empty tab list (a live blank page is).
-  const tabs = options.nativeStorage && pages.length === 0
+  // No window is not an intentional empty tab list (a live blank page is). A browser can outlive
+  // its last window: Firefox and Chromium both do on macOS.
+  const tabs = pages.length === 0
     ? undefined
     : pages.map((page) => canonicalUserPageUrl(shown.get(page))).filter(Boolean);
   const seed = payload.captureSeed;

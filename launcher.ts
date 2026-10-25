@@ -167,6 +167,35 @@ function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
   return null;
 }
 
+/**
+ * Session cookies (no expiry) from the newest session file. Firefox keeps them only there and
+ * restores them only with startup page 3, so a launch with page 0 opened logged out of every
+ * site that uses them. Container, private and partitioned cookies are left out.
+ */
+function firefoxSessionCookies(userDataDir: string): CookieRecord[] {
+  const files = ["sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/recovery.baklz4"]
+    .flatMap((file) => { try { return [{ path: join(userDataDir, file), mtime: statSync(join(userDataDir, file)).mtimeMs }]; } catch { return []; } })
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const { path } of files) {
+    let session: any;
+    try { session = JSON.parse(decodeMozLz4(readFileSync(path)).toString("utf8")); } catch { continue; }
+    const cookies: any[] = Array.isArray(session?.cookies) ? session.cookies : [];
+    return cookies.flatMap((cookie): CookieRecord[] => {
+      const origin = cookie?.originAttributes ?? {};
+      if (typeof cookie?.name !== "string" || !cookie.name || typeof cookie.value !== "string" || typeof cookie.host !== "string"
+        || origin.userContextId || origin.privateBrowsingId || origin.partitionKey || origin.firstPartyDomain) return [];
+      return [{
+        name: cookie.name, value: cookie.value, domain: cookie.host,
+        path: typeof cookie.path === "string" && cookie.path ? cookie.path : "/",
+        ...(cookie.secure ? { secure: true } : {}),
+        ...(cookie.httponly ? { httpOnly: true } : {}),
+        ...(cookie.sameSite === 1 ? { sameSite: "Lax" as const } : cookie.sameSite === 2 ? { sameSite: "Strict" as const } : {}),
+      }];
+    });
+  }
+  return [];
+}
+
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
   return (platform === "darwin" && (arch === "arm64" || arch === "x64"))
     || (platform === "linux" && arch === "x64")
@@ -2325,11 +2354,16 @@ export class Launcher {
       }
     }
     mkdirSync(userDataDir, { recursive: true });
-    const closedTabs = !pendingSession && opts.restoreLastSession !== false ? this.closedFirefoxTabs(profileId) : undefined;
-    const restoreLastSession = !pendingSession && opts.restoreLastSession !== false &&
-      !(this.hostPlatform === "darwin" && closedTabs !== undefined) && [
+    const nativeRestoreRequested = !pendingSession && opts.restoreLastSession !== false;
+    const closedTabs = nativeRestoreRequested ? this.closedFirefoxTabs(profileId) : undefined;
+    // Firefox opens its own last session (cookies included) whether or not it reopens its pages.
+    const nativeSessionLoaded = nativeRestoreRequested && [
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
-    ].some((file) => existsSync(join(userDataDir, file))) && firefoxSessionRestoresPage(userDataDir) !== false;
+    ].some((file) => existsSync(join(userDataDir, file)));
+    const restoreLastSession = nativeSessionLoaded && !(this.hostPlatform === "darwin" && closedTabs !== undefined) &&
+      firefoxSessionRestoresPage(userDataDir) !== false;
+    // Read before spawn: Firefox replaces its session files soon after it starts.
+    const sessionCookies = nativeSessionLoaded && !restoreLastSession ? firefoxSessionCookies(userDataDir) : [];
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
     // A macOS profile on an Intel Mac shows a card of that Mac's GPU vendor (firefoxLaunchConfig).
     const intelMac = this.hostPlatform === "darwin" && this.hostArch === "x64" && firefoxPersonaOs(profile) === "macos"
@@ -2409,6 +2443,12 @@ export class Launcher {
         profile = this.store.getProfile(profileId)!;
         snapshot = JSON.stringify(profile);
       }
+      // Before any saved page loads, so the pages open logged in.
+      if (sessionCookies.length) {
+        await this.ensureCookiesFn(launch.ws, sessionCookies).catch(() => {
+          this.log(`${profileId}: session cookies from the last Firefox session could not be restored`);
+        });
+      }
       if (!nativeSessionRestored && closedTabs !== undefined) {
         await this.navigate(launch.ws, closedTabs, true);
         nativeSessionRestored = closedTabs.length > 0;
@@ -2438,7 +2478,7 @@ export class Launcher {
       this.requireUnchangedProfile(profileId, snapshot, "Firefox launch commit");
       this.markIdentityCertified(profileId);
       if (pendingSession) this.store.markSessionRestored(profileId, pendingSession);
-      return { ws: launch.ws, port, nativeSessionRestored };
+      return { ws: launch.ws, port, nativeSessionRestored, ...(nativeSessionLoaded ? { nativeSessionLoaded: true } : {}) };
     } catch (error) {
       if (reserved) {
         const stopped = await this.doStop(profileId, launch).catch(() => false);

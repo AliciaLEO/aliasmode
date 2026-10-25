@@ -85,6 +85,15 @@ test("dashboard shows the durable result in its banner and Updates panel", () =>
   expect(styles).toContain('.update-last-result.error');
 });
 
+test("dashboard warns about low disk space without blocking anything", () => {
+  expect(app).toContain("const timer = setInterval(check, 60_000);");
+  expect(app).toContain("{diskSpace?.low && diskSpace.freeBytes !== null && !diskWarningDismissed && (");
+  expect(app).toContain('<div className="update-banner update-result warning" role="alert">');
+  expect(app).toContain('aria-label={t("Dismiss disk space warning")}');
+  // The warning never disables an action.
+  expect(app).not.toMatch(/disabled=\{[^}]*diskSpace/);
+});
+
 test("dashboard contains long roster labels inside the window", () => {
   expect(app).toContain('className="profile-table"');
   // The name sits in its own truncatable span; the fingerprint badge rides

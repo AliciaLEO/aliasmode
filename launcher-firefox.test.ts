@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { firefoxLaunchConfig, firefoxStartupPrefs, graphicsIdentity } from "./firefox-config.ts";
@@ -53,6 +53,7 @@ function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
     store, dataRoot: root, chromiumRuntimeRoot: join(root, "runtimes"), firefoxBinaryPath: "/fake/firefox.exe", unsafeDisableIdentityGates: true,
     enforceHostCompatibility: true, hostPlatform, hostArch, captureFingerprint: async () => null,
     navigate: async (_endpoint, urls) => { navigated.push([...urls]); }, ensureCookies: async () => ({ injected: false }),
+    addNativeSessionCookies: async () => ({ injected: false }),
     labelWindow: async () => { labeled++; },
     applySession: async () => {}, log: () => {},
     ensureFirefoxFontPack: async (packRoot, pack) => {
@@ -515,6 +516,80 @@ test("Firefox reopens without native restore when the saved session would show n
     expect(f.startupPreferences()).toBe('user_pref("browser.sessionstore.privacy_level", 0);\nuser_pref("browser.startup.page", 0);\n');
     expect(f.navigated).toEqual([["https://www.wikipedia.org/"]]);
     expect(await f.launcher.stop(f.profile.id)).toBe(true);
+  }
+});
+
+// Firefox keeps session cookies (no expiry) only in its session file and restores them only with startup page 3.
+test("Firefox restores session cookies from the newest session file when native restore is off", async () => {
+  const sessionCookie = { host: "app.example", name: "sid", value: "newest", path: "/", httponly: true, sameSite: 1, originAttributes: { userContextId: 0, partitionKey: "" } };
+  const cookies = [
+    sessionCookie,
+    { host: ".example.org", name: "pref", value: "1", secure: true, originAttributes: {} },
+    { host: "app.example", name: "work", value: "container", originAttributes: { userContextId: 2 } },
+    { host: "app.example", name: "chips", value: "partitioned", originAttributes: { partitionKey: "(https,other.example)" } },
+  ];
+  const expected = [
+    { name: "sid", value: "newest", domain: "app.example", path: "/", httpOnly: true, sameSite: "Lax" },
+    { name: "pref", value: "1", domain: ".example.org", path: "/", secure: true },
+  ];
+  // A Mac clean quit (tab file present) and a window that ended with its last tab both turn native restore off.
+  for (const [host, session] of [
+    ["darwin", { windows: [{ tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }], cookies }],
+    ["win32", { windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }], cookies }],
+  ] as const) {
+    const f = fixture(host, host === "darwin" ? "arm64" : "x64");
+    const root = f.launcher.userDataDir(f.profile.id);
+    mkdirSync(join(root, "sessionstore-backups"), { recursive: true });
+    writeFileSync(join(root, "sessionstore-backups/recovery.jsonlz4"), mozLz4({ ...session, cookies: [{ ...sessionCookie, value: "older" }] }));
+    utimesSync(join(root, "sessionstore-backups/recovery.jsonlz4"), new Date(1_000_000), new Date(1_000_000));
+    writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4(session));
+    writeFileSync(join(root, "aliasmode-session-tabs.json"), JSON.stringify({ generation: "previous", tabs: ["https://app.example/"] }));
+    const steps: unknown[] = [];
+    const launcher = new Launcher({
+      ...f.options,
+      // Cloud mode turns ensureCookies off; the native session cookies still come back.
+      ensureCookies: async () => ({ injected: false }),
+      addNativeSessionCookies: async (_ws, added) => { steps.push(["cookies", added]); return { injected: true }; },
+      navigate: async (_ws, urls) => { steps.push(["navigate", urls]); },
+    });
+    const opened = await launcher.start(f.profile.id);
+    expect(f.startupPreferences()).toContain('user_pref("browser.startup.page", 0);');
+    expect(steps).toEqual([["cookies", expected], ["navigate", ["https://app.example/"]]]);
+    expect(opened.nativeSessionLoaded).toBe(true);
+    expect(await launcher.stop(f.profile.id)).toBe(true);
+  }
+});
+
+test("Firefox does not claim its session loaded when its session cookies could not be added", async () => {
+  const f = fixture();
+  const root = f.launcher.userDataDir(f.profile.id);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4({
+    windows: [{ _maybeDontRestoreTabs: true, tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }],
+    cookies: [{ host: "app.example", name: "sid", value: "lost", originAttributes: {} }],
+  }));
+  const launcher = new Launcher({ ...f.options, addNativeSessionCookies: async () => { throw new Error("cookie rejected"); } });
+  // A Cloud open then writes its copy, which still has these cookies.
+  expect((await launcher.start(f.profile.id, [], { autoNavigate: false })).nativeSessionLoaded).toBeUndefined();
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+});
+
+test("Firefox leaves session cookies to Firefox or the Cloud copy when it does not turn native restore off", async () => {
+  const cookies = [{ host: "app.example", name: "sid", value: "native", originAttributes: {} }];
+  for (const options of [{}, { restoreLastSession: false }]) {
+    const f = fixture();
+    const root = f.launcher.userDataDir(f.profile.id);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, "sessionstore.jsonlz4"), mozLz4({
+      windows: [{ tabs: [{ entries: [{ url: "https://app.example/" }], index: 1 }] }], cookies,
+    }));
+    const ensured: unknown[] = [];
+    const launcher = new Launcher({ ...f.options, addNativeSessionCookies: async (_ws, added) => { ensured.push(added); return { injected: true }; } });
+    const opened = await launcher.start(f.profile.id, [], { autoNavigate: false, ...options });
+    expect(ensured).toEqual([]);
+    // Startup page 3 loads this device's session; the Cloud coordinator's request for its copy does not.
+    expect(opened.nativeSessionLoaded).toBe(options.restoreLastSession === false ? undefined : true);
+    expect(await launcher.stop(f.profile.id)).toBe(true);
   }
 });
 

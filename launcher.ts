@@ -12,8 +12,12 @@
 
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+  closeSync,
+  copyFileSync,
   createReadStream,
+  fsyncSync,
   mkdirSync,
+  openSync,
   rmSync,
   existsSync,
   readFileSync,
@@ -23,6 +27,7 @@ import {
   realpathSync,
   renameSync,
   statSync,
+  statfsSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen, ptr } from "bun:ffi";
@@ -54,6 +59,7 @@ import {
   type MacGraphicsVendor, syncFirefoxTimezone,
 } from "./firefox-config.ts";
 import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneFirefoxFontPacks, type FirefoxFontPack } from "./firefox-fonts.ts";
+import { renameWhenUnlocked } from "./browser-install.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_WEBRTC_IP,
@@ -167,6 +173,35 @@ function firefoxSessionRestoresPage(userDataDir: string): boolean | null {
   return null;
 }
 
+/**
+ * Session cookies (no expiry) from the newest session file. Firefox keeps them only there and
+ * restores them only with startup page 3, so a launch with page 0 opened logged out of every
+ * site that uses them. Container, private and partitioned cookies are left out.
+ */
+function firefoxSessionCookies(userDataDir: string): CookieRecord[] {
+  const files = FIREFOX_SESSION_FILES
+    .flatMap((file) => { try { return [{ path: join(userDataDir, file), mtime: statSync(join(userDataDir, file)).mtimeMs }]; } catch { return []; } })
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const { path } of files) {
+    let session: any;
+    try { session = JSON.parse(decodeMozLz4(readFileSync(path)).toString("utf8")); } catch { continue; }
+    const cookies: any[] = Array.isArray(session?.cookies) ? session.cookies : [];
+    return cookies.flatMap((cookie): CookieRecord[] => {
+      const origin = cookie?.originAttributes ?? {};
+      if (typeof cookie?.name !== "string" || !cookie.name || typeof cookie.value !== "string" || typeof cookie.host !== "string"
+        || origin.userContextId || origin.privateBrowsingId || origin.partitionKey || origin.firstPartyDomain) return [];
+      return [{
+        name: cookie.name, value: cookie.value, domain: cookie.host,
+        path: typeof cookie.path === "string" && cookie.path ? cookie.path : "/",
+        ...(cookie.secure ? { secure: true } : {}),
+        ...(cookie.httponly ? { httpOnly: true } : {}),
+        ...(cookie.sameSite === 1 ? { sameSite: "Lax" as const } : cookie.sameSite === 2 ? { sameSite: "Strict" as const } : {}),
+      }];
+    });
+  }
+  return [];
+}
+
 function supportsFirefoxHost(platform: NodeJS.Platform, arch: string): boolean {
   return (platform === "darwin" && (arch === "arm64" || arch === "x64"))
     || (platform === "linux" && arch === "x64")
@@ -226,6 +261,10 @@ const PREFLIGHT_GUIDANCE = {
   chromium_sandbox: "This Linux computer blocks the Chrome sandbox. Run the AliasMode install command again. It asks for your password once to allow Chrome.",
   chromium155_download: "Chromium 155 beta could not be downloaded. Check your internet connection, then open the profile again.",
   stored_identity: "The saved browser launch does not match this profile's current identity. Close the existing browser, then reopen the profile.",
+  cookie_key_unreadable: "AliasMode did not open this profile. This Windows account cannot read its saved cookies " +
+    "(they were saved on another computer or Windows account, or before a Windows password reset), and opening it would delete them. " +
+    "A copy is in the cookie-backups folder inside the profile's folder. Open the profile on the computer and Windows account that saved it, " +
+    "or delete the Local State file in the profile's folder to open it here and log in again.",
 } as const;
 
 /** Closed, public-safe browser launch failure. Never attach a raw cause. */
@@ -462,6 +501,11 @@ export interface LauncherOptions {
   spawn?: SpawnFn;
   fetch?: FetchFn;
   ensureCookies?: CookieEnsurer;
+  /**
+   * Adds the session cookies of Firefox's own last session. Cloud mode turns ensureCookies off;
+   * this stays on, because this device's session is kept only when its cookies came back.
+   */
+  addNativeSessionCookies?: CookieEnsurer;
   /** Repair Chromium's missing/No Search default. Omitted in low-level tests. */
   ensureSearchProvider?: SearchProviderEnsurer;
   /** Navigate initial platform URLs after session seeding, never as argv URLs. */
@@ -798,6 +842,7 @@ export class Launcher {
   private spawnFn: SpawnFn;
   private fetchFn: FetchFn;
   private ensureCookiesFn: CookieEnsurer;
+  private addNativeSessionCookiesFn: CookieEnsurer;
   private ensureSearchProviderFn?: SearchProviderEnsurer;
   private captureFingerprintFn: (ws: string) => Promise<FingerprintSample | null>;
   private lookupExitLocationFn?: (proxy: ProxySpec) => Promise<ExitLocation | null>;
@@ -913,6 +958,7 @@ export class Launcher {
     // both callers treat a rejection as "not ready" (active→false, waitForCdp→keep polling).
     this.fetchFn = opts.fetch ?? ((url) => fetch(url, { signal: AbortSignal.timeout(800) }) as any);
     this.ensureCookiesFn = opts.ensureCookies ?? defaultEnsureCookies;
+    this.addNativeSessionCookiesFn = opts.addNativeSessionCookies ?? defaultEnsureCookies;
     this.ensureSearchProviderFn = opts.ensureSearchProvider;
     this.captureFingerprintFn = opts.captureFingerprint ?? ((ws) => captureFingerprint(ws));
     this.lookupExitLocationFn = opts.lookupExitLocation ?? (this.unsafeDisableIdentityGates ? undefined : (proxy) => lookupProxyExitLocation(proxy));
@@ -968,6 +1014,16 @@ export class Launcher {
       throw new Error(`profile user-data directory escapes configured root for id ${JSON.stringify(profileId)}`);
     }
     return dir;
+  }
+
+  /** Free bytes on the drive that holds profile data; null when it cannot be read. */
+  dataDriveFreeBytes(): number | null {
+    try {
+      const stats = statfsSync(resolve(this.dataRoot));
+      return stats.bavail * stats.bsize;
+    } catch {
+      return null;
+    }
   }
 
   /** The font pack this Firefox profile needs on this computer, if any. */
@@ -1835,6 +1891,16 @@ export class Launcher {
     // scan before any repair or cleanup touches their files.
     if (existingUserDataDir) await this.reapForeignProfileDirHolders(profileId, userDataDir);
 
+    // Windows Chromium deletes every cookie it cannot decrypt and writes a new key. A Local
+    // profile has no other copy of them, so keep a copy and stop. Cloud opens and a pending session
+    // bundle restore their own copy.
+    if (this.hostPlatform === "win32" && opts.restoreLocalSession !== false && !pendingSession
+      && existsSync(join(userDataDir, "Default", "Network", "Cookies")) && !await this.nativeSessionReadable(profileId)) {
+      const backup = backupUnreadableCookies(userDataDir);
+      this.log(`start ${profileId} stopped: this Windows account cannot read its cookie key; copy saved in ${backup}`);
+      throw new BrowserLaunchError("preflight", "cookie_key_unreadable");
+    }
+
     const nativeRestoreRequested = !pendingSession && opts.restoreLastSession !== false;
     let searchBootstrapRevision: number | undefined;
 
@@ -1842,10 +1908,10 @@ export class Launcher {
     // mid-write, or two Chromes racing the same persistent dir when a browser leaked)
     // can leave Default/Preferences unparseable — Chromium then pops a modal "Your
     // preferences can not be read" dialog that BLOCKS the page, so automation login hangs
-    // and the rotated session never saves. Deleting only the corrupt prefs lets Chromium
+    // and the rotated session never saves. Resetting only the corrupt prefs lets Chromium
     // regenerate defaults; the login session is untouched (cookies live in
     // Default/Network/Cookies, the cookie-encryption key in the root Local State).
-    this.repairCorruptPrefs(profileId);
+    await this.repairCorruptPrefs(profileId);
 
     // …and clear the OTHER leftovers an unclean exit leaves behind, which repairCorruptPrefs
     // doesn't cover: a stale Singleton lock (the next Chrome stalls trying to hand off to the
@@ -1858,18 +1924,18 @@ export class Launcher {
     // resetStorage gates the crash-corruption storage reset for THIS launch (default true for direct
     // callers; remote mode passes false when the bundle it's about to inject can't restore the login —
     // e.g. a first-migration Telegram open with no hub session — so we never wipe the only local auth).
-    this.clearStaleProfileState(profileId, opts.resetStorage ?? true);
+    await this.clearStaleProfileState(profileId, opts.resetStorage ?? true);
 
     // Only existence is inspected. Chromium owns the opaque session bytes. Check
     // after stale-state cleanup because remote recovery can delete those files.
     const nativeSessionAvailable = nativeRestoreRequested && this.hasNativeSessionArtifacts(userDataDir);
     const restoreLastSession = nativeSessionAvailable;
 
-    if (profile.proxy) this.persistWebRtcPolicyPreference(profileId);
+    if (profile.proxy) await this.persistWebRtcPolicyPreference(profileId);
 
     // Identity bookmark (#2): `<name> · #<serial>` on a visible bookmark bar, pointing at the card.
     if (SESSION_LAUNCH) {
-      writeIdentityBookmark(
+      await writeIdentityBookmark(
         userDataDir,
         `${profile.name || "profile"} · #${profileDisplayNo(profile.customNo, this.store.getSerial(profileId)) ?? "?"}`,
         profileCardUrl(profileId),
@@ -2325,11 +2391,18 @@ export class Launcher {
       }
     }
     mkdirSync(userDataDir, { recursive: true });
-    const closedTabs = !pendingSession && opts.restoreLastSession !== false ? this.closedFirefoxTabs(profileId) : undefined;
-    const restoreLastSession = !pendingSession && opts.restoreLastSession !== false &&
-      !(this.hostPlatform === "darwin" && closedTabs !== undefined) && [
+    const nativeRestoreRequested = !pendingSession && opts.restoreLastSession !== false;
+    const closedTabs = nativeRestoreRequested ? this.closedFirefoxTabs(profileId) : undefined;
+    const sessionFileExists = nativeRestoreRequested && [
       "sessionstore.jsonlz4", "sessionstore-backups/recovery.jsonlz4", "sessionstore-backups/previous.jsonlz4",
-    ].some((file) => existsSync(join(userDataDir, file))) && firefoxSessionRestoresPage(userDataDir) !== false;
+    ].some((file) => existsSync(join(userDataDir, file)));
+    const sessionRestoresPage = sessionFileExists ? firefoxSessionRestoresPage(userDataDir) : null;
+    const restoreLastSession = sessionFileExists && !(this.hostPlatform === "darwin" && closedTabs !== undefined) &&
+      sessionRestoresPage !== false;
+    // Firefox opens its own readable last session (cookies included) whether or not it reopens its pages.
+    let nativeSessionLoaded = sessionFileExists && sessionRestoresPage !== null;
+    // Read before spawn: Firefox replaces its session files soon after it starts.
+    const sessionCookies = nativeSessionLoaded && !restoreLastSession ? firefoxSessionCookies(userDataDir) : [];
     writeFirefoxStartupPage(userDataDir, restoreLastSession);
     // A macOS profile on an Intel Mac shows a card of that Mac's GPU vendor (firefoxLaunchConfig).
     const intelMac = this.hostPlatform === "darwin" && this.hostArch === "x64" && firefoxPersonaOs(profile) === "macos"
@@ -2409,6 +2482,14 @@ export class Launcher {
         profile = this.store.getProfile(profileId)!;
         snapshot = JSON.stringify(profile);
       }
+      // Before any saved page loads, so the pages open logged in.
+      if (sessionCookies.length) {
+        await this.addNativeSessionCookiesFn(launch.ws, sessionCookies).catch(() => {
+          // A Cloud open then writes its copy instead of keeping a session without these cookies.
+          nativeSessionLoaded = false;
+          this.log(`${profileId}: session cookies from the last Firefox session could not be restored`);
+        });
+      }
       if (!nativeSessionRestored && closedTabs !== undefined) {
         await this.navigate(launch.ws, closedTabs, true);
         nativeSessionRestored = closedTabs.length > 0;
@@ -2438,7 +2519,7 @@ export class Launcher {
       this.requireUnchangedProfile(profileId, snapshot, "Firefox launch commit");
       this.markIdentityCertified(profileId);
       if (pendingSession) this.store.markSessionRestored(profileId, pendingSession);
-      return { ws: launch.ws, port, nativeSessionRestored };
+      return { ws: launch.ws, port, nativeSessionRestored, ...(nativeSessionLoaded ? { nativeSessionLoaded: true } : {}) };
     } catch (error) {
       if (reserved) {
         const stopped = await this.doStop(profileId, launch).catch(() => false);
@@ -3777,9 +3858,11 @@ export class Launcher {
   }
 
   /**
-   * Delete a profile's Preferences / Secure Preferences ONLY when they're
+   * Reset a profile's Preferences / Secure Preferences to "{}" ONLY when they're
    * corrupt (zero-length, unparseable JSON, or a non-object root), so Chromium regenerates defaults
-   * instead of showing the blocking "Your preferences can not be read" dialog.
+   * instead of showing the blocking "Your preferences can not be read" dialog. The file stays:
+   * a missing Preferences makes Chromium treat the profile as new and drop its session cookies,
+   * even with --restore-last-session.
    *
    * Session-safe by construction: it never touches the cookie jar
    * (Default/Network/Cookies) or the root Local State (which holds the Windows
@@ -3788,7 +3871,7 @@ export class Launcher {
    * reads as valid JSON, so this can't fire against a profile that's mid-write.
    * Fully best-effort: a locked or missing file must never fail a launch.
    */
-  private repairCorruptPrefs(profileId: string): void {
+  private async repairCorruptPrefs(profileId: string): Promise<void> {
     const base = this.containedUserDataDir(profileId, "repairCorruptPrefs");
     if (!base) return;
     for (const rel of ["Default/Preferences", "Default/Secure Preferences"]) {
@@ -3807,7 +3890,7 @@ export class Launcher {
           valid = false;
         }
         if (!valid) {
-          rmSync(file, { force: true });
+          await writeFileAtomic(file, "{}");
           this.log(`repaired corrupt ${rel} for ${profileId} (regenerated by Chromium; session cookies left intact)`);
         }
       } catch {
@@ -3817,7 +3900,7 @@ export class Launcher {
   }
 
   /** Persist the WebRTC routing floor as profile state as well as argv state. */
-  private persistWebRtcPolicyPreference(profileId: string): void {
+  private async persistWebRtcPolicyPreference(profileId: string): Promise<void> {
     const base = this.containedUserDataDir(profileId, "persistWebRtcPolicyPreference");
     if (!base) throw new Error(`cannot persist WebRTC policy for unsafe profile id ${JSON.stringify(profileId)}`);
     const dir = join(base, "Default");
@@ -3842,7 +3925,7 @@ export class Launcher {
       ip_handling_policy: "disable_non_proxied_udp",
     };
     try {
-      writeFileSync(file, JSON.stringify(prefs));
+      await writeFileAtomic(file, JSON.stringify(prefs));
     } catch (error) {
       throw new Error(`cannot persist WebRTC policy for ${profileId}: ${error instanceof Error ? error.message : error}`);
     }
@@ -3855,7 +3938,7 @@ export class Launcher {
    * confirming no in-proc handle and a dead recorded CDP port, so anything below is leftover, not
    * in use. Best-effort throughout: a locked/unreadable file must never block a launch.
    */
-  private clearStaleProfileState(profileId: string, resetStorageSafe = true): void {
+  private async clearStaleProfileState(profileId: string, resetStorageSafe = true): Promise<void> {
     const base = this.containedUserDataDir(profileId, "clearStaleProfileState");
     if (!base) return;
 
@@ -3895,7 +3978,7 @@ export class Launcher {
           const was = prof.exit_type;
           prof.exit_type = "Normal";
           prof.exited_cleanly = true;
-          writeFileSync(file, JSON.stringify(parsed));
+          await writeFileAtomic(file, JSON.stringify(parsed));
           uncleanExit = true;
           this.log(`reset unclean-exit marker (exit_type=${JSON.stringify(was)}) in Default/Preferences for ${profileId}`);
         }
@@ -5084,7 +5167,7 @@ async function openProfileCardTab(ws: string, url: string): Promise<void> {
  * profiles carry no user bookmarks) and safely merges the show-bar pref into a VALID
  * Preferences (a corrupt one is left for repairCorruptPrefs). Never throws into a launch.
  */
-function writeIdentityBookmark(userDataDir: string, name: string, url: string): void {
+async function writeIdentityBookmark(userDataDir: string, name: string, url: string): Promise<void> {
   try {
     const dir = join(userDataDir, "Default");
     mkdirSync(dir, { recursive: true });
@@ -5104,8 +5187,42 @@ function writeIdentityBookmark(userDataDir: string, name: string, url: string): 
     }
     if (typeof prefs !== "object" || prefs === null) return;
     prefs.bookmark_bar = { ...(prefs.bookmark_bar ?? {}), show_on_all_tabs: true };
-    writeFileSync(prefsPath, JSON.stringify(prefs));
+    await writeFileAtomic(prefsPath, JSON.stringify(prefs));
   } catch { /* best-effort: identity extras must never fail a launch */ }
+}
+
+/** Copy the cookie key (Local State) and Default/Network/Cookies* into a dated folder in the profile. */
+function backupUnreadableCookies(userDataDir: string, now = new Date()): string {
+  const root = join(userDataDir, "cookie-backups");
+  const key = localStateDpapiKey(join(userDataDir, "Local State"));
+  // One copy per cookie key, so repeated opens do not fill the disk with the same cookies.
+  const existing = (existsSync(root) ? readdirSync(root) : [])
+    .find((name) => localStateDpapiKey(join(root, name, "Local State")) === key);
+  if (existing) return join(root, existing);
+  const backup = join(root, now.toISOString().replace(/[:.]/g, "-"));
+  const network = join(userDataDir, "Default", "Network");
+  mkdirSync(join(backup, "Default", "Network"), { recursive: true });
+  copyFileSync(join(userDataDir, "Local State"), join(backup, "Local State"));
+  for (const name of existsSync(network) ? readdirSync(network) : []) {
+    if (name.startsWith("Cookies")) copyFileSync(join(network, name), join(backup, "Default", "Network", name));
+  }
+  return backup;
+}
+
+/**
+ * Replace a file through a temp file in the same folder. Chromium rereads Default/Preferences on
+ * every launch; a crash or power loss mid-write then leaves the old or the new file, never half of one.
+ */
+async function writeFileAtomic(path: string, data: string): Promise<void> {
+  const temp = join(dirname(path), `.${basename(path)}.aliasmode-${randomUUID()}.tmp`);
+  try {
+    const fd = openSync(temp, "w");
+    try { writeFileSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+    await renameWhenUnlocked(temp, path);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 
 const defaultNavigate: LaunchNavigator = async (ws, urls, replacePages = false) => {

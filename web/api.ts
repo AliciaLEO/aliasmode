@@ -409,6 +409,14 @@ export async function fetchHealth(): Promise<HealthResult> {
   return { ok: true, version: String(body.version ?? "unknown"), root: String(body.root ?? ""), ...(typeof body.logDir === "string" ? { logDir: body.logDir } : {}) };
 }
 
+export interface DiskSpace { freeBytes: number | null; low: boolean }
+
+export async function fetchDiskSpace(): Promise<DiskSpace> {
+  const path = "/ui/api/disk-space";
+  const body = await apiJson(await fetch(path), path);
+  return { freeBytes: typeof body.freeBytes === "number" ? body.freeBytes : null, low: body.low === true };
+}
+
 /** Never leak an HTML fallback into a raw JSON.parse SyntaxError. A dashboard
  * bundle and its local server can briefly differ after an update/restart. */
 async function apiJson(response: Response, path: string): Promise<any> {

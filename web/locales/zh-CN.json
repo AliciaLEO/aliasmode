@@ -700,5 +700,8 @@
   "Confirm your email first. Enter the code from the email, or send a new code.": "请先确认邮箱。输入邮件中的验证码，或重新发送验证码。",
   "The code is wrong or has expired. Check the newest email, or send a new code.": "验证码错误或已过期。请查看最新的邮件，或重新发送验证码。",
   "We sent a new email to {email}.": "新邮件已发送到 {email}。",
-  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "没有收到？请检查垃圾邮件文件夹，或重新发送验证码。如果邮件里是链接而不是验证码，请打开链接，然后登录。"
+  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "没有收到？请检查垃圾邮件文件夹，或重新发送验证码。如果邮件里是链接而不是验证码，请打开链接，然后登录。",
+  "Low disk space: {free} GB free on the drive that holds your profiles.": "磁盘空间不足：存放配置文件的磁盘仅剩 {free} GB 可用空间。",
+  "When the disk is almost full, browsers delete saved site data, which can log profiles out. Free up space on this drive.": "磁盘快满时，浏览器会删除已保存的网站数据，配置文件可能因此退出登录。请清理此磁盘的空间。",
+  "Dismiss disk space warning": "关闭磁盘空间警告"
 }

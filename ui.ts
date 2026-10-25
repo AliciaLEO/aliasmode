@@ -9,7 +9,7 @@
  * cookie values, or proxy credentials. Same rule the `inspect` command follows.
  */
 
-import type { Launcher } from "./launcher.ts";
+import { BrowserLaunchError, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { AutomationHealthStatus } from "./remote-types.ts";
 import type { RemoteCoordinator } from "./remote.ts";
@@ -187,6 +187,12 @@ async function readLatestDiagnose(reportsRoot = "reports"): Promise<unknown | nu
 }
 
 const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * Below 2 GB free Chromium gives sites no new storage and below 1 GB it evicts their data;
+ * Firefox evicts the least recently used sites when the disk runs low. 5 GB warns before that.
+ */
+export const LOW_DISK_SPACE_BYTES = 5 * 1024 ** 3;
 
 type CloudRestoreStage = "auth_refresh" | "cloud_status" | "lifecycle_resume";
 type CloudRestoreCategory = "network" | "service" | "authentication";
@@ -675,6 +681,12 @@ export async function handleUiRequest(
     return Response.json(options.health
       ? { ok: true, ...options.health, ...(logDir ? { logDir } : {}) }
       : { ok: true, version: await appVersion(), root: APPLICATION_ROOT, ...(logDir ? { logDir } : {}) });
+  }
+
+  // Warning only: under storage pressure both engines evict saved site data.
+  if (pathname === "/ui/api/disk-space" && req.method === "GET") {
+    const freeBytes = launcher.dataDriveFreeBytes();
+    return noStoreJson({ ok: true, freeBytes, low: freeBytes !== null && freeBytes < LOW_DISK_SPACE_BYTES });
   }
 
   if (pathname === "/ui/api/logs" && req.method === "GET") {
@@ -2333,7 +2345,8 @@ export async function handleUiRequest(
       const r = await launcher.clearCache(id);
       return Response.json({ ok: true, cleared: r.cleared });
     } catch (e) {
-      return Response.json({ ok: false, error: msg(e) }, { status: 500 });
+      // A preflight refusal says what happened and what to do instead of its bare code.
+      return Response.json({ ok: false, error: e instanceof BrowserLaunchError && e.guidance ? e.guidance : msg(e) }, { status: 500 });
     }
   }
 

@@ -4,10 +4,10 @@ import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
-import { Launcher } from "./launcher.ts";
+import { BrowserLaunchError, Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
 import { deriveFingerprintFlags } from "./fingerprint.ts";
-import { listUiProfiles, handleUiRequest } from "./ui.ts";
+import { listUiProfiles, handleUiRequest, LOW_DISK_SPACE_BYTES } from "./ui.ts";
 import { supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { trackRuntimeDownload } from "./runtime-download.ts";
 import { readXlsx, writeXlsx } from "./xlsx.ts";
@@ -508,6 +508,25 @@ test("remote open returns an advisory warning as a success", async () => {
     port: 9333,
     warning: "Possible concurrent use; session sync is disabled for this browser.",
   });
+  s.close();
+});
+
+test("a refused Local open shows what happened instead of its bare launch code", async () => {
+  const s = store();
+  const launcher: any = { start: async () => { throw new BrowserLaunchError("preflight", "cookie_key_unreadable"); } };
+  const res = await handleUiRequest(new Request("http://x/ui/api/profiles/k1d0cd11/open", { method: "POST" }), launcher, s);
+  expect(res!.status).toBe(500);
+  expect((await res!.json()).error).toBe(new BrowserLaunchError("preflight", "cookie_key_unreadable").guidance);
+  s.close();
+});
+
+test("the disk space check warns only below the threshold and when the drive can be read", async () => {
+  const s = store();
+  for (const [freeBytes, low] of [[LOW_DISK_SPACE_BYTES - 1, true], [LOW_DISK_SPACE_BYTES, false], [null, false]] as const) {
+    const launcher: any = { dataDriveFreeBytes: () => freeBytes };
+    const res = await handleUiRequest(new Request("http://x/ui/api/disk-space"), launcher, s);
+    expect(await res!.json()).toEqual({ ok: true, freeBytes, low });
+  }
   s.close();
 });
 

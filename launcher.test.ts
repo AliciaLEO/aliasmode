@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -891,6 +891,105 @@ test("native session is unreadable only when DPAPI rejects its cookie key, once 
   expect(await launcher.nativeSessionReadable("k1d0cd11")).toBe(true);
   expect(checked.length).toBe(3);
   store.close();
+});
+
+test("free space is read from the drive that holds profile data", () => {
+  const store = seeded();
+  const root = join(tmpdir(), `cloak-disk-${crypto.randomUUID()}`);
+  const launcher = newLauncher(store, fleet(), [], undefined, undefined, { dataRoot: root });
+  expect(launcher.dataDriveFreeBytes()).toBeNull(); // not created yet
+  mkdirSync(root, { recursive: true });
+  expect(launcher.dataDriveFreeBytes()).toBeGreaterThan(0);
+  rmSync(root, { recursive: true, force: true });
+  store.close();
+});
+
+// Windows Chromium deletes every cookie it cannot decrypt. A Local profile has no other copy.
+test("Windows Local keeps a copy of unreadable cookies and does not open the profile", async () => {
+  for (const readable of [false, true]) {
+    const store = seeded();
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform: "win32",
+      dpapiKeysReadable: async () => [readable],
+    });
+    const dir = launcher.userDataDir("k1d0cd11");
+    const localState = JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } });
+    mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+    writeFileSync(join(dir, "Local State"), localState);
+    writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+    writeFileSync(join(dir, "Default", "Network", "Cookies-journal"), "journal");
+    writeFileSync(join(dir, "Default", "Network", "TransportSecurity"), "other");
+    if (readable) {
+      await launcher.start("k1d0cd11");
+      expect(spawnedArgs.length).toBe(1);
+      expect(existsSync(join(dir, "cookie-backups"))).toBe(false);
+      expect(await launcher.stop("k1d0cd11")).toBe(true);
+    } else {
+      const error = await launcher.start("k1d0cd11").catch((caught) => caught);
+      expect(error).toBeInstanceOf(BrowserLaunchError);
+      expect(error.preflightReason).toBe("cookie_key_unreadable");
+      expect(error.guidance).toContain("AliasMode did not open this profile");
+      expect(spawnedArgs).toEqual([]);
+      expect(store.getLaunch("k1d0cd11")).toBeNull();
+      const [dated] = readdirSync(join(dir, "cookie-backups"));
+      const backup = join(dir, "cookie-backups", dated!);
+      expect(readFileSync(join(backup, "Local State"), "utf8")).toBe(localState);
+      expect(readdirSync(join(backup, "Default", "Network")).sort()).toEqual(["Cookies", "Cookies-journal"]);
+      expect(readFileSync(join(backup, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
+      // The originals stay where they were.
+      expect(readFileSync(join(dir, "Default", "Network", "Cookies"), "utf8")).toBe("cookie jar");
+      // Another try keeps the one copy of these cookies.
+      await expect(launcher.start("k1d0cd11")).rejects.toBeInstanceOf(BrowserLaunchError);
+      expect(readdirSync(join(dir, "cookie-backups"))).toEqual([dated!]);
+    }
+    store.close();
+  }
+});
+
+test("Cloud opens leave unreadable Windows cookies to the Cloud copy", async () => {
+  const store = seeded();
+  const spawnedArgs: string[][] = [];
+  let checks = 0;
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    hostPlatform: "win32",
+    dpapiKeysReadable: async () => { checks++; return [false]; },
+  });
+  const dir = launcher.userDataDir("k1d0cd11");
+  mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
+  writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+  await launcher.start("k1d0cd11", [], { restoreLocalSession: false, restoreLastSession: false });
+  expect(spawnedArgs.length).toBe(1);
+  expect(checks).toBe(0);
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  store.close();
+});
+
+test("a Local Windows profile with no saved cookies or with a pending session opens without the cookie key check", async () => {
+  for (const pending of [false, true]) {
+    const store = seeded();
+    const spawnedArgs: string[][] = [];
+    let checks = 0;
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform: "win32",
+      dpapiKeysReadable: async () => { checks++; return [false]; },
+      applySession: async () => {},
+    });
+    const dir = launcher.userDataDir("k1d0cd11");
+    mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+    writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
+    if (pending) {
+      // The pending bundle replaces the cookies, so losing the unreadable ones does no harm.
+      writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+      store.upsertProfiles([store.getProfile("k1d0cd11")!], new Map([["k1d0cd11", JSON.stringify({ cookies: [], origins: [], tabs: [] })]]));
+    }
+    await launcher.start("k1d0cd11");
+    expect(spawnedArgs.length).toBe(1);
+    expect(checks).toBe(0);
+    expect(await launcher.stop("k1d0cd11")).toBe(true);
+    store.close();
+  }
 });
 
 test("cloud session authority marker is durable and invalidatable", () => {
@@ -4191,6 +4290,38 @@ test("start() maps an unknown preparation failure to a fixed safe category", asy
   }
 
   rmSync(dataRoot, { recursive: true, force: true });
+  store.close();
+});
+
+// A missing Preferences makes Chromium treat the profile as new and drop session cookies; a
+// half-written one shows a blocking dialog. Repairs keep the file, and every rewrite is a rename.
+test("start() resets corrupt preferences to {} and replaces Preferences through a temp file", async () => {
+  const store = seeded(); // proxied: the launch also writes the WebRTC policy
+  const f = fleet();
+  const launcher = newLauncher(store, f, []);
+  const defaultDir = join(launcher.userDataDir("k1d0cd11"), "Default");
+  mkdirSync(defaultDir, { recursive: true });
+  const prefs = join(defaultDir, "Preferences");
+  const secure = join(defaultDir, "Secure Preferences");
+  writeFileSync(prefs, JSON.stringify({ profile: { exit_type: "Crashed" }, other: 1 }));
+  writeFileSync(secure, "");
+  // An open handle keeps the original inode from being reused by a later file. Windows refuses
+  // to replace a file that is still open, so the inode check runs elsewhere.
+  const original = process.platform === "win32" ? undefined : openSync(prefs, "r");
+  const before = original === undefined ? undefined : fstatSync(original).ino;
+  await launcher.start("k1d0cd11");
+  if (original !== undefined) closeSync(original);
+  expect(readFileSync(secure, "utf8")).toBe("{}");
+  const after = JSON.parse(readFileSync(prefs, "utf8"));
+  expect(after).toMatchObject({ profile: { exit_type: "Normal" }, other: 1, webrtc: { ip_handling_policy: "disable_non_proxied_udp" } });
+  if (before !== undefined) expect(statSync(prefs).ino).not.toBe(before);
+  expect(readdirSync(defaultDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+
+  writeFileSync(prefs, "{ cut off mid-wri");
+  await launcher.start("k1d0cd11");
+  expect(existsSync(prefs)).toBe(true);
+  expect(JSON.parse(readFileSync(prefs, "utf8")).webrtc.ip_handling_policy).toBe("disable_non_proxied_udp");
   store.close();
 });
 

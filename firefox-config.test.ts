@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   completeProfileFingerprint, createFirefoxProfileConfig, firefoxGraphicsRenderer, firefoxLaunchConfig, firefoxStartupPrefs, fitFirefoxWindow, graphicsIdentity,
-  intelMacGraphicsVendor,
+  intelMacGraphicsVendor, setFirefoxScreen,
 } from "./firefox-config.ts";
 import macVoiceLists from "./firefox-data/mac-voices.json";
 import { encodePortableProfile, decodePortableProfile } from "./portable-profile.ts";
@@ -280,6 +280,53 @@ test("fitting a Firefox window keeps the browser frame between outer and inner s
   expect(config).toMatchObject({
     "screen.availWidth": 1366, "window.outerWidth": 1366, "window.innerWidth": 1346,
     "window.outerHeight": 728, "window.innerHeight": 628,
+  });
+});
+
+test.each([
+  // A 1366x768 laptop at 100% with a 40 px taskbar, 1920x1080 at 125% with a 48 px one, and a 1440x900 Mac with its Dock.
+  ["1366x768 at 100%", { width: 1366, height: 728 }, [1366, 728], [1350, 622]],
+  ["1920x1080 at 125%", { width: 1536, height: 816 }, [1536, 816], [1520, 710]],
+  ["a 1440x900 Mac", { width: 1440, height: 801 }, [1440, 801], [1424, 695]],
+] as const)("on %s a Firefox window opens inside the display and the larger screen stays as stored", (_display, hostAvail, outer, inner) => {
+  const stored = profile(6, {
+    "screen.width": 2560, "screen.height": 1440, "screen.availWidth": 2560, "screen.availHeight": 1392,
+    "window.outerWidth": 1664, "window.outerHeight": 1296, "window.innerWidth": 1648, "window.innerHeight": 1190,
+  });
+  const saved = structuredClone(stored.firefox);
+  const config = firefoxLaunchConfig(stored, undefined, undefined, undefined, undefined, hostAvail);
+  expect(config).toMatchObject({
+    "screen.width": 2560, "screen.height": 1440, "screen.availWidth": 2560, "screen.availHeight": 1392,
+    "window.outerWidth": outer[0], "window.outerHeight": outer[1], "window.innerWidth": inner[0], "window.innerHeight": inner[1],
+  });
+  expect(stored.firefox).toEqual(saved);
+  // A window that already fits the display keeps its size.
+  const small = profile(7, { "screen.width": 1920, "screen.height": 1080, "window.outerWidth": 1200, "window.outerHeight": 700 });
+  expect(firefoxLaunchConfig(small, undefined, undefined, undefined, undefined, { width: 1366, height: 728 }))
+    .toMatchObject({ "window.outerWidth": 1200, "window.outerHeight": 700 });
+});
+
+test("a Firefox profile's new screen brings its usable area and a window inside it, keeping the browser frame", () => {
+  const windows = profile(8, {
+    "screen.width": 2560, "screen.height": 1440, "screen.availWidth": 2560, "screen.availHeight": 1392,
+    "window.outerWidth": 1664, "window.outerHeight": 1296, "window.innerWidth": 1648, "window.innerHeight": 1190,
+    "window.screenX": 448, "window.screenY": 72, "navigator.hardwareConcurrency": 8,
+  });
+  setFirefoxScreen(windows, 1536, 864);
+  expect([windows.screenWidth, windows.screenHeight]).toEqual([1536, 864]);
+  expect(windows.firefox!.config).toMatchObject({
+    "screen.width": 1536, "screen.height": 864, "screen.availLeft": 0, "screen.availTop": 0, "screen.availWidth": 1536, "screen.availHeight": 816,
+    "window.outerWidth": 998, "window.outerHeight": 778, "window.innerWidth": 982, "window.innerHeight": 672,
+    "window.screenX": 448, "window.screenY": 38, "navigator.hardwareConcurrency": 8,
+  });
+  const mac = profile(9, {
+    "navigator.platform": "MacIntel", "screen.width": 1920, "screen.height": 1080,
+    "window.outerWidth": 1248, "window.outerHeight": 972, "window.innerWidth": 1248, "window.innerHeight": 880,
+  });
+  setFirefoxScreen(mac, 1440, 900);
+  expect(mac.firefox!.config).toMatchObject({
+    "screen.width": 1440, "screen.height": 900, "screen.availTop": 25, "screen.availWidth": 1440, "screen.availHeight": 824,
+    "window.outerWidth": 936, "window.outerHeight": 810, "window.innerWidth": 936, "window.innerHeight": 718,
   });
 });
 

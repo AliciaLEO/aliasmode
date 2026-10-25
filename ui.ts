@@ -55,7 +55,7 @@ import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
 import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
-import { syncFirefoxTimezone } from "./firefox-config.ts";
+import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
 import { addBrowserCookie } from "./session.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -484,7 +484,7 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
   if ("resolution" in set) {
     const r = parseStrictResolution(set.resolution);
     if (profileEngine(p) === "firefox" && (p.screenWidth !== r.width || p.screenHeight !== r.height)) {
-      throw new Error("Firefox screen settings cannot be changed");
+      setFirefoxScreen(p, r.width, r.height);
     }
     p.screenWidth = r.width;
     p.screenHeight = r.height;

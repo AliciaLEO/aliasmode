@@ -254,7 +254,7 @@
   "Close the browser before changing fingerprint settings.": "Закройте браузер перед изменением настроек отпечатка.",
   "Cookies and locked fingerprint values are preserved. Only editable fields change.": "Cookie и заблокированные значения отпечатка сохраняются. Меняются только редактируемые поля.",
   " Extensions load when the browser opens.": " Расширения загружаются при открытии браузера.",
-  "Only timezone can be changed. The screen is chosen when the profile is created. The rest of the Firefox fingerprint stays coordinated.": "Можно изменить только часовой пояс. Размер экрана выбирается при создании профиля. Остальные параметры отпечатка Firefox остаются согласованными.",
+  "Screen and timezone can be changed. The browser keeps the other values coordinated.": "Можно изменить экран и часовой пояс. Остальные значения браузер согласует сам.",
   "Save proxy changes before setting the timezone.": "Сохраните изменения прокси перед установкой часового пояса.",
   "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.": "Можно изменить экран, операционную систему и часовой пояс. Остальные значения браузер согласует сам.",
   "This action saves the timezone immediately. It applies the next time this profile opens.": "Это действие сразу сохраняет часовой пояс. Он применится при следующем открытии профиля.",

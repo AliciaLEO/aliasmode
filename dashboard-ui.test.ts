@@ -1009,10 +1009,11 @@ test("a profile with a session Cloud refused offers restoring it before opening"
   expect(restore).toContain("act(profile.id, restoreParkedSession)");
 });
 
-test("Firefox shows its screen: editable at creation, read-only when editing", () => {
+test("Firefox shows its screen, editable at creation and when editing", () => {
   const settings = app.slice(app.indexOf("function FingerprintSettings("), app.indexOf("function FingerprintSettings(") + 3600);
   expect(settings).not.toMatch(/\{engine === "chromium" && \(\s*<label className="fld">\s*<span>Screen/);
-  expect(settings).toContain("screenReadOnly ? (");
-  expect(app).toContain('screenReadOnly={editEngine === "firefox"}');
+  expect(settings).toContain("onChange={(event) => onScreenChange(event.target.value)}");
+  expect(app).not.toContain("screenReadOnly");
   expect(app).toContain("screen: form.screen,");
+  expect(app).toContain('t("Screen and timezone can be changed. The browser keeps the other values coordinated.")');
 });

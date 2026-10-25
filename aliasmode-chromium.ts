@@ -214,10 +214,25 @@ export function hostDisplayScale(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(scale) && scale >= 1 ? scale : 1;
 }
 
+function displaySize(value: string | undefined): { width: number; height: number } | null {
+  const match = /^(\d{3,5})x(\d{3,5})$/.exec(value ?? "");
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+}
+
 /** The primary display's size in physical pixels, which the desktop app passes in ALIASMODE_HOST_SCREEN. */
 export function hostDisplaySize(env: NodeJS.ProcessEnv = process.env): { width: number; height: number } | null {
-  const match = /^(\d{3,5})x(\d{3,5})$/.exec(env.ALIASMODE_HOST_SCREEN ?? "");
-  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+  return displaySize(env.ALIASMODE_HOST_SCREEN);
+}
+
+/**
+ * The primary display's available area (without the taskbar, or the menu bar and Dock) as Firefox
+ * pages measure it: ALIASMODE_HOST_AVAIL, which the desktop app passes in physical pixels, divided
+ * by the display scale.
+ */
+export function hostDisplayAvail(env: NodeJS.ProcessEnv = process.env): { width: number; height: number } | null {
+  const avail = displaySize(env.ALIASMODE_HOST_AVAIL);
+  const scale = hostDisplayScale(env);
+  return avail && { width: Math.floor(avail.width / scale), height: Math.floor(avail.height / scale) };
 }
 
 /** Chromium 155 on Windows draws pages at the display's scale; every other launch at 1. */

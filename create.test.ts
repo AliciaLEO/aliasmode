@@ -162,6 +162,34 @@ test("a new profile's screen is never smaller than this computer's display", () 
   }
 });
 
+test("a new Firefox profile's screen is this computer's display as Firefox pages measure it", () => {
+  const saved = { screen: process.env.ALIASMODE_HOST_SCREEN, scale: process.env.ALIASMODE_HOST_SCALE };
+  try {
+    for (const [screen, scale, expected] of [
+      ["1366x768", "1", [1366, 768]], ["1920x1080", "1.25", [1536, 864]], ["2880x1800", "2", [1440, 900]],
+    ] as const) {
+      Object.assign(process.env, { ALIASMODE_HOST_SCREEN: screen, ALIASMODE_HOST_SCALE: scale });
+      const profile = buildNewProfile({ engine: "firefox" }, () => false);
+      expect([profile.screenWidth, profile.screenHeight]).toEqual([...expected]);
+      expect([profile.firefox!.config["screen.width"], profile.firefox!.config["screen.height"]]).toEqual([...expected]);
+      // Its window fits the display's usable area.
+      expect(profile.firefox!.config["window.outerHeight"]).toBeLessThanOrEqual(profile.firefox!.config["screen.availHeight"] as number);
+      // An explicit screen is kept.
+      expect(buildNewProfile({ engine: "firefox", screen: "2560x1440" }, () => false).screenWidth).toBe(2560);
+    }
+    // Without a known display a listed resolution is picked.
+    delete process.env.ALIASMODE_HOST_SCREEN;
+    const unknown = buildNewProfile({ engine: "firefox" }, () => false);
+    expect([[1920, 1080], [1536, 864], [1366, 768], [1440, 900], [1600, 900], [2560, 1440]])
+      .toContainEqual([unknown.screenWidth, unknown.screenHeight]);
+  } finally {
+    for (const [key, value] of [["ALIASMODE_HOST_SCREEN", saved.screen], ["ALIASMODE_HOST_SCALE", saved.scale]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("buildNewProfile rejects a malformed or impossible explicit screen", () => {
   for (const screen of ["nope", "0x0", "319x1080", "1920x199", "99999x1080"]) {
     expect(() => buildNewProfile({ screen }, () => false)).toThrow("invalid resolution");

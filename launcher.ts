@@ -1886,8 +1886,8 @@ export class Launcher {
 
     // Windows Chromium deletes every cookie it cannot decrypt and writes a new key. A Local
     // profile has no other copy of them, so keep a copy and stop. Cloud opens restore their copy.
-    if (this.hostPlatform === "win32" && existingUserDataDir && opts.restoreLocalSession !== false
-      && !await this.nativeSessionReadable(profileId)) {
+    if (this.hostPlatform === "win32" && opts.restoreLocalSession !== false
+      && existsSync(join(userDataDir, "Default", "Network", "Cookies")) && !await this.nativeSessionReadable(profileId)) {
       const backup = backupUnreadableCookies(userDataDir);
       this.log(`start ${profileId} stopped: this Windows account cannot read its cookie key; copy saved in ${backup}`);
       throw new BrowserLaunchError("preflight", "cookie_key_unreadable");

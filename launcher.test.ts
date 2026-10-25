@@ -953,9 +953,28 @@ test("Cloud opens leave unreadable Windows cookies to the Cloud copy", async () 
     dpapiKeysReadable: async () => { checks++; return [false]; },
   });
   const dir = launcher.userDataDir("k1d0cd11");
+  mkdirSync(join(dir, "Default", "Network"), { recursive: true });
+  writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
+  writeFileSync(join(dir, "Default", "Network", "Cookies"), "cookie jar");
+  await launcher.start("k1d0cd11", [], { restoreLocalSession: false, restoreLastSession: false });
+  expect(spawnedArgs.length).toBe(1);
+  expect(checks).toBe(0);
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+  store.close();
+});
+
+test("a Local Windows profile with no saved cookies opens without the cookie key check", async () => {
+  const store = seeded();
+  const spawnedArgs: string[][] = [];
+  let checks = 0;
+  const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+    hostPlatform: "win32",
+    dpapiKeysReadable: async () => { checks++; return [false]; },
+  });
+  const dir = launcher.userDataDir("k1d0cd11");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "Local State"), JSON.stringify({ os_crypt: { encrypted_key: Buffer.from("DPAPIother account").toString("base64") } }));
-  await launcher.start("k1d0cd11", [], { restoreLocalSession: false, restoreLastSession: false });
+  await launcher.start("k1d0cd11");
   expect(spawnedArgs.length).toBe(1);
   expect(checks).toBe(0);
   expect(await launcher.stop("k1d0cd11")).toBe(true);

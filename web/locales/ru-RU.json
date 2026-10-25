@@ -422,8 +422,8 @@
   "Confirmation code": "Код подтверждения",
   "Confirm and sign in": "Подтвердить и войти",
   "Send a new code": "Отправить новый код",
-  "We sent a new code to {email}.": "Мы отправили новый код на {email}.",
-  "Did not get it? Check your spam folder, or send a new code.": "Письма нет? Проверьте папку «Спам» или отправьте новый код.",
   "Confirm your email first. Enter the code from the email, or send a new code.": "Сначала подтвердите email. Введите код из письма или отправьте новый.",
-  "The code is wrong or has expired. Check the newest email, or send a new code.": "Код неверный или устарел. Проверьте последнее письмо или отправьте новый код."
+  "The code is wrong or has expired. Check the newest email, or send a new code.": "Код неверный или устарел. Проверьте последнее письмо или отправьте новый код.",
+  "We sent a new email to {email}.": "Мы отправили новое письмо на {email}.",
+  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "Письма нет? Проверьте папку «Спам» или отправьте новый код. Если в письме ссылка, а не код, откройте ее, затем войдите."
 }

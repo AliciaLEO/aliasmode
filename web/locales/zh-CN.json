@@ -697,8 +697,8 @@
   "Confirmation code": "验证码",
   "Confirm and sign in": "确认并登录",
   "Send a new code": "重新发送验证码",
-  "We sent a new code to {email}.": "新的验证码已发送到 {email}。",
-  "Did not get it? Check your spam folder, or send a new code.": "没有收到？请检查垃圾邮件文件夹，或重新发送验证码。",
   "Confirm your email first. Enter the code from the email, or send a new code.": "请先确认邮箱。输入邮件中的验证码，或重新发送验证码。",
-  "The code is wrong or has expired. Check the newest email, or send a new code.": "验证码错误或已过期。请查看最新的邮件，或重新发送验证码。"
+  "The code is wrong or has expired. Check the newest email, or send a new code.": "验证码错误或已过期。请查看最新的邮件，或重新发送验证码。",
+  "We sent a new email to {email}.": "新邮件已发送到 {email}。",
+  "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "没有收到？请检查垃圾邮件文件夹，或重新发送验证码。如果邮件里是链接而不是验证码，请打开链接，然后登录。"
 }

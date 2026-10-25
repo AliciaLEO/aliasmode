@@ -1928,7 +1928,7 @@ function App() {
     try {
       await resendCloudSignUp(confirmationEmail);
       setAuthCode("");
-      setAuthNotice(t("We sent a new code to {email}.", { email: confirmationEmail }));
+      setAuthNotice(t("We sent a new email to {email}.", { email: confirmationEmail }));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -3210,7 +3210,7 @@ function App() {
                   <button type="button" disabled={authBusy} onClick={() => void resendConfirmation()}>{t("Send a new code")}</button>
                   <button type="button" disabled={authBusy} onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView("signin"); }}>{t("Back to sign in")}</button>
                 </div>
-                <p className="auth-hint">{t("Did not get it? Check your spam folder, or send a new code.")}</p>
+                <p className="auth-hint">{t("Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.")}</p>
               </>
             ) : (
               <>

@@ -1490,6 +1490,8 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .auth-actions a:hover { text-decoration: underline; }
 .auth-actions button { padding: 0; color: var(--accent); background: none; border: 0; font-size: 12.5px; }
 .auth-actions button:hover:not(:disabled) { text-decoration: underline; }
+.auth-form input.code-input { max-width: 220px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 22px; letter-spacing: 8px; text-align: center; }
+.onboarding-card > .auth-hint { margin: 14px 0 0; color: var(--faint); font-size: 12px; }
 .local-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
 .onboarding-card .local-choice .mode-primary { margin-top: 0; }
 .continue-local { display: block; margin-top: 26px; padding: 0; color: var(--faint); background: none; border: 0; font-size: 12px; cursor: pointer; }

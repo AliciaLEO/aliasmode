@@ -3179,6 +3179,37 @@ test("Cloud forgot password stays neutral when Auth throttles repeat emails", as
   s.close();
 });
 
+test("Cloud sign-up codes confirm through Auth, report a wrong code, and pass Auth error codes on", async () => {
+  const s = store();
+  const verified: string[][] = [];
+  let failure: Error | null = null;
+  const cloudAuth = {
+    async acquireTransition() { return { generation: 0, release() {} }; },
+    isTransitionCurrent() { return true; },
+    async verifySignUpCode(email: string, code: string) { verified.push([email, code]); if (failure) throw failure; },
+    async resendSignUpConfirmation() {
+      throw new SupabaseAuthRequestError("Email rate limit exceeded", { kind: "http", status: 429, retryable: true, code: "over_email_send_rate_limit" });
+    },
+  } as unknown as CloudAuthRuntime;
+  const post = (action: string, body: unknown) => handleUiRequest(new Request(`http://x/ui/api/cloud-auth/${action}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  }), {} as any, s, null, { cloudAuth });
+
+  expect((await post("verify-signup", { email: "new@example.com", code: "12345" }))!.status).toBe(400);
+  expect(verified).toEqual([]);
+  expect(await (await post("verify-signup", { email: "new@example.com", code: "123456" }))!.json()).toEqual({ ok: true });
+  failure = new SupabaseAuthRequestError("Token has expired or is invalid", { kind: "http", status: 403, retryable: false, code: "otp_expired" });
+  expect(await (await post("verify-signup", { email: "new@example.com", code: "654321" }))!.json()).toEqual({
+    ok: false, error: "The code is wrong or has expired.", code: "otp_invalid",
+  });
+  expect(verified).toEqual([["new@example.com", "123456"], ["new@example.com", "654321"]]);
+  // Auth error codes, such as email_not_confirmed at sign-in, reach the dashboard.
+  expect(await (await post("resend-signup", { email: "new@example.com" }))!.json()).toEqual({
+    ok: false, error: "Email rate limit exceeded", code: "over_email_send_rate_limit",
+  });
+  s.close();
+});
+
 test("Cloud workspace API forwards folder deletion and preserves Cloud conflicts", async () => {
   const s = store();
   const deleted: string[] = [];

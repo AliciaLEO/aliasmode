@@ -291,14 +291,23 @@ async function cloudAuthAction(action: string, input: Record<string, string | bo
     ) {
       throw new CloudSessionRestoreError(body.error, body.stage, body.retryable, body.category, body.code);
     }
-    throw new Error(body.error || "Cloud authentication failed");
+    throw new CloudAuthError(body.error || "Cloud authentication failed", typeof body.code === "string" ? body.code : undefined);
   }
   return body;
+}
+
+/** A failed Cloud auth action; `code` is the Auth error code, such as email_not_confirmed. */
+export class CloudAuthError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "CloudAuthError";
+  }
 }
 
 export const signUpCloud = (email: string, password: string) =>
   cloudAuthAction("signup", { email, password });
 export const resendCloudSignUp = (email: string) => cloudAuthAction("resend-signup", { email });
+export const verifyCloudSignUp = (email: string, code: string) => cloudAuthAction("verify-signup", { email, code });
 export const requestCloudPasswordReset = (email: string) => cloudAuthAction("forgot-password", { email });
 export const signInCloud = (email: string, password: string, queueKey?: string) =>
   cloudAuthAction("signin", { email, password, ...(queueKey ? { queueKey } : {}) });

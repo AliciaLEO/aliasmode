@@ -140,6 +140,10 @@ export class CloudAuthRuntime {
     return this.auth.resendSignUpConfirmation(email);
   }
 
+  verifySignUpCode(email: string, code: string): Promise<void> {
+    return this.auth.verifySignUpCode(email, code);
+  }
+
   requestPasswordReset(email: string): Promise<void> {
     return this.auth.requestPasswordReset(email);
   }

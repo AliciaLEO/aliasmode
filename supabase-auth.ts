@@ -24,7 +24,7 @@ export interface SignUpResult {
 export type SupabaseAuthFailure =
   | { kind: "transport"; retryable: true }
   | { kind: "timeout"; retryable: true }
-  | { kind: "http"; status: number; retryable: boolean };
+  | { kind: "http"; status: number; retryable: boolean; code?: string };
 
 export class SupabaseAuthRequestError extends Error {
   constructor(
@@ -76,7 +76,8 @@ export class SupabaseAuthClient {
   async signUp(email: string, password: string): Promise<SignUpResult> {
     const body = await this.call(`/signup?redirect_to=${encodeURIComponent(EMAIL_CONFIRMATION_REDIRECT)}`, {
       method: "POST",
-      body: JSON.stringify({ email, password }),
+      // The confirmation email shows a code only to app sign-ups; the website gets a link.
+      body: JSON.stringify({ email, password, data: { aliasmode_app: true } }),
     });
     const user = body.user ?? body;
     if (!user?.id) throw new Error("AliasMode Auth signup response is missing a user");
@@ -87,6 +88,14 @@ export class SupabaseAuthClient {
     await this.call(`/resend?redirect_to=${encodeURIComponent(EMAIL_CONFIRMATION_REDIRECT)}`, {
       method: "POST",
       body: JSON.stringify({ type: "signup", email }),
+    });
+  }
+
+  /** Confirm a new account with the 6-digit code from its confirmation email. */
+  async verifySignUpCode(email: string, code: string): Promise<void> {
+    await this.call("/verify", {
+      method: "POST",
+      body: JSON.stringify({ type: "signup", email, token: code }),
     });
   }
 
@@ -197,7 +206,12 @@ export class SupabaseAuthClient {
         if (!response.ok) {
           throw new SupabaseAuthRequestError(
             body?.msg ?? body?.message ?? body?.error_description ?? `AliasMode Auth failed (${response.status})`,
-            { kind: "http", status: response.status, retryable: isRetryableAuthStatus(response.status) },
+            {
+              kind: "http",
+              status: response.status,
+              retryable: isRetryableAuthStatus(response.status),
+              ...(typeof body?.error_code === "string" ? { code: body.error_code } : {}),
+            },
           );
         }
         return body;

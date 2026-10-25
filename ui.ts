@@ -847,6 +847,21 @@ export async function handleUiRequest(
         await options.cloudAuth.resendSignUpConfirmation(body.email);
         return Response.json({ ok: true });
       }
+      if (pathname === "/ui/api/cloud-auth/verify-signup") {
+        if (typeof body.email !== "string" || !body.email || typeof body.code !== "string" || !/^\d{6}$/.test(body.code)) {
+          return Response.json({ ok: false, error: "Enter the 6-digit code from the email." }, { status: 400 });
+        }
+        try {
+          await options.cloudAuth.verifySignUpCode(body.email, body.code);
+        } catch (error) {
+          // Auth answers a wrong or expired code with 403 otp_expired.
+          if (error instanceof SupabaseAuthRequestError && error.failure.kind === "http" && (error.failure.status === 403 || error.failure.code === "otp_expired")) {
+            return Response.json({ ok: false, error: "The code is wrong or has expired.", code: "otp_invalid" }, { status: 400 });
+          }
+          throw error;
+        }
+        return Response.json({ ok: true });
+      }
       if (pathname === "/ui/api/cloud-auth/forgot-password") {
         if (typeof body.email !== "string" || !body.email) {
           return Response.json({ ok: false, error: "email is required" }, { status: 400 });
@@ -1055,7 +1070,9 @@ export async function handleUiRequest(
       }
       return Response.json({ ok: false, error: "unknown Cloud auth action" }, { status: 404 });
     } catch (error) {
-      return Response.json({ ok: false, error: msg(error) }, { status: 400 });
+      // Auth error codes such as email_not_confirmed let the dashboard pick the next step.
+      const code = error instanceof SupabaseAuthRequestError && error.failure.kind === "http" ? error.failure.code : undefined;
+      return Response.json({ ok: false, error: msg(error), ...(code ? { code } : {}) }, { status: 400 });
     } finally {
       authTransition?.release();
       finishAccountExit?.();

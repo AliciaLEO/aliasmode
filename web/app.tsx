@@ -27,6 +27,7 @@ import {
   type AppModeConfig,
   type CloudAuthState,
   CloudSessionRestoreError,
+  CloudAuthError,
   type CloudDiagnosticEvent,
   type CloudTeamState,
   acceptCloudInvitation,
@@ -50,6 +51,7 @@ import {
   restoreCloudSession,
   requestCloudPasswordReset,
   resendCloudSignUp,
+  verifyCloudSignUp,
   selectAppMode,
   fetchProfiles,
   serialLoader,
@@ -1203,13 +1205,14 @@ function App() {
   const [cloudAuth, setCloudAuth] = useState<CloudAuthState | null>(null);
   const [savedSessionPhase, setSavedSessionPhase] = useState<SavedSessionPhase>("restoring");
   const [scheduledRefreshPending, setScheduledRefreshPending] = useState(false);
-  const [authView, setAuthView] = useState<"signin" | "signup">("signin");
+  const [authView, setAuthView] = useState<"signin" | "signup" | "verify">("signin");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [authErr, setAuthErr] = useState<string | null>(null);
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [confirmationEmail, setConfirmationEmail] = useState("");
+  const [authCode, setAuthCode] = useState("");
   const [localPrompt, setLocalPrompt] = useState(false);
   const [invitationCode, setInvitationCode] = useState("");
   const [team, setTeam] = useState<CloudTeamState | null>(null);
@@ -1824,12 +1827,20 @@ function App() {
     try {
       if (authView === "signup") {
         const result = await signUpCloud(authEmail, authPassword);
-        setAuthNotice(result.verificationRequired
-          ? t("We sent a confirmation link to {email}. Open it, then come back and select Sign in.", { email: authEmail })
-          : t("Account created. You can sign in now."));
-        setConfirmationEmail(result.verificationRequired ? authEmail : "");
-        setAuthView("signin");
+        if (result.verificationRequired) {
+          setConfirmationEmail(authEmail);
+          setAuthCode("");
+          setAuthView("verify");
+        } else {
+          setAuthNotice(t("Account created. You can sign in now."));
+          setAuthView("signin");
+        }
       } else {
+        if (authView === "verify") {
+          await verifyCloudSignUp(confirmationEmail, authCode);
+          // The code works once: if the sign-in below fails, the user retries from the sign-in form.
+          setAuthView("signin");
+        }
         const stored = await readDesktopCloudCredentials();
         const result = await signInCloud(authEmail, authPassword, stored?.queueKey);
         if (generation !== authGeneration.current) return;
@@ -1866,7 +1877,16 @@ function App() {
         if (!persisted) setAuthNotice(t("Signed in for this run; desktop credential storage is unavailable."));
       }
     } catch (error) {
-      if (generation === authGeneration.current) {
+      if (generation !== authGeneration.current) return;
+      if (error instanceof CloudAuthError && error.code === "email_not_confirmed") {
+        // An account that was never confirmed signs in through the code screen.
+        setConfirmationEmail(authEmail);
+        setAuthCode("");
+        setAuthView("verify");
+        setAuthNotice(t("Confirm your email first. Enter the code from the email, or send a new code."));
+      } else if (error instanceof CloudAuthError && error.code === "otp_invalid") {
+        setAuthErr(t("The code is wrong or has expired. Check the newest email, or send a new code."));
+      } else {
         setAuthErr(error instanceof Error ? error.message : String(error));
       }
     } finally {
@@ -1907,7 +1927,8 @@ function App() {
     setAuthErr(null);
     try {
       await resendCloudSignUp(confirmationEmail);
-      setAuthNotice(t("Confirmation email sent again."));
+      setAuthCode("");
+      setAuthNotice(t("We sent a new code to {email}.", { email: confirmationEmail }));
     } catch (error) {
       setAuthErr(error instanceof Error ? error.message : String(error));
     } finally {
@@ -3165,6 +3186,32 @@ function App() {
                   <button className="mode-secondary" type="button" disabled={modeBusy} onClick={() => void chooseMode("local")}>{modeBusy ? t("Switching…") : t("Continue locally")}</button>
                 </div>
               </>
+            ) : authView === "verify" ? (
+              <>
+                <h1 id="onboarding-title">{t("Check your email")}</h1>
+                <p>{t("Enter the 6-digit code we sent to {email}.", { email: confirmationEmail })}</p>
+                <form className="auth-form" onSubmit={(event) => { event.preventDefault(); void submitCloudAuth(); }}>
+                  <label>{t("Confirmation code")}
+                    <input
+                      className="code-input"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      autoFocus
+                      required
+                      value={authCode}
+                      onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    />
+                  </label>
+                  {authErr && <div className="mode-error" role="alert">{authErr}</div>}
+                  {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
+                  <button className="mode-primary" type="submit" disabled={authBusy || authCode.length !== 6}>{authBusy ? t("Working…") : t("Confirm and sign in")}</button>
+                </form>
+                <div className="auth-actions">
+                  <button type="button" disabled={authBusy} onClick={() => void resendConfirmation()}>{t("Send a new code")}</button>
+                  <button type="button" disabled={authBusy} onClick={() => { setAuthErr(null); setAuthNotice(null); setAuthView("signin"); }}>{t("Back to sign in")}</button>
+                </div>
+                <p className="auth-hint">{t("Did not get it? Check your spam folder, or send a new code.")}</p>
+              </>
             ) : (
               <>
                 <h1 id="onboarding-title">{authView === "signin" ? t("Sign in to AliasMode Cloud") : t("Create your Cloud account")}</h1>
@@ -3174,11 +3221,6 @@ function App() {
                   <label>{t("Password")}<input type="password" autoComplete={authView === "signin" ? "current-password" : "new-password"} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} /></label>
                   {authErr && <div className="mode-error" role="alert">{authErr}</div>}
                   {authNotice && <div className="auth-notice" role="status">{authNotice}</div>}
-                  {confirmationEmail && (
-                    <button type="button" className="mode-secondary" disabled={authBusy} onClick={() => void resendConfirmation()}>
-                      {t("Resend confirmation")}
-                    </button>
-                  )}
                   <button className="mode-primary" type="submit" disabled={authBusy}>{authBusy ? t("Working…") : authView === "signin" ? t("Sign in") : t("Create account")}</button>
                 </form>
                 <div className="auth-actions">

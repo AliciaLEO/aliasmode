@@ -76,6 +76,35 @@ test("Supabase signup uses the production confirmation redirect", async () => {
   expect(url).toBe("https://auth.aliasmode.test/auth/v1/signup?redirect_to=https%3A%2F%2Faliasmode.com%2Fauth%2Femail-confirmation");
 });
 
+test("Supabase signup marks app sign-ups so their email shows a code", async () => {
+  let body: unknown;
+  const auth = client(async (_url, init) => {
+    body = JSON.parse(String(init?.body));
+    return Response.json({ user: { id: "account1", email: "user@example.com", email_confirmed_at: null } });
+  });
+  await auth.signUp("user@example.com", "password");
+  expect(body).toEqual({ email: "user@example.com", password: "password", data: { aliasmode_app: true } });
+});
+
+test("Supabase auth confirms a signup with its email code and keeps Auth error codes", async () => {
+  let url = "";
+  let body: unknown;
+  let answer = Response.json({ access_token: "a", refresh_token: "r", expires_in: 3600, user: { id: "account1" } });
+  const auth = client(async (nextUrl, init) => {
+    url = String(nextUrl);
+    body = JSON.parse(String(init?.body));
+    return answer;
+  });
+  await auth.verifySignUpCode("user@example.com", "123456");
+  expect(url).toBe("https://auth.aliasmode.test/auth/v1/verify");
+  expect(body).toEqual({ type: "signup", email: "user@example.com", token: "123456" });
+
+  answer = Response.json({ code: 403, error_code: "otp_expired", msg: "Token has expired or is invalid" }, { status: 403 });
+  const error = await auth.verifySignUpCode("user@example.com", "000000").catch((caught) => caught);
+  expect(error).toBeInstanceOf(SupabaseAuthRequestError);
+  expect(error.failure).toEqual({ kind: "http", status: 403, retryable: false, code: "otp_expired" });
+});
+
 test("Supabase auth resends signup confirmation with the production redirect", async () => {
   let url = "";
   let body: unknown;

@@ -1871,6 +1871,27 @@ test("Cloud stops a windowless browser at once when its capture fails and keeps 
   state.store.close();
 });
 
+test("Cloud leaves a browser open when its capture fails after a page came back", async () => {
+  const state = setup();
+  const options = (state.coordinator as any).options;
+  const observations = [false, false, false, true];
+  options.launcher.hasPageTargets = async () => observations.shift() ?? true;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  options.readSession = async () => {
+    state.events.push("capture");
+    throw new PlaywrightWorkerError("timeout", "capture timed out");
+  };
+  state.events.length = 0;
+
+  for (let check = 0; check < 3; check++) await state.coordinator.checkWindowsOnce("profile1");
+
+  expect(state.events).toEqual(["reconcile", "capture"]);
+  expect(state.store.getLaunch("profile1")).not.toBeNull();
+  expect(state.queue.getOpen("profile1", "account1")?.cleanupMode).toBeUndefined();
+  state.queue.close();
+  state.store.close();
+});
+
 test("Cloud keeps the browser of a script that closes every page and opens a new one", async () => {
   const state = setup();
   const observations = [false, false, true, false, false, true];

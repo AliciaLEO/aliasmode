@@ -2304,6 +2304,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (
         !open || open.registrationId !== registrationId || open.cleanupMode ||
         !launch || !this.isExactRunningLaunch(open, launch) ||
+        // A page came back during the capture: leave that browser open, as the app's Close does.
+        await this.options.launcher.hasPageTargets(profileId).catch(() => true) ||
         !queue.setOpenCleanup(profileId, accountId, registrationId, "sync")
       ) return;
       const retained = queue.getOpen(profileId, accountId);

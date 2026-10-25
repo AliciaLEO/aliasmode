@@ -330,6 +330,15 @@ function cloudCloseResponse(result: CloudBrowserCloseResult): Response {
       { status: 500 },
     );
   }
+  // The dashboard shows its own translated notice for this case. A conflict keeps its message.
+  if (result.captureFailed && result.sync !== "conflict") {
+    return Response.json({
+      ok: true,
+      sync: result.sync,
+      captureFailed: true,
+      warning: "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.",
+    });
+  }
   if (result.sync === "pending") {
     return Response.json({
       ok: true,

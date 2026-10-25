@@ -1156,6 +1156,20 @@ test("heartbeatOnce renews the lease and pushes the current session", async () =
   expect(h.store.getLaunch("k1d0cd11")!.sessionBaseVersion).toBe(1);
 });
 
+test("each later capture seed carries the storage the last capture read", async () => {
+  const seeds: unknown[] = [];
+  const telegram = { origin: "https://web.telegram.org", localStorage: [{ name: "dc2_auth_key", value: '"key"' }] };
+  const h = harness(fakeHub(), (async (_ws: string, seed: unknown) => {
+    seeds.push(seed);
+    return JSON.stringify({ cookies: [], origins: [telegram] });
+  }) as any);
+  await h.coord.open("k1d0cd11");
+  await h.coord.heartbeatOnce("k1d0cd11", "ws://x/k1d0cd11");
+  await h.coord.heartbeatOnce("k1d0cd11", "ws://x/k1d0cd11");
+  // An origin that the next capture cannot read keeps this storage instead of dropping it.
+  expect(seeds.at(-1)).toMatchObject({ origins: ["https://web.telegram.org"], saved: [telegram] });
+});
+
 test("scheduled heartbeats are single-flight when a prior tick stalls", async () => {
   const hub = fakeHub();
   let tick: (() => void) | undefined;

@@ -12,7 +12,7 @@ import { PendingSyncQueue } from "./pending-sync.ts";
 import { PlaywrightWorkerError } from "./playwright-runtime.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { completeProfileFingerprint } from "./firefox-config.ts";
-import { sessionBundleSignature, SessionRestoreError } from "./session.ts";
+import { keepUnreadableOrigins, sessionBundleSignature, SessionRestoreError } from "./session.ts";
 import { ProfileStore } from "./store.ts";
 import { handleUiRequest } from "./ui.ts";
 
@@ -1367,7 +1367,7 @@ test("Cloud heartbeat releases a retained restoring registration after manual br
   state.store.close();
 });
 
-test("terminal running heartbeat retries a failed capture without an external close", async () => {
+test("terminal running heartbeat stops a browser whose capture fails and parks its last checkpoint", async () => {
   const state = setup({
     heartbeatMs: 60_000,
     closeConflict: true,
@@ -1375,27 +1375,29 @@ test("terminal running heartbeat retries a failed capture without an external cl
     clearIntervalFn: () => {},
   });
   const options = (state.coordinator as any).options;
-  const readSession = options.readSession;
   try {
     expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
     options.cloud.heartbeat = async () => { throw new CloudApiError("stale", "version_conflict", 409); };
     options.cloud.openProfile = async () => { throw new CloudApiError("open elsewhere", "profile_open", 409); };
-    options.readSession = async () => { throw new Error("capture failed"); };
-    await state.coordinator.heartbeatOnce("profile1");
-    expect(state.store.getLaunch("profile1")).not.toBeNull();
-    expect(state.queue.getOpen("profile1", "account1")?.phase).toBe("running");
-    expect(state.queue.getOpen("profile1", "account1")?.cleanupMode).toBeUndefined();
-    expect(state.closeCalls()).toBe(0);
-    expect(state.abandonCalls()).toBe(0);
-    expect((state.coordinator as any).timers.has("profile1")).toBe(true);
+    let captures = 0;
+    options.readSession = async () => { captures++; throw new Error("capture failed"); };
 
-    options.readSession = readSession;
     await state.coordinator.heartbeatOnce("profile1");
+
+    // One retry, then the browser stops; another device's newer copy is not overwritten.
+    expect(captures).toBe(2);
     expect(state.store.getLaunch("profile1")).toBeNull();
     expect((state.coordinator as any).timers.has("profile1")).toBe(false);
+    expect(state.queue.getOpen("profile1", "account1")).toBeNull();
     expect(state.queue.list("account1")).toMatchObject([{ readyToSubmit: true, status: "conflict" }]);
+    const parked = state.queue.get(state.queue.list("account1")[0]!.id, "account1")!;
+    expect(parked.payload.session.cookies).toEqual(payload().session.cookies);
+    expect(state.abandonCalls()).toBe(0);
+    // The parked-session notice covers this profile, not "not saved to Cloud yet".
+    const [roster] = (await rosterReconciled(state.coordinator)).profiles;
+    expect(roster?.parkedSession).toBeDefined();
+    expect(roster?.cloudUnsavedSince).toBeUndefined();
   } finally {
-    options.readSession = readSession;
     await state.coordinator.releaseAll(true);
     state.queue.close();
     state.store.close();
@@ -1522,12 +1524,14 @@ test.each([
         operation, responseCategory: responseCategory as any,
       });
     };
-    await expect(state.coordinator.close("profile1")).rejects.toThrow("Cloud session capture failed (timeout); browser left open");
+    expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete", captureFailed: true });
     expect(state.logs.some((line) => line.includes(`Cloud session capture failed (timeout, PlaywrightWorkerError, stage=${stage}, elapsedMs=`))).toBe(true);
     expect(JSON.stringify(state.logs)).not.toContain("private");
-    expect(state.store.getLaunch("profile1")).not.toBeNull();
-    expect((state.coordinator as any).timers.has("profile1")).toBe(true);
-    expect(state.closeCalls()).toBe(0);
+    // A timed-out capture is not retried, so a close stays within one worker time limit.
+    expect(state.logs.filter((line) => line.includes("stage=")).length).toBe(1);
+    expect(state.store.getLaunch("profile1")).toBeNull();
+    expect((state.coordinator as any).timers.has("profile1")).toBe(false);
+    expect(state.closeCalls()).toBe(1);
     expect(state.abandonCalls()).toBe(0);
   } finally {
     options.readSession = readSession;
@@ -2065,7 +2069,14 @@ test("Cloud storage writes checkpoint the open tabs once per debounce and at mos
   await waitForCaptures(1);
   expect(captures()).toBe(1);
   // Only open tabs are read; every other origin keeps its saved storage.
-  expect(state.captureSeeds).toEqual([{ origins: [], openTabsOnly: true }]);
+  expect(state.captureSeeds).toEqual([{
+    origins: [],
+    openTabsOnly: true,
+    saved: [
+      { origin: "https://closed.example", localStorage: [{ name: "token", value: "saved" }] },
+      { origin: "https://web.telegram.org", localStorage: [{ name: "dc", value: "1" }] },
+    ],
+  }]);
   expect(checkpoint().origins).toEqual([
     { origin: "https://closed.example", localStorage: [{ name: "token", value: "saved" }] },
     { origin: "https://web.telegram.org", localStorage: [{ name: "account1", value: "login-1" }] },
@@ -2281,9 +2292,11 @@ test("Cloud checkpoint probes every origin from the durable open bundle", async 
 
   await state.coordinator.heartbeatOnce("profile1");
 
+  // The saved storage goes with the seed, so an origin that the worker cannot read keeps it.
   expect(state.captureSeeds.at(-1)).toEqual({
     origins: ["https://closed.example"],
     telegramClient: "k",
+    saved: [{ origin: "https://closed.example", localStorage: [{ name: "token", value: "prior-value" }] }],
   });
   await state.coordinator.releaseAll(true);
   state.queue.close();
@@ -4759,6 +4772,174 @@ test("opening a profile another device left open says its last changes may be mi
   const result = await state.coordinator.open("profile1", ["--window-size=1200,800"]);
   expect(result.ok).toBe(true);
   expect(result.warning).toContain("Office PC did not close this profile.");
+  state.queue.close();
+  state.store.close();
+});
+
+/** Record the payload of each close that reaches Cloud. */
+function recordClosedPayloads(state: ReturnType<typeof setup>) {
+  const closed: PortableProfileV1[] = [];
+  const cloud = (state.coordinator as any).options.cloud;
+  const closeOpen = cloud.closeOpen;
+  cloud.closeOpen = async (registrationId: string, request: { payload: PortableProfileV1 }) => {
+    closed.push(request.payload);
+    return closeOpen(registrationId, request);
+  };
+  return closed;
+}
+
+test.each([
+  ["a site cannot be read", (options: any) => {
+    options.readSession = async () => {
+      throw new PlaywrightWorkerError("operation_failed", "capture failed", { operation: "origin_storage", outcome: "failed" });
+    };
+  }, "operation_failed", 2],
+  ["the session is too large for the worker", (options: any) => {
+    options.readSession = async () => {
+      throw new PlaywrightWorkerError("invalid_response", "too large", { responseCategory: "stdout_overflow" });
+    };
+  }, "invalid_response", 2],
+  ["the worker crashes", (options: any) => {
+    options.readSession = async () => {
+      throw new PlaywrightWorkerError("runtime_unavailable", "no output", { responseCategory: "empty_stdout" });
+    };
+  }, "runtime_unavailable", 2],
+  // The literal "(failed)" users saw: the relay of a running profile could not be restored.
+  ["the running browser cannot be verified", (options: any) => {
+    options.launcher.verifyRunningIdentity = async () => { throw new BrowserLaunchError("relay_setup"); };
+  }, "failed", 0],
+] as const)("Cloud close stops the browser with the last checkpoint when %s", async (_case, fail, code, reads) => {
+  const state = setup();
+  const options = (state.coordinator as any).options;
+  const closed = recordClosedPayloads(state);
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "checkpoint");
+  await state.coordinator.heartbeatOnce("profile1");
+  fail(options);
+  const read = options.readSession;
+  let attempts = 0;
+  options.readSession = async (...args: unknown[]) => { attempts++; return read(...args); };
+
+  expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete", captureFailed: true });
+
+  expect(attempts).toBe(reads);
+  expect(state.events).toContain("stop");
+  expect(state.store.getLaunch("profile1")).toBeNull();
+  expect(state.queue.getOpen("profile1", "account1")).toBeNull();
+  expect(state.queue.list("account1")).toEqual([]);
+  // Cloud gets the last checkpoint, and this device's newer state on disk stays tied to it.
+  expect(closed.map((saved) => saved.session.cookies[0]?.value)).toEqual(["checkpoint"]);
+  const { sessionBundle } = decodePortableProfile(closed[0]!);
+  expect(options.launcher.matchesCloudSession("profile1", sessionBundleSignature(sessionBundle))).toBe(true);
+  expect(state.logs).toContain(`profile1: Cloud session capture failed (${code}); stopping the browser with the last saved copy`);
+  expect(typeof (await rosterReconciled(state.coordinator)).profiles[0]?.cloudUnsavedSince).toBe("number");
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud close retries a failed capture once and saves the fresh session", async () => {
+  const state = setup();
+  const options = (state.coordinator as any).options;
+  const closed = recordClosedPayloads(state);
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  let reads = 0;
+  options.readSession = async () => {
+    if (++reads === 1) throw new PlaywrightWorkerError("operation_failed", "first read failed", { operation: "cookies" });
+    return JSON.stringify({ cookies: [{ name: "auth_token", value: "fresh", domain: ".x.com", path: "/" }], origins: [] });
+  };
+
+  expect(await state.coordinator.close("profile1")).toEqual({ closed: true, sync: "complete" });
+
+  expect(reads).toBe(2);
+  expect(closed.map((saved) => saved.session.cookies[0]?.value)).toEqual(["fresh"]);
+  expect((await rosterReconciled(state.coordinator)).profiles[0]?.cloudUnsavedSince).toBeUndefined();
+  state.queue.close();
+  state.store.close();
+});
+
+test("after a close without its final capture, the next open restores this device's session and saves it to Cloud", async () => {
+  const state = setup({ nativeSessionAvailable: true });
+  const options = (state.coordinator as any).options;
+  const closed: PortableProfileV1[] = [];
+  options.cloud.closeOpen = async (_registrationId: string, request: { payload: PortableProfileV1 }) => {
+    closed.push(request.payload);
+    return { ok: true, status: "accepted", version: 5 };
+  };
+  const unsavedSince = async () => (await rosterReconciled(state.coordinator)).profiles[0]?.cloudUnsavedSince;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  changeSession(state, "checkpoint");
+  await state.coordinator.heartbeatOnce("profile1");
+  options.readSession = async () => { throw new PlaywrightWorkerError("timeout", "capture timed out"); };
+  expect(await state.coordinator.close("profile1")).toMatchObject({ closed: true, captureFailed: true });
+  expect(typeof await unsavedSince()).toBe("number");
+
+  // Cloud holds the last checkpoint now; the newer state stayed on this device's disk.
+  options.cloud.openProfile = async () => ({
+    ok: true, registrationId: "registration2", baseVersion: 5, payload: closed[0], activeOpens: [],
+  });
+  const uploads = liveCheckpoints(state, 5);
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  expect(state.startOptionsSeen.at(-1)).toMatchObject({ restoreLastSession: true, resetStorage: false });
+  expect(typeof await unsavedSince()).toBe("number");
+
+  changeSession(state, "newer");
+  await state.coordinator.heartbeatOnce("profile1");
+
+  expect(uploads.map((upload) => upload.cookie)).toEqual(["newer"]);
+  expect(await unsavedSince()).toBeUndefined();
+  await state.coordinator.releaseAll(true);
+  state.queue.close();
+  state.store.close();
+});
+
+test("Cloud close leaves the browser open only when it has no checkpoint to finish with", async () => {
+  const state = setup({ heartbeatMs: 60_000, setIntervalFn: () => ({}), clearIntervalFn: () => {} });
+  const options = (state.coordinator as any).options;
+  try {
+    expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+    state.queue.removeUnreadyCaptures("profile1", "account1", "registration1");
+    options.readSession = async () => { throw new PlaywrightWorkerError("timeout", "capture timed out"); };
+
+    await expect(state.coordinator.close("profile1")).rejects.toThrow(
+      "Could not save this profile's session, so its browser stays open. Try closing it again.",
+    );
+
+    expect(state.logs).toContain("profile1: Cloud session capture failed (timeout); browser left open");
+    expect(state.store.getLaunch("profile1")).not.toBeNull();
+    expect(state.queue.getOpen("profile1", "account1")?.cleanupMode).toBeUndefined();
+    expect((state.coordinator as any).timers.has("profile1")).toBe(true);
+    expect(state.closeCalls()).toBe(0);
+    expect(state.abandonCalls()).toBe(0);
+  } finally {
+    await state.coordinator.releaseAll(true);
+    state.queue.close();
+    state.store.close();
+  }
+});
+
+test("a Cloud capture keeps the checkpoint storage of an origin the worker could not read", async () => {
+  const state = setup({
+    session: {
+      cookies: [],
+      origins: [{ origin: "https://web.telegram.org", localStorage: [{ name: "dc2_auth_key", value: "\"saved\"" }] }],
+    },
+  });
+  const options = (state.coordinator as any).options;
+  expect((await state.coordinator.open("profile1", ["--window-size=1200,800"])).ok).toBe(true);
+  // As readSessionInSubprocess does with the worker's list of unreadable origins.
+  options.readSession = async (_endpoint: string, seed: { saved?: any[] }) => keepUnreadableOrigins(JSON.stringify({
+    cookies: [{ name: "auth_token", value: "fresh", domain: ".x.com", path: "/" }],
+    origins: [],
+    unreadableOrigins: ["https://web.telegram.org"],
+  }), seed.saved);
+
+  await state.coordinator.heartbeatOnce("profile1");
+
+  const checkpoint = state.queue.get(state.queue.list("account1")[0]!.id, "account1")!.payload.session;
+  expect(checkpoint.cookies.map((cookie) => cookie.value)).toEqual(["fresh"]);
+  expect(checkpoint.origins).toEqual([
+    { origin: "https://web.telegram.org", localStorage: [{ name: "dc2_auth_key", value: "\"saved\"" }] },
+  ]);
   state.queue.close();
   state.store.close();
 });

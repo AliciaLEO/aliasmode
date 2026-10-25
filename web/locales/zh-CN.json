@@ -703,5 +703,9 @@
   "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "没有收到？请检查垃圾邮件文件夹，或重新发送验证码。如果邮件里是链接而不是验证码，请打开链接，然后登录。",
   "Low disk space: {free} GB free on the drive that holds your profiles.": "磁盘空间不足：存放配置文件的磁盘仅剩 {free} GB 可用空间。",
   "When the disk is almost full, browsers delete saved site data, which can log profiles out. Free up space on this drive.": "磁盘快满时，浏览器会删除已保存的网站数据，配置文件可能因此退出登录。请清理此磁盘的空间。",
-  "Dismiss disk space warning": "关闭磁盘空间警告"
+  "Dismiss disk space warning": "关闭磁盘空间警告",
+  "not saved to Cloud yet": "尚未保存到云端",
+  "Cloud has an older copy since {time}. This device keeps the latest session and retries.": "自 {time} 起，云端只有较旧的副本。此设备保留最新会话，并会重试保存。",
+  "Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.": "已于 {time} 关闭，最新会话未保存到云端。下次在此设备上打开该环境时，会将其保存到云端。",
+  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "浏览器已关闭，但无法读取其最新会话。云端保留上次保存的副本；下次您在此设备上打开该环境时，会将较新的会话保存到云端。"
 }

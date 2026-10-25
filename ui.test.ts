@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
@@ -4395,6 +4395,18 @@ test("Cloud close route separates teardown from Cloud sync outcomes", async () =
     sync: "conflict",
     warning: "Browser closed, but Cloud could not accept the saved session. The encrypted snapshot remains on this device.",
   });
+
+  // The dashboard translates this notice by the flag; a conflict keeps its own message.
+  const captureFailed = "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.";
+  for (const sync of ["complete", "pending"]) {
+    result = { closed: true, sync, captureFailed: true };
+    response = await request();
+    expect(response!.status).toBe(200);
+    expect(await response!.json()).toEqual({ ok: true, sync, captureFailed: true, warning: captureFailed });
+  }
+  result = { closed: true, sync: "conflict", captureFailed: true };
+  expect((await (await request())!.json()).sync).toBe("conflict");
+  expect(readFileSync(join(import.meta.dir, "web", "app.tsx"), "utf8")).toContain(`t("${captureFailed}")`);
 
   result = { closed: false, reason: "teardown_unconfirmed" };
   response = await request();

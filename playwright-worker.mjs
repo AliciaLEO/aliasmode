@@ -55,6 +55,24 @@ async function sessionStep(operation, run) {
   catch (error) { if (error?.details) throw error; throw sessionError(operation); }
 }
 
+// The 240 s worker limit leaves room for the connect (30 s), the origin reads and the cookies.
+const ORIGIN_READ_TIMEOUT_MS = 20_000;
+const ORIGINS_BUDGET_MS = 120_000;
+
+/** Settle with `promise`, or reject after `timeoutMs` and call `onTimeout`; the late promise is ignored. */
+async function within(promise, timeoutMs, onTimeout) {
+  promise.catch(() => {});
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => { onTimeout(); reject(new Error("timed out")); }, Math.max(1, timeoutMs));
+      }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
 async function closeWithin(close, timeoutMs = 5_000) {
   if (!close) return true;
   let timer;
@@ -739,39 +757,45 @@ export async function captureSession(browser, payload, options = {}) {
   }
 
   if (options.nativeStorage) registerNativeOrigins(context, origins);
+  // One hidden page reads every closed origin. A failed start fails each later read at once.
   let reader;
+  const readOrigin = async (origin) => {
+    const live = await captureLiveOrigin(context, origin, !!options.nativeStorage);
+    // Without a live tab, an open-tab capture leaves the origin to the caller's saved copy.
+    if (live || seed?.openTabsOnly) return live;
+    if (!options.nativeStorage) {
+      reader ??= createReadOnlyStorageReader(browser, context);
+      return (await reader).read(origin);
+    }
+    // Closed-origin storage cannot change until that origin loads again, which clears its cache entry.
+    let storage = options.storageCache?.get(origin);
+    if (storage) return storage;
+    storage = await nativeOriginStorage(context, origin);
+    if (!storage) throw sessionError("origin_storage");
+    if (!hasOriginPage(context, origin)) options.storageCache?.set(origin, storage);
+    return storage;
+  };
   try {
     const byOrigin = new Map();
     const unreadable = [];
+    const deadline = Date.now() + ORIGINS_BUDGET_MS;
+    const readTimeoutMs = options.originReadTimeoutMs ?? ORIGIN_READ_TIMEOUT_MS;
+    let stalled = false;
     for (const origin of [...origins].sort()) {
-      let storage = await captureLiveOrigin(context, origin, !!options.nativeStorage);
-      // The caller keeps its saved copy of this origin; no temporary page opens.
-      if (!storage && seed?.openTabsOnly) continue;
-      if (!storage) {
-        if (options.nativeStorage) {
-          // Closed-origin storage cannot change until that origin loads again,
-          // which clears its cache entry.
-          storage = options.storageCache?.get(origin);
-          if (!storage) {
-            try {
-              storage = await nativeOriginStorage(context, origin);
-            } catch {
-              // The browser can refuse to open an origin as a page, for example when an extension
-              // blocks it. One such origin must not stop the capture: the caller keeps the storage
-              // that it saved for this origin before.
-              unreadable.push(origin);
-              continue;
-            }
-            if (!storage) throw sessionError("origin_storage");
-            if (!hasOriginPage(context, origin)) options.storageCache?.set(origin, storage);
-          }
-        } else {
-          reader ??= await sessionStep("hidden_target", () => createReadOnlyStorageReader(browser, context));
-          storage = await sessionStep("origin_storage", () => reader.read(origin));
-        }
+      // A site that the browser refuses to open as a page (for example one that an extension
+      // blocks), a storage or IndexedDB read that throws, or a tab that hangs must not stop the
+      // capture: the caller keeps the storage that it saved for this origin before, and the cookies
+      // below are still read. After a hang no further read starts, so two reads never overlap.
+      let storage;
+      try {
+        if (stalled || Date.now() >= deadline) throw new Error("origin reads are out of time");
+        storage = await within(readOrigin(origin), Math.min(readTimeoutMs, deadline - Date.now()), () => { stalled = true; });
+        if (storage) storage = capturedWebOriginStorage(origin, storage);
+      } catch {
+        unreadable.push(origin);
+        continue;
       }
-      const captured = await sessionStep("validation", () => capturedWebOriginStorage(origin, storage));
-      if (captured) byOrigin.set(origin, captured);
+      if (storage) byOrigin.set(origin, storage);
     }
 
     const cookies = await sessionStep("cookies", async () => typeof context.cookies === "function"
@@ -795,7 +819,7 @@ export async function captureSession(browser, payload, options = {}) {
       ...(unreadable.length ? { unreadableOrigins: unreadable } : {}),
     });
   } finally {
-    await reader?.close();
+    if (reader) await closeWithin(() => reader.then((opened) => opened.close(), () => {}));
   }
 }
 

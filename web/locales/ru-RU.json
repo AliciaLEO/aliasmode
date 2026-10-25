@@ -428,5 +428,9 @@
   "Did not get it? Check your spam folder, or send a new code. If the email has a link instead of a code, open it, then sign in.": "Письма нет? Проверьте папку «Спам» или отправьте новый код. Если в письме ссылка, а не код, откройте ее, затем войдите.",
   "Low disk space: {free} GB free on the drive that holds your profiles.": "Мало места на диске: на диске с вашими профилями свободно {free} ГБ.",
   "When the disk is almost full, browsers delete saved site data, which can log profiles out. Free up space on this drive.": "Когда диск почти заполнен, браузеры удаляют сохраненные данные сайтов, и профили могут выйти из аккаунтов. Освободите место на этом диске.",
-  "Dismiss disk space warning": "Скрыть предупреждение о месте на диске"
+  "Dismiss disk space warning": "Скрыть предупреждение о месте на диске",
+  "not saved to Cloud yet": "еще не сохранен в Облаке",
+  "Cloud has an older copy since {time}. This device keeps the latest session and retries.": "С {time} в Облаке более старая копия. Это устройство хранит последний сеанс и повторяет попытки сохранить его.",
+  "Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.": "Закрыт в {time}, а последний сеанс не попал в Облако. Это устройство сохранит его в Облако, когда профиль снова откроется здесь.",
+  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "Браузер закрыт, но его последний сеанс не удалось прочитать. В Облаке остается последняя сохраненная копия, а это устройство сохранит более новый сеанс в Облако, когда вы снова откроете профиль здесь."
 }

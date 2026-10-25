@@ -1315,7 +1315,8 @@ function cloudCloseHasSync(
   result: CloudBrowserCloseResult,
   sync: "complete" | "pending" | "conflict",
 ): boolean {
-  return result.closed && result.sync === sync;
+  // A smoke close must save its fresh session, not only the last checkpoint.
+  return result.closed && result.sync === sync && !result.captureFailed;
 }
 
 export interface CloudLauncherSmokeRuntime {

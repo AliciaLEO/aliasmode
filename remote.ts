@@ -253,6 +253,8 @@ export class RemoteCoordinator {
         ...(captured.telegramClient ?? seed.telegramClient
           ? { telegramClient: captured.telegramClient ?? seed.telegramClient }
           : {}),
+        // An origin that a later capture cannot read keeps this storage.
+        ...(next.saved ? { saved: next.saved } : {}),
       });
       return bundle;
     });

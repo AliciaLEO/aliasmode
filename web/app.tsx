@@ -2418,6 +2418,10 @@ function App() {
     }
   };
 
+  /** A Cloud close whose final capture failed gets a translated notice instead of the server's English one. */
+  const actionWarning = (r: any): string => r.captureFailed
+    ? t("Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.")
+    : r.warning;
   const act = async (id: string, fn: (id: string) => Promise<any>) => {
     setActionErr(null);
     setBusy((b) => ({ ...b, [id]: true }));
@@ -2425,7 +2429,7 @@ function App() {
       const r = await fn(id);
       await load(); // refresh first; load() no longer clears action errors
       if (r && r.ok === false) setActionErr(r.error || "action failed");
-      else if (r && r.warning) setActionErr(r.warning);
+      else if (r && r.warning) setActionErr(actionWarning(r));
     } catch (e) {
       await load().catch(() => {});
       setActionErr(String(e));
@@ -2961,7 +2965,7 @@ function App() {
       try {
         const r = await op(id);
         if (r?.ok === false) issues.push(`${id}: ${r.error || "action failed"}`);
-        else if (r?.warning) issues.push(`${id}: ${r.warning}`);
+        else if (r?.warning) issues.push(`${id}: ${actionWarning(r)}`);
       } catch (error) {
         issues.push(`${id}: ${String(error)}`);
       }
@@ -3901,8 +3905,10 @@ function App() {
                               <Icon name="lock" className="sm" />{p.lockedBy}
                             </span>
                           )}
-                          {p.running && p.cloudUnsavedSince && (
-                            <span className="unsaved" title={t("Cloud has an older copy since {time}. This device keeps the latest session and retries.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })}>
+                          {p.cloudUnsavedSince && (
+                            <span className="unsaved" title={p.running
+                              ? t("Cloud has an older copy since {time}. This device keeps the latest session and retries.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })
+                              : t("Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.", { time: new Date(p.cloudUnsavedSince).toLocaleString() })}>
                               <Icon name="warning" className="sm" />{t("not saved to Cloud yet")}
                             </span>
                           )}

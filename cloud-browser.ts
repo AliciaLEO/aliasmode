@@ -57,6 +57,8 @@ export interface CloudBrowserOpenResult {
 export interface CloudBrowserClosedResult {
   closed: true;
   sync: "complete" | "pending" | "conflict";
+  /** The final capture failed: Cloud got the last checkpoint, and this device keeps the newer session. */
+  captureFailed?: true;
 }
 
 export type CloudBrowserCloseResult =
@@ -98,7 +100,8 @@ export interface CloudBrowserProfile {
   version: number;
   /** Present while a refused session for this profile is recoverable here. */
   parkedSession?: CloudParkedSession;
-  /** While open: since when live checkpoint uploads keep failing, so Cloud holds an older copy. */
+  /** Since when Cloud holds an older copy: live checkpoint uploads keep failing, or the profile
+      closed without its final capture. */
   cloudUnsavedSince?: number;
 }
 
@@ -187,6 +190,8 @@ const TERMINAL_CONFLICT_WARNING =
   "Cloud rejected it; that session remains encrypted on this device.";
 const RESAVE_PENDING_ERROR =
   "This profile's last session from this device is still being saved to Cloud. Try again shortly.";
+const CAPTURE_KEPT_OPEN_ERROR =
+  "Could not save this profile's session, so its browser stays open. Try closing it again.";
 
 /**
  * Watch one browser storage folder. In Chromium's Network folder only the cookie database holds
@@ -364,6 +369,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   private readonly checkpointSignatures = new Map<string, CloudCheckpointState>();
   private readonly dirtyMonitors = new Map<string, CloudDirtyMonitor>();
   private readonly uploads = new Map<string, CloudUploadState>();
+  /** Per profile: since when it is closed without its final capture, until a later capture is in Cloud. */
+  private readonly closedUnsaved = new Map<string, number>();
   private readonly missingPageObservations = new Map<string, {
     registrationId: string;
     count: number;
@@ -476,6 +483,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           const cached = this.options.store.getProfile(profile.id);
           const parked = parkedSessions.get(profile.id);
           const upload = launch ? this.uploads.get(profile.id) : undefined;
+          // A parked session means Cloud took another device's copy; its own notice covers that.
+          const unsavedSince = upload?.failingSince !== undefined && upload.failures >= CLOUD_UPLOAD_FAILURES_SHOWN
+            ? upload.failingSince
+            : parked ? undefined : this.closedUnsaved.get(profile.id);
           const localRegistrationIds = localRegistrations.get(profile.id);
           const otherActiveOpens = profile.activeOpens.filter(
             (open) => !localRegistrationIds?.has(open.registrationId),
@@ -504,9 +515,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
             permission: profile.permission,
             version: profile.version,
             ...(parked ? { parkedSession: { savedAt: parked.createdAt, reason: parked.error } } : {}),
-            ...(upload?.failingSince !== undefined && upload.failures >= CLOUD_UPLOAD_FAILURES_SHOWN
-              ? { cloudUnsavedSince: upload.failingSince }
-              : {}),
+            ...(unsavedSince !== undefined ? { cloudUnsavedSince: unsavedSince } : {}),
           };
         }),
       healthSources: [],
@@ -1090,9 +1099,14 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
   }
 
   async close(profileId: string): Promise<CloudBrowserCloseResult> {
+    return this.closeOnce(profileId, true);
+  }
+
+  /** Without `stopOnCaptureFailure`, a failed final capture leaves the browser open for the caller. */
+  private async closeOnce(profileId: string, stopOnCaptureFailure: boolean): Promise<CloudBrowserCloseResult> {
     const existing = this.closing.get(profileId);
     if (existing) return existing;
-    const promise = this.withProfileTransition(profileId, () => this.doClose(profileId));
+    const promise = this.withProfileTransition(profileId, () => this.doClose(profileId, stopOnCaptureFailure));
     this.closing.set(profileId, promise);
     try {
       return await promise;
@@ -1101,7 +1115,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     }
   }
 
-  private async doClose(profileId: string): Promise<CloudBrowserCloseResult> {
+  private async doClose(profileId: string, stopOnCaptureFailure: boolean): Promise<CloudBrowserCloseResult> {
     this.diagnosticEvents.record("close_started");
     const { queue, accountId } = this.requireContext(false);
     let open = queue.getOpen(profileId, accountId);
@@ -1179,6 +1193,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       return this.closeResultForOpen(open, queue);
     }
 
+    let captureFailed = false;
     try {
       const profile = this.options.store.getProfile(profileId);
       if (!profile) throw new Error("Cloud profile cache is missing");
@@ -1187,7 +1202,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (!verifiedLaunch || !this.isExactRunningLaunch(open, verifiedLaunch)) {
         throw new Error("Cloud browser identity changed before session capture");
       }
-      const sessionBundle = await this.captureSession(open, queue, verifiedLaunch.ws);
+      const sessionBundle = await this.captureSession(open, queue, verifiedLaunch.ws, false, true);
       await this.options.launcher.verifyRunningIdentity(profileId);
       const capturedLaunch = this.options.store.getLaunch(profileId);
       if (!capturedLaunch || !this.isExactRunningLaunch(open, capturedLaunch)) {
@@ -1200,15 +1215,21 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         .find((capture) => !capture.readyToSubmit && capture.status !== "conflict");
       if (!pending) throw new Error("Cloud checkpoint is missing after session capture");
       this.diagnosticEvents.record("session_captured");
+      this.closedUnsaved.delete(profileId);
       if (!queue.setOpenCleanup(profileId, accountId, open.registrationId, "sync")) {
         this.diagnosticEvents.record("cleanup_retained");
         this.startHeartbeat(profileId);
         return this.teardownUnconfirmed();
       }
     } catch (error) {
-      this.diagnosticEvents.record("cleanup_retained");
-      this.startHeartbeat(profileId);
-      throw new Error(`Cloud session capture failed (${errorCode(error)}); browser left open`);
+      if (!stopOnCaptureFailure || !this.prepareStopWithoutCapture(open, queue)) {
+        this.log(`${profileId}: Cloud session capture failed (${errorCode(error)})${stopOnCaptureFailure ? "; browser left open" : ""}`);
+        this.diagnosticEvents.record("cleanup_retained");
+        this.startHeartbeat(profileId);
+        throw new Error(CAPTURE_KEPT_OPEN_ERROR);
+      }
+      captureFailed = true;
+      this.log(`${profileId}: Cloud session capture failed (${errorCode(error)}); stopping the browser with the last saved copy`);
     }
 
     const stopLaunch = this.options.store.getLaunch(profileId);
@@ -1225,9 +1246,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     await this.stopHeartbeatAndWait(profileId);
     this.diagnosticEvents.record("browser_stopped");
 
+    const failed = captureFailed ? { captureFailed: true as const } : {};
     if (!this.finalizeOpenCheckpoint(open, queue)) {
       this.diagnosticEvents.record("cleanup_retained");
-      return this.closeResultForOpen(open, queue);
+      return { ...this.closeResultForOpen(open, queue), ...failed };
     }
     this.clearCheckpointSignature(open);
     if (this.options.accountId() === accountId) {
@@ -1235,7 +1257,31 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     }
     const result = this.closeResultForOpen(open, queue);
     this.diagnosticEvents.record(result.sync === "complete" ? "session_synced" : "cleanup_retained");
-    return result;
+    return { ...result, ...failed };
+  }
+
+  /**
+   * The final capture failed: let the browser stop anyway and finish with the open's last
+   * checkpoint. Cloud gets that checkpoint, and the newer state stays on this device's disk. Its
+   * native-session marker names that checkpoint, so the next open here restores the newer state
+   * and saves it to Cloud. Without a checkpoint, nothing would tie the state on disk to the Cloud
+   * copy, so the browser stays open.
+   */
+  private prepareStopWithoutCapture(open: PendingOpenSession, queue: PendingSyncQueue): boolean {
+    try {
+      const current = queue.getOpen(open.profileId, open.accountId);
+      const launch = this.options.store.getLaunch(open.profileId);
+      if (
+        !current || current.registrationId !== open.registrationId || current.cleanupMode ||
+        !launch || !this.isExactRunningLaunch(current, launch) ||
+        !this.pendingCapturesForOpen(current, queue).some((capture) => !capture.readyToSubmit && capture.status !== "conflict") ||
+        !queue.setOpenCleanup(open.profileId, open.accountId, open.registrationId, "sync")
+      ) return false;
+    } catch {
+      return false;
+    }
+    this.closedUnsaved.set(open.profileId, Date.now());
+    return true;
   }
 
   private teardownUnconfirmed(): CloudBrowserCloseResult {
@@ -1418,38 +1464,51 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
 
   /**
    * `openTabsOnly` reads only origins with an open tab, so no temporary page opens, and keeps the
-   * saved storage of every other origin from the current checkpoint.
+   * saved storage of every other origin from the current checkpoint. An origin that the worker
+   * cannot read keeps its storage from the checkpoint too. `retry` reads once more after a
+   * failure that did not use up the worker's time limit.
    */
   private async captureSession(
     open: PendingOpenSession,
     queue: PendingSyncQueue,
     endpoint: string,
     openTabsOnly = false,
+    retry = false,
   ): Promise<string> {
     const state = this.checkpointState(open, queue);
-    const saved = openTabsOnly ? this.pendingCapturesForOpen(open, queue)
-      .find((capture) => !capture.readyToSubmit && capture.status !== "conflict")?.payload.session : undefined;
-    if (openTabsOnly && !saved) throw new Error("Cloud checkpoint is missing before an open-tab capture");
+    const checkpoint = this.pendingCapturesForOpen(open, queue)
+      .find((capture) => !capture.readyToSubmit && capture.status !== "conflict")?.payload.session;
+    if (openTabsOnly && !checkpoint) throw new Error("Cloud checkpoint is missing before an open-tab capture");
+    const saved = checkpoint ? sessionCaptureSeed(JSON.stringify(checkpoint)).saved : undefined;
     const captureSeed: SessionCaptureSeed = {
       origins: openTabsOnly ? [] : [...state.origins].sort(),
       ...(state.telegramClient ? { telegramClient: state.telegramClient } : {}),
       ...(openTabsOnly ? { openTabsOnly } : {}),
+      ...(saved ? { saved } : {}),
     };
     const monitor = this.dirtyMonitors.get(open.profileId);
     const suspended = monitor?.registrationId === open.registrationId ? monitor : undefined;
     if (suspended) this.stopStorageWatchers(suspended);
     try {
+      const read = async () => {
+        const startedAt = performance.now();
+        try {
+          return await this.options.readSession(endpoint, captureSeed);
+        } catch (error) {
+          this.diagnosticEvents.record("checkpoint_capture_failed");
+          this.log(`${open.profileId}: Cloud session capture failed (${errorCode(error)}, ${safeErrorType(error)}, stage=${captureFailureStage(error)}, elapsedMs=${Math.round(performance.now() - startedAt)})`);
+          throw error;
+        }
+      };
       let bundle: string;
-      const startedAt = performance.now();
       try {
-        bundle = await this.options.readSession(endpoint, captureSeed);
+        bundle = await read();
       } catch (error) {
-        this.diagnosticEvents.record("checkpoint_capture_failed");
-        this.log(`${open.profileId}: Cloud session capture failed (${errorCode(error)}, ${safeErrorType(error)}, stage=${captureFailureStage(error)}, elapsedMs=${Math.round(performance.now() - startedAt)})`);
-        throw error;
+        if (!retry || errorCode(error) === "timeout") throw error;
+        bundle = await read();
       }
       try {
-        if (saved) bundle = keepUncapturedOrigins(bundle, sessionCaptureSeed(JSON.stringify(saved)).saved);
+        if (openTabsOnly) bundle = keepUncapturedOrigins(bundle, saved);
         const captured = parseCapturedSessionBundle(bundle);
         if (captured.tabs === undefined) bundle = JSON.stringify({
           ...captured,
@@ -1506,6 +1565,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     const prior = this.checkpointSignatures.get(open.profileId);
     if (prior?.registrationId === open.registrationId && prior.signature === signature) {
       this.recordCloudSessionSignature(open.profileId, signature);
+      // Cloud already holds this exact session.
+      if (!this.uploadState(open).dirty) this.closedUnsaved.delete(open.profileId);
       this.diagnosticEvents.record("checkpoint_unchanged");
       return "unchanged";
     }
@@ -1579,6 +1640,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         state.loginSignature = sessionLoginSignature(JSON.stringify(capture.payload.session));
         state.failures = 0;
         delete state.failingSince;
+        this.closedUnsaved.delete(open.profileId);
         this.diagnosticEvents.record("checkpoint_uploaded");
         return;
       }
@@ -1999,7 +2061,8 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
               continue;
             }
           }
-          if (!await this.captureAndStopOpen(open, queue, true, current)) {
+          // Not a close the user asked for: a survivor whose capture fails stays open and is retried.
+          if (!await this.captureAndStopOpen(open, queue, true, current, false)) {
             this.log("Cloud browser recovery remains pending; retained local ownership without blocking same-account login");
           }
           continue;
@@ -2125,6 +2188,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
     queue: PendingSyncQueue,
     submitAfterStop: boolean,
     current: () => boolean = () => true,
+    stopOnCaptureFailure = true,
   ): Promise<boolean> {
     if (!current()) return false;
     const launch = this.options.store.getLaunch(open.profileId);
@@ -2135,7 +2199,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (!current()) return false;
       const verifiedLaunch = this.options.store.getLaunch(open.profileId);
       if (!verifiedLaunch || !this.isExactRunningLaunch(open, verifiedLaunch)) return false;
-      const sessionBundle = await this.captureSession(open, queue, verifiedLaunch.ws);
+      const sessionBundle = await this.captureSession(open, queue, verifiedLaunch.ws, false, true);
       if (!current()) return false;
       await this.options.launcher.verifyRunningIdentity(open.profileId);
       if (!current()) return false;
@@ -2148,8 +2212,10 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (!queue.setOpenCleanup(open.profileId, open.accountId, open.registrationId, "sync")) {
         return false;
       }
-    } catch {
-      return false;
+      this.closedUnsaved.delete(open.profileId);
+    } catch (error) {
+      if (!stopOnCaptureFailure || !current() || !this.prepareStopWithoutCapture(open, queue)) return false;
+      this.log(`${open.profileId}: Cloud session capture failed (${errorCode(error)}); stopping the browser with the last saved copy`);
     }
     if (!current()) return false;
     const stopLaunch = this.options.store.getLaunch(open.profileId);
@@ -2426,7 +2492,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (this.closing.has(profileId) || !this.confirmNoPageTargets(profileId, open.registrationId, hasPageTargets)) return;
       this.diagnosticEvents.record("no_page_close_requested");
       this.log(`${profileId}: last browser window closed; saving the profile to Cloud`);
-      const closed = await this.close(profileId).then((result) => result.closed, () => false);
+      const closed = await this.closeOnce(profileId, false).then((result) => result.closed, () => false);
       if (!closed) await this.stopWithoutCapture(profileId, open.registrationId);
     } finally {
       this.windowChecks.delete(profileId);
@@ -2444,7 +2510,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
         !launch || !this.isExactRunningLaunch(open, launch) ||
         // A page came back during the capture: leave that browser open, as the app's Close does.
         await this.options.launcher.hasPageTargets(profileId).catch(() => true) ||
-        !queue.setOpenCleanup(profileId, accountId, registrationId, "sync")
+        !this.prepareStopWithoutCapture(open, queue)
       ) return;
       const retained = queue.getOpen(profileId, accountId);
       const stopped = !!retained && await this.retryCleanup(retained, queue);

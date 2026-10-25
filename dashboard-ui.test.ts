@@ -186,7 +186,8 @@ test("Account settings exposes fixed Cloud diagnostics without raw server messag
 });
 
 test("dashboard shows close warnings without an open-only prefix", () => {
-  expect(app).toContain("else if (r && r.warning) setActionErr(r.warning);");
+  expect(app).toContain("else if (r && r.warning) setActionErr(actionWarning(r));");
+  expect(app).toContain("const actionWarning = (r: any): string => r.captureFailed");
   expect(app).not.toContain("Opened — ${r.warning}");
   expect(app).toContain("if (r?.ok === false) issues.push");
   expect(app).toContain("else if (r?.warning) issues.push");

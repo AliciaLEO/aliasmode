@@ -466,19 +466,49 @@ test("native closed-origin capture restores tracked origins after storageState f
   ]);
 });
 
-test("native capture fails when native origin tracking cannot scope a closed observed origin", async () => {
+test("native capture names a closed origin that native origin tracking cannot scope", async () => {
   const context = {
     pages: () => [],
     _connection: { toImpl() { return {}; } },
-    async cookies() { return []; },
+    async cookies() { return [{ name: "sid", value: "fresh", domain: ".example.com", path: "/" }]; },
     async storageState() { return { origins: [] }; },
     async newPage() { throw new Error("native capture must not create a visible page"); },
   };
-  await expect(captureSession({ contexts: () => [context] }, {
+  // An unscoped read cannot tell an empty origin from an unread one; the caller keeps the saved copy.
+  expect(JSON.parse(await captureSession({ contexts: () => [context] }, {
     captureSeed: { origins: ["https://closed.example"] },
-  }, { nativeStorage: true })).rejects.toMatchObject({
-    code: "operation_failed",
-    details: { operation: "origin_storage", outcome: "failed" },
+  }, { nativeStorage: true }))).toEqual({
+    cookies: [{ name: "sid", value: "fresh", domain: ".example.com", path: "/" }],
+    origins: [],
+    unreadableOrigins: ["https://closed.example"],
+  });
+});
+
+test("a hung origin read is bounded, starts no further read, and keeps the cookies", async () => {
+  const reads: string[] = [];
+  const page = (origin: string, hang: boolean) => ({
+    url: () => `${origin}/`,
+    async evaluate() {
+      reads.push(origin);
+      // A tab that waits on a dialog never answers.
+      if (hang) return new Promise(() => {});
+      return { origin, localStorage: [{ name: "token", value: origin }] };
+    },
+  });
+  const context = {
+    pages: () => [page("https://a-busy.example", true), page("https://b-live.example", false)],
+    async cookies() { return [{ name: "sid", value: "fresh", domain: ".example.com", path: "/" }]; },
+    async newCDPSession() { throw new Error("no CDP in this fake"); },
+  };
+  const started = Date.now();
+  const result = JSON.parse(await captureSession({ contexts: () => [context] }, {}, { originReadTimeoutMs: 50 }));
+  expect(Date.now() - started).toBeLessThan(2_000);
+  expect(reads).toEqual(["https://a-busy.example"]);
+  expect(result).toEqual({
+    cookies: [{ name: "sid", value: "fresh", domain: ".example.com", path: "/" }],
+    origins: [],
+    tabs: ["https://a-busy.example/", "https://b-live.example/"],
+    unreadableOrigins: ["https://a-busy.example", "https://b-live.example"],
   });
 });
 
@@ -1301,15 +1331,20 @@ bunAsNodeTest("worker captures arbitrary web sessions, rejects malformed capture
       expect(malformedCookie).toMatchObject({ code: "operation_failed", details: { operation: "validation" } });
     }
 
-    for (const endpoint of ["ws://malformed-storage", "ws://internal-origin"]) {
-      const invalidOrigin = await runPlaywrightWorker("session-capture", {
-        endpoint,
-        ...(endpoint.endsWith("internal-origin")
-          ? { captureSeed: { origins: ["chrome-extension://abc"] } }
-          : {}),
-      }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
-      expect(invalidOrigin).toMatchObject({ code: "operation_failed", details: { operation: "validation" } });
-    }
+    const invalidSeed = await runPlaywrightWorker("session-capture", {
+      endpoint: "ws://internal-origin",
+      captureSeed: { origins: ["chrome-extension://abc"] },
+    }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
+    expect(invalidSeed).toMatchObject({ code: "operation_failed", details: { operation: "validation" } });
+    // Malformed storage of one origin leaves only that origin unread.
+    expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
+      endpoint: "ws://malformed-storage",
+    }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual({
+      cookies: captured.cookies,
+      origins: [],
+      tabs: captured.tabs,
+      unreadableOrigins: ["https://example.com"],
+    });
 
     expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
       endpoint: "ws://service-worker",
@@ -1502,7 +1537,7 @@ bunAsNodeTest("worker reuses startup pages and removes only the exact first-run 
   }
 });
 
-bunAsNodeTest("worker fails closed on Telegram IndexedDB reads and applies empty tombstones", async () => {
+bunAsNodeTest("worker leaves Telegram unread when its IndexedDB read fails and applies empty tombstones", async () => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-worker-telegram-tombstone-"));
   try {
     await mkdir(join(root, "node"), { recursive: true });
@@ -1569,10 +1604,14 @@ bunAsNodeTest("worker fails closed on Telegram IndexedDB reads and applies empty
     `);
     await chmod(join(root, "node", PACKAGED_NODE), 0o755);
 
-    const captureError = await runPlaywrightWorker("session-capture", {
+    // A capture without Telegram's login storage would log Telegram out: the origin stays unread,
+    // and the caller keeps the storage that it saved for it.
+    expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
       endpoint: "ws://capture",
-    }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
-    expect(captureError).toMatchObject({ code: "operation_failed" });
+    }, { runtimeRoot: root, timeoutMs: 5_000 }))).toMatchObject({
+      origins: [],
+      unreadableOrigins: ["https://web.telegram.org"],
+    });
 
     await expect(runPlaywrightWorker("session-restore", {
       endpoint: "ws://restore",
@@ -1896,15 +1935,13 @@ bunAsNodeTest("worker proves hidden target identity through marker collisions an
       "unsupported", "unparseable", "wrong-id", "wrong-type", "wrong-url",
       "target-error", "attached-window", "window-error",
     ];
+    // A hidden page that cannot start, load or read leaves the origin unread; the capture goes on.
+    const unread = { cookies: [], origins: [], unreadableOrigins: ["https://closed.example"] };
     for (const mode of modes) {
-      const error = await runPlaywrightWorker("session-capture", {
+      expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
         endpoint: `ws://${mode}`,
         captureSeed: { origins: ["https://closed.example"] },
-      }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
-      expect(error).toMatchObject({
-        code: "operation_failed",
-        details: { operation: mode === "unsupported" ? "hidden_target_unsupported" : "hidden_target" },
-      });
+      }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual(unread);
       const logFile = Bun.file(join(root, `${mode}.log`));
       const events = await logFile.exists() ? (await logFile.text()).trim().split("\n") : [];
       if (["unsupported", "unparseable"].includes(mode)) expect(events).not.toContain("create");
@@ -1917,13 +1954,12 @@ bunAsNodeTest("worker proves hidden target identity through marker collisions an
       expect(events).not.toContain("newPage");
     }
     for (const operation of ["navigation", "origin_storage"]) {
-      const error = await runPlaywrightWorker("session-capture", {
+      const captured = await runPlaywrightWorker<string>("session-capture", {
         endpoint: `ws://${operation}`,
         captureSeed: { origins: ["https://closed.example"] },
-      }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
-      expect(error).toMatchObject({ code: "operation_failed", details: { operation, outcome: "failed" } });
-      expect(JSON.stringify(error)).not.toContain("private");
-      expect(error.message).not.toContain("private");
+      }, { runtimeRoot: root, timeoutMs: 5_000 });
+      expect(JSON.parse(captured)).toEqual(unread);
+      expect(captured).not.toContain("private");
       const events = (await Bun.file(join(root, `${operation}.log`)).text()).trim().split("\n");
       expect(events).toContain("target-close");
       expect(events).toContain("browser-detach");
@@ -2174,7 +2210,7 @@ bunAsNodeTest("worker falls back safely when a live page changes origin during c
   }
 });
 
-bunAsNodeTest("worker rejects capture when an attached Telegram page cannot be read", async () => {
+bunAsNodeTest("worker leaves an attached Telegram page unread when it cannot be read", async () => {
   const root = await mkdtemp(join(tmpdir(), "aliasmode-worker-telegram-capture-"));
   try {
     await mkdir(join(root, "node"), { recursive: true });
@@ -2189,10 +2225,15 @@ bunAsNodeTest("worker rejects capture when an attached Telegram page cannot be r
     `);
     await chmod(join(root, "node", PACKAGED_NODE), 0o755);
 
-    const error = await runPlaywrightWorker("session-capture", {
+    expect(JSON.parse(await runPlaywrightWorker<string>("session-capture", {
       endpoint: "ws://browser",
-    }, { runtimeRoot: root, timeoutMs: 5_000 }).then(() => null, (failure) => failure);
-    expect(error).toMatchObject({ code: "operation_failed" });
+    }, { runtimeRoot: root, timeoutMs: 5_000 }))).toEqual({
+      cookies: [],
+      origins: [],
+      tabs: ["https://web.telegram.org/a/"],
+      telegramClient: "a",
+      unreadableOrigins: ["https://web.telegram.org"],
+    });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

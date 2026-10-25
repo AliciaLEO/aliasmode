@@ -60,7 +60,7 @@ export interface UiProfile {
   hasSession?: boolean;
   /** Cloud mode: a session Cloud refused that is still recoverable from this device. */
   parkedSession?: { savedAt: number; reason: string | null };
-  /** Cloud mode, while open: since when saving the open session to Cloud keeps failing. */
+  /** Cloud mode: since when Cloud holds an older copy (uploads keep failing, or it closed without its final capture). */
   cloudUnsavedSince?: number;
   healthStatus?: HealthStatus;
   healthObservedAt?: number | null;

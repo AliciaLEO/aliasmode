@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, mkdirSync, openSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, rmSync, statSync } from "node:fs";
 import { join, isAbsolute, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
@@ -4249,6 +4249,37 @@ test("start() maps an unknown preparation failure to a fixed safe category", asy
   }
 
   rmSync(dataRoot, { recursive: true, force: true });
+  store.close();
+});
+
+// A missing Preferences makes Chromium treat the profile as new and drop session cookies; a
+// half-written one shows a blocking dialog. Repairs keep the file, and every rewrite is a rename.
+test("start() resets corrupt preferences to {} and replaces Preferences through a temp file", async () => {
+  const store = seeded(); // proxied: the launch also writes the WebRTC policy
+  const f = fleet();
+  const launcher = newLauncher(store, f, []);
+  const defaultDir = join(launcher.userDataDir("k1d0cd11"), "Default");
+  mkdirSync(defaultDir, { recursive: true });
+  const prefs = join(defaultDir, "Preferences");
+  const secure = join(defaultDir, "Secure Preferences");
+  writeFileSync(prefs, JSON.stringify({ profile: { exit_type: "Crashed" }, other: 1 }));
+  writeFileSync(secure, "");
+  // An open handle keeps the original inode from being reused by a later file.
+  const original = openSync(prefs, "r");
+  const before = fstatSync(original).ino;
+  await launcher.start("k1d0cd11");
+  closeSync(original);
+  expect(readFileSync(secure, "utf8")).toBe("{}");
+  const after = JSON.parse(readFileSync(prefs, "utf8"));
+  expect(after).toMatchObject({ profile: { exit_type: "Normal" }, other: 1, webrtc: { ip_handling_policy: "disable_non_proxied_udp" } });
+  expect(statSync(prefs).ino).not.toBe(before);
+  expect(readdirSync(defaultDir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  expect(await launcher.stop("k1d0cd11")).toBe(true);
+
+  writeFileSync(prefs, "{ cut off mid-wri");
+  await launcher.start("k1d0cd11");
+  expect(existsSync(prefs)).toBe(true);
+  expect(JSON.parse(readFileSync(prefs, "utf8")).webrtc.ip_handling_policy).toBe("disable_non_proxied_udp");
   store.close();
 });
 

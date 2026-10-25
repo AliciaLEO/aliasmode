@@ -416,9 +416,16 @@ const MISSING_STOCK_FONTS: Partial<Record<PersonaOs, string[]>> = {
 };
 
 /**
+ * Families a Linux computer with the Linux font pack's fonts shows that the pack lacks: fontconfig's
+ * standard metric aliases answer Arial, Courier New and Times New Roman with Arimo, Cousine and Tinos
+ * (measured in stock Firefox on Linux). On another OS they are that computer's own, with the same metrics.
+ */
+const ALIASED_PACK_FONTS: Partial<Record<PersonaOs, string[]>> = { linux: ["Arial", "Courier New", "Times New Roman"] };
+
+/**
  * The fonts one launch shows: a stored list that is the stock list of the profile's OS, with the
- * stock families that list lacks on that OS itself, less the optional groups this profile does not
- * draw. A list the user changed is shown as stored.
+ * stock families that list lacks on that OS itself (on another OS, the font pack's aliased families),
+ * less the optional groups this profile does not draw. A list the user changed is shown as stored.
  */
 function firefoxProfileFonts(os: PersonaOs, stored: string[], fraction: (group: string) => number, ownOs: boolean): string[] {
   const stock = fonts[OS_FONT_KEYS[os]] as string[];
@@ -426,7 +433,7 @@ function firefoxProfileFonts(os: PersonaOs, stored: string[], fraction: (group: 
   const hidden = OPTIONAL_FONT_GROUPS[os].filter((group) => fraction(group.id) >= group.presence).flatMap((group) => group.fonts);
   const inHidden = (font: string) => !FONT_VERSION_MARKERS.has(font)
     && hidden.some((pattern) => pattern.endsWith("*") ? font.startsWith(pattern.slice(0, -1)) : font === pattern);
-  return [...new Set([...stored, ...ownOs ? MISSING_STOCK_FONTS[os] ?? [] : []])].filter((font) => !inHidden(font));
+  return [...new Set([...stored, ...(ownOs ? MISSING_STOCK_FONTS : ALIASED_PACK_FONTS)[os] ?? []])].filter((font) => !inHidden(font));
 }
 
 /** The profile's language for the browser interface, Intl and form messages (as upstream Camoufox sets it). */
@@ -475,12 +482,30 @@ export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Plat
 const GENERIC_FAMILIES = ["serif", "sans-serif", "monospace", "cursive", "fantasy"] as const;
 
 /**
+ * Linux's generic families in the Linux font pack. Stock Firefox on Linux names fontconfig's serif,
+ * sans-serif, monospace and cursive, which no other OS resolves: a Linux profile on Windows drew all
+ * five (monospace too) in one Arial-wide fallback (measured). These are the pack's serif, sans-serif
+ * and monospace faces, metric-compatible with the Liberation fonts most Linux desktops resolve to;
+ * cursive and fantasy fall back to sans-serif, as on a Linux desktop without such fonts.
+ */
+const LINUX_LATIN = ["Tinos", "Arimo", "Cousine", "Arimo", "Arimo"];
+
+/**
  * The fonts stock Firefox 156 names for the generic families (in GENERIC_FAMILIES order) of each
  * language group, and for emoji, on Windows and macOS (font.name-list.* in modules/libpref/init/
  * all.js of FIREFOX_156_0_RELEASE; font.name.* are empty). Windows sets no fantasy family, and
- * stock Firefox there draws it in Arial (measured).
+ * stock Firefox there draws it in Arial (measured). Linux: its stock emoji list, LINUX_LATIN, and
+ * for Chinese, Japanese and Korean the pack's Noto Sans face of the language, as fontconfig picks.
  */
-const PERSONA_FONTS: Record<"windows" | "macos", { emoji: string; groups: Record<string, string[]> }> = {
+const PERSONA_FONTS: Record<PersonaOs, { emoji: string; groups: Record<string, string[]> }> = {
+  linux: {
+    emoji: "Noto Color Emoji, Twemoji Mozilla",
+    groups: {
+      "x-western": LINUX_LATIN, "x-unicode": LINUX_LATIN, "x-cyrillic": LINUX_LATIN, el: LINUX_LATIN, ar: LINUX_LATIN, he: LINUX_LATIN, th: LINUX_LATIN,
+      ja: Array(4).fill("Noto Sans JP"), ko: Array(4).fill("Noto Sans KR"), "zh-CN": Array(4).fill("Noto Sans SC"),
+      "zh-TW": Array(4).fill("Noto Sans TC"), "zh-HK": Array(4).fill("Noto Sans TC"),
+    },
+  },
   windows: {
     emoji: "Segoe UI Emoji, Twemoji Mozilla",
     groups: {
@@ -546,19 +571,33 @@ const WINDOWS_COLORS = {
 };
 
 /**
- * Stock defaults of a Windows or macOS profile that a computer of another OS would replace with its
- * own: generic and emoji fonts, the monospace size and Thai minimum size that Linux changes, and
- * on Windows the system colours. A Linux profile keeps this computer's.
+ * The look stock Firefox 156 on Linux (GTK's default Adwaita theme) shows pages where a Linux
+ * profile on Windows showed Windows' (measured): system colours, -moz-OddTreeRow's transparent
+ * (Gecko's NS_TRANSPARENT), and overlay scrollbars that take no room in the page. AccentColor
+ * follows the theme's accent on Linux; Windows shows Firefox's own unless use-theme-accent is on.
+ */
+const LINUX_LOOK = {
+  "widget.non-native-theme.use-theme-accent": true,
+  "ui.highlight": "#3584e4", "ui.selecteditem": "#3584e4", "ui.accentcolor": "#3584e4",
+  "ui.-moz-dialog": "#fafafb", "ui.-moz-dialogtext": "#323237", "ui.-moz_menuhover": "#3584e4", "ui.-moz_menuhovertext": "#ffffff",
+  "ui.-moz_menubarhovertext": "#000000", "ui.-moz-cellhighlight": "#e1e1e1", "ui.-moz_oddtreerow": "rgba(1, 0, 0, 0)",
+  "ui.useOverlayScrollbars": 1,
+};
+
+/**
+ * Stock defaults of a profile's OS that a computer of another OS would replace with its own:
+ * generic and emoji fonts, the monospace size and Thai minimum size, and on Windows and Linux the
+ * system colours (and Linux's overlay scrollbars).
  */
 function personaOsPrefs(os: PersonaOs): Record<string, JsonValue> {
-  if (os === "linux") return {};
   const { emoji, groups } = PERSONA_FONTS[os];
-  const prefs: Record<string, JsonValue> = { "font.name-list.emoji": emoji, "font.minimum-size.th": 10 };
+  const linux = os === "linux";
+  const prefs: Record<string, JsonValue> = { "font.name-list.emoji": emoji, "font.minimum-size.th": linux ? 13 : 10 };
   for (const [group, families] of Object.entries(groups)) {
     families.forEach((family, index) => { prefs[`font.name-list.${GENERIC_FAMILIES[index]}.${group}`] = family; });
   }
-  for (const group of ["ar", "el", "he", "x-cyrillic", "x-unicode", "x-western"]) prefs[`font.size.monospace.${group}`] = 13;
-  return os === "windows" ? { ...prefs, ...WINDOWS_COLORS } : prefs;
+  for (const group of ["ar", "el", "he", "x-cyrillic", "x-unicode", "x-western"]) prefs[`font.size.monospace.${group}`] = linux ? 12 : 13;
+  return { ...prefs, ...os === "windows" ? WINDOWS_COLORS : linux ? LINUX_LOOK : {} };
 }
 
 export function firefoxPersonaOs(profile: Profile, config: Record<string, JsonValue> = profile.firefox?.config ?? {}): PersonaOs {

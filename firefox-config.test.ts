@@ -165,9 +165,32 @@ test("a profile of another OS gets that OS's stock fonts and Windows colours; a 
   });
   // Stock macOS colours are not measured yet: a macOS profile keeps the computer's.
   expect(crossOs(macOnWindows).some((key) => key.startsWith("ui."))).toBe(false);
-  for (const [persona, platform] of [[windows, "win32"], [macos, "darwin"], [linux, "linux"], [linux, "win32"], [windows, undefined]] as const) {
+  for (const [persona, platform] of [[windows, "win32"], [macos, "darwin"], [linux, "linux"], [linux, undefined], [windows, undefined]] as const) {
     expect(crossOs(firefoxStartupPrefs(persona, platform, "x64"))).toEqual([]);
   }
+});
+
+test("a Linux profile on another computer gets Linux's stock fonts, GTK colours and overlay scrollbars", () => {
+  const linux = { ...profile(5, { "navigator.platform": "Linux x86_64" }), platformOs: "linux" as const };
+  const onWindows = firefoxStartupPrefs(linux, "win32", "x64");
+  expect(onWindows).toMatchObject({
+    // The font pack's metric-compatible families stand in for fontconfig's serif, sans-serif and monospace.
+    "font.name-list.serif.x-western": "Tinos", "font.name-list.sans-serif.x-western": "Arimo",
+    "font.name-list.monospace.x-western": "Cousine", "font.name-list.cursive.x-western": "Arimo",
+    "font.name-list.fantasy.x-western": "Arimo", "font.name-list.emoji": "Noto Color Emoji, Twemoji Mozilla",
+    "font.size.monospace.x-western": 12, "font.minimum-size.th": 13,
+    "font.name-list.sans-serif.ja": "Noto Sans JP", "font.name-list.serif.zh-CN": "Noto Sans SC", "font.name-list.monospace.zh-HK": "Noto Sans TC",
+    "ui.highlight": "#3584e4", "ui.selecteditem": "#3584e4", "ui.accentcolor": "#3584e4",
+    "ui.-moz-dialog": "#fafafb", "ui.-moz-dialogtext": "#323237", "ui.-moz_menuhover": "#3584e4", "ui.-moz_menuhovertext": "#ffffff",
+    "ui.-moz_menubarhovertext": "#000000", "ui.-moz-cellhighlight": "#e1e1e1", "ui.-moz_oddtreerow": "rgba(1, 0, 0, 0)",
+    "ui.useOverlayScrollbars": 1,
+  });
+  // Every generic family names a font the Linux font pack holds.
+  const pack = new Set(["Tinos", "Arimo", "Cousine", "Noto Sans JP", "Noto Sans KR", "Noto Sans SC", "Noto Sans TC"]);
+  for (const [key, value] of Object.entries(onWindows)) if (/^font\.name-list\.(?!emoji)/.test(key)) expect(pack.has(String(value))).toBe(true);
+  // No Windows font or colour is left in place of a Linux one.
+  expect(Object.values(onWindows).some((value) => /Segoe|Times New Roman|Consolas|#0078d7/.test(String(value)))).toBe(false);
+  expect(firefoxStartupPrefs(linux, "darwin", "arm64")).toMatchObject({ "font.name-list.emoji": "Noto Color Emoji, Twemoji Mozilla", "ui.useOverlayScrollbars": 1 });
 });
 
 test("a Firefox profile's processor count fits its graphics card class, at launch and when generated", () => {
@@ -390,6 +413,16 @@ test("a Firefox launch shows its own subset of the stock font list, the same on 
     for (const font of [...core.Win32!, "Gabriola", "Segoe Print", "Microsoft Himalaya", "Mongolian Baiti", "Ebrima", "Segoe UI Historic", "Sylfaen", "SimSun-ExtB", "MingLiU-ExtB"]) {
       expect(list).toContain(font);
     }
+  }
+  // A Linux profile on another computer also shows what fontconfig's metric aliases answer on Linux.
+  const linuxStock = stocked(1, "Linux x86_64").firefox!.config.fonts as string[];
+  const aliased = ["Arial", "Courier New", "Times New Roman"];
+  for (let seed = 1; seed <= 12; seed++) {
+    const own = firefoxLaunchConfig(stocked(seed, "Linux x86_64")).fonts as string[];
+    const other = firefoxLaunchConfig(stocked(seed, "Linux x86_64"), undefined, "/data/runtimes/firefox-fonts/linux-1/fonts").fonts as string[];
+    expect(other).toEqual([...own, ...aliased]);
+    expect(own.some((font) => aliased.includes(font))).toBe(false);
+    expect(other.every((font) => linuxStock.includes(font) || aliased.includes(font))).toBe(true);
   }
   // The stored list is unchanged, and a list the user changed is shown as stored.
   const one = stocked(5, "Win32");

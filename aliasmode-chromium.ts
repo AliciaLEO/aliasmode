@@ -32,6 +32,8 @@ const WINDOWS_BUILD = {
   // Behind an HTTP proxy, where WebRTC has no UDP, --fingerprint-webrtc-ip still gives a page
   // an mDNS host candidate and a server-reflexive candidate at that address, and sends nothing.
   webRtcIp: true,
+  // --aliasmode-keep-alive keeps the browser running after its last window closes.
+  keepAlive: true,
 };
 // Upstream's Apostate v0.5.1 keeps its own Chromium version.
 const APOSTATE_VERSION = "155.0.8059.31";
@@ -47,6 +49,7 @@ const MACOS_BUILD = {
   hostScale: false,
   windowLabel: false,
   webRtcIp: false,
+  keepAlive: false,
 };
 const LINUX_BUILD = {
   root: `apostate-${APOSTATE_VERSION}-linux-x64`,
@@ -59,6 +62,7 @@ const LINUX_BUILD = {
   hostScale: false,
   windowLabel: false,
   webRtcIp: false,
+  keepAlive: false,
 };
 // Apple Silicon macOS and Linux get upstream's builds; every other host keeps the Windows pins.
 function chromiumBuild(platform: NodeJS.Platform): typeof WINDOWS_BUILD {
@@ -74,6 +78,8 @@ export const ALIASMODE_CHROMIUM_HOST_SCALE = WINDOWS_BUILD.hostScale;
 export const ALIASMODE_CHROMIUM_WINDOW_LABEL = WINDOWS_BUILD.windowLabel;
 /** The pinned Windows build shows --fingerprint-webrtc-ip behind an HTTP proxy, where WebRTC has no UDP. */
 export const ALIASMODE_CHROMIUM_WEBRTC_IP = WINDOWS_BUILD.webRtcIp;
+/** The pinned Windows build takes --aliasmode-keep-alive. */
+export const ALIASMODE_CHROMIUM_KEEP_ALIVE = WINDOWS_BUILD.keepAlive;
 
 /** One downloadable, hash-pinned browser runtime under the runtimes root. */
 interface PinnedRuntime {

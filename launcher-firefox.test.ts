@@ -711,6 +711,17 @@ function macosPersona(f: ReturnType<typeof fixture>): Profile {
   return f.store.getProfile(profile.id)!;
 }
 
+test("a Cloud Firefox launch on Windows and Linux keeps the browser after its last window; Local and macOS do not ask", async () => {
+  for (const [platform, arch, keep, expected] of [
+    ["win32", "x64", true, true], ["linux", "x64", true, true], ["darwin", "arm64", true, false], ["win32", "x64", false, false],
+  ] as const) {
+    const f = fixture(platform, arch);
+    await f.launcher.start(f.profile.id, [], { keepAliveWithoutWindows: keep });
+    expect(f.prefs()?.["aliasmode.keepAliveWithoutWindows"] === true).toBe(expected);
+    await f.launcher.stop(f.profile.id);
+  }
+});
+
 test("a Firefox profile of this computer's own OS opens without a font pack", async () => {
   const f = fixture("win32", "x64");
   await f.launcher.start(f.profile.id);

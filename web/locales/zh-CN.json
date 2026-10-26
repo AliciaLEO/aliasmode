@@ -254,9 +254,7 @@
   "Close the browser before changing fingerprint settings.": "更改指纹设置前请先关闭浏览器。",
   "Cookies and locked fingerprint values are preserved. Only editable fields change.": "Cookie 和锁定的指纹值会被保留，只有可编辑的字段会变更。",
   " Extensions load when the browser opens.": " 浏览器打开时加载扩展。",
-  "Screen and timezone can be changed. The browser keeps the other values coordinated.": "可以更改屏幕和时区。其他值由浏览器自动帮你协调。",
   "Save proxy changes before setting the timezone.": "设置时区前请先保存代理更改。",
-  "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.": "可以更改屏幕、操作系统和时区。其他值由浏览器自动帮你协调。",
   "This action saves the timezone immediately. It applies the next time this profile opens.": "此操作会立即保存时区，但下次打开此环境时才开始生效。",
   "Use current connection timezone and language": "使用当前连接的时区和语言",
   " · Not installed on this device": " · 未在此设备上安装",
@@ -707,5 +705,12 @@
   "not saved to Cloud yet": "尚未保存到云端",
   "Cloud has an older copy since {time}. This device keeps the latest session and retries.": "自 {time} 起，云端只有较旧的副本。此设备保留最新会话，并会重试保存。",
   "Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.": "已于 {time} 关闭，最新会话未保存到云端。下次在此设备上打开该环境时，会将其保存到云端。",
-  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "浏览器已关闭，但无法读取其最新会话。云端保留上次保存的副本；下次您在此设备上打开该环境时，会将较新的会话保存到云端。"
+  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "浏览器已关闭，但无法读取其最新会话。云端保留上次保存的副本；下次您在此设备上打开该环境时，会将较新的会话保存到云端。",
+  "Automatic · e.g. en-US": "自动 · 例如 en-US",
+  "Automatic · {n} cores": "自动 · {n} 核",
+  "Automatic · e.g. 8": "自动 · 例如 8",
+  "We recommend keeping every setting automatic. Custom values can make the browser look inconsistent, easier to detect, and can trigger account checks.": "建议所有设置保持自动。自定义值可能让浏览器指纹前后不一致、更容易被识别，并可能触发账号验证。",
+  "Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.": "留空即保持自动。你输入的时区在更换代理后也会保留。",
+  "AliasMode Chromium shows at most the processor count of the computer it runs on.": "AliasMode Chromium 显示的处理器核心数不会超过所运行电脑的核心数。",
+  "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?": "这些设置相互配合。修改它们可能导致指纹不一致、让浏览器更容易被识别，或触发账号验证。建议使用自动设置。自定义修改由你自行负责。\n\n保存指纹修改？"
 }

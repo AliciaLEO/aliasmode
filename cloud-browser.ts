@@ -558,6 +558,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           if (this.options.store.getLaunch(summary.id)) continue;
           this.options.store.upsertProfile(profile);
           this.options.store.setTimezone(profile.id, profile.timezone);
+          this.options.store.setHardware(profile.id, profile.hardware);
           this.proxyCacheVersions.set(summary.id, response.profile.version);
           // A profile synced from another device may need a Firefox font pack here.
           this.options.launcher.prefetchFirefoxFontPacks?.([profile]);
@@ -751,6 +752,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (decoded.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
       this.options.store.upsertProfile(completeProfileFingerprint(decoded));
       this.options.store.setTimezone(decoded.id, decoded.timezone);
+      this.options.store.setHardware(decoded.id, decoded.hardware);
       const profile = this.options.store.getProfile(profileId)!;
       this.proxyCacheVersions.set(profileId, opened.baseVersion);
 

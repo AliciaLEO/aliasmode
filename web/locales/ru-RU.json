@@ -254,9 +254,7 @@
   "Close the browser before changing fingerprint settings.": "Закройте браузер перед изменением настроек отпечатка.",
   "Cookies and locked fingerprint values are preserved. Only editable fields change.": "Cookie и заблокированные значения отпечатка сохраняются. Меняются только редактируемые поля.",
   " Extensions load when the browser opens.": " Расширения загружаются при открытии браузера.",
-  "Screen and timezone can be changed. The browser keeps the other values coordinated.": "Можно изменить экран и часовой пояс. Остальные значения браузер согласует сам.",
   "Save proxy changes before setting the timezone.": "Сохраните изменения прокси перед установкой часового пояса.",
-  "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.": "Можно изменить экран, операционную систему и часовой пояс. Остальные значения браузер согласует сам.",
   "This action saves the timezone immediately. It applies the next time this profile opens.": "Это действие сразу сохраняет часовой пояс. Он применится при следующем открытии профиля.",
   "Use current connection timezone and language": "Использовать часовой пояс и язык текущего соединения",
   " · Not installed on this device": " · Не установлен на этом устройстве",
@@ -432,5 +430,12 @@
   "not saved to Cloud yet": "еще не сохранен в Облаке",
   "Cloud has an older copy since {time}. This device keeps the latest session and retries.": "С {time} в Облаке более старая копия. Это устройство хранит последний сеанс и повторяет попытки сохранить его.",
   "Closed at {time} without its latest session in Cloud. This device saves it to Cloud the next time the profile opens here.": "Закрыт в {time}, а последний сеанс не попал в Облако. Это устройство сохранит его в Облако, когда профиль снова откроется здесь.",
-  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "Браузер закрыт, но его последний сеанс не удалось прочитать. В Облаке остается последняя сохраненная копия, а это устройство сохранит более новый сеанс в Облако, когда вы снова откроете профиль здесь."
+  "Browser closed, but its latest session could not be read. Cloud keeps the last saved copy, and this device saves the newer session to Cloud the next time you open the profile here.": "Браузер закрыт, но его последний сеанс не удалось прочитать. В Облаке остается последняя сохраненная копия, а это устройство сохранит более новый сеанс в Облако, когда вы снова откроете профиль здесь.",
+  "Automatic · e.g. en-US": "Автоматически · напр. en-US",
+  "Automatic · {n} cores": "Автоматически · ядер: {n}",
+  "Automatic · e.g. 8": "Автоматически · напр. 8",
+  "We recommend keeping every setting automatic. Custom values can make the browser look inconsistent, easier to detect, and can trigger account checks.": "Рекомендуем оставить все настройки автоматическими. Свои значения могут сделать отпечаток браузера несогласованным, облегчить его обнаружение и вызвать проверку аккаунта.",
+  "Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.": "Оставьте поле пустым, чтобы значение задавалось автоматически. Введённый вами часовой пояс сохраняется при смене прокси.",
+  "AliasMode Chromium shows at most the processor count of the computer it runs on.": "AliasMode Chromium показывает не больше ядер, чем есть у компьютера, на котором он запущен.",
+  "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?": "Эти настройки работают вместе. Их изменение может сделать отпечаток несогласованным, упростить обнаружение браузера или вызвать проверку аккаунта. Рекомендуем автоматические настройки. Ответственность за свои изменения лежит на вас.\n\nСохранить изменения отпечатка?"
 }

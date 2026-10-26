@@ -1,8 +1,8 @@
 import { CloudApiError, type CloudClient } from "./cloud-client.ts";
 import type { PortableProfile } from "./contracts/cloud-v1.ts";
-import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
+import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
 import { attachTimezones, type FetchLike } from "./geoip.ts";
-import { parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone } from "./parse.ts";
+import { parseStrictCores, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictSeed, parseStrictTimezone } from "./parse.ts";
 import { completeProfileFingerprint, setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
 import { normalizeProfileLocale } from "./profile-locale.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
@@ -31,7 +31,10 @@ export interface CloudProfileEditView {
   resolution: string;
   platformOs: string;
   timezone: string;
+  timezoneManual?: boolean;
   locale: string;
+  cores: string;
+  fingerprintSeed: string;
   extensions: string[];
   tags: string;
   cookieCount: number;
@@ -77,7 +80,10 @@ function editView(profile: Profile, expectedVersion: number): CloudProfileEditVi
     resolution: `${profile.screenWidth}*${profile.screenHeight}`,
     platformOs: profile.platformOs ?? "",
     timezone: profile.timezone,
+    ...(profile.timezoneManual ? { timezoneManual: true } : {}),
     locale: profile.locale ?? "",
+    cores: profile.hardware ? String(profile.hardware.cores) : "",
+    fingerprintSeed: String(profile.fingerprintSeed),
     extensions: profile.extensions ?? [],
     tags: (profile.tags ?? []).join(", "),
     cookieCount: profile.cookies.length,
@@ -125,7 +131,16 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
   if ("locale" in set) profile.locale = normalizeProfileLocale(set.locale) ?? profile.locale;
   if ("timezone" in set) {
     profile.timezone = parseStrictTimezone(set.timezone);
+    // A typed timezone stays when the proxy changes and on every launch. A blank one follows the proxy.
+    if (profile.timezone) profile.timezoneManual = true;
+    else delete profile.timezoneManual;
     syncFirefoxTimezone(profile);
+  }
+  if ("fingerprintSeed" in set) profile.fingerprintSeed = parseStrictSeed(set.fingerprintSeed);
+  if ("cores" in set) {
+    const hardware = editedProfileHardware(profile, parseStrictCores(set.cores));
+    if (hardware) profile.hardware = hardware;
+    else delete profile.hardware;
   }
   if ("proxy" in set) {
     const nextProxy = parseStrictProxy(set.proxyType ?? profile.proxy?.type ?? "http", set.proxy);
@@ -138,7 +153,7 @@ function applyEdits(profile: Profile, set: Record<string, unknown>): boolean {
       previousProxy?.pass !== nextProxy?.pass;
     profile.proxy = nextProxy;
     delete profile.proxyError;
-    if (proxyChanged && profile.engine !== "firefox" && !("timezone" in set)) profile.timezone = "";
+    if (proxyChanged && profile.engine !== "firefox" && !("timezone" in set) && !profile.timezoneManual) profile.timezone = "";
   }
   if ("extensions" in set) {
     const extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
@@ -213,7 +228,7 @@ export class CloudProfileEditor {
       if (profile.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
     }
     const proxyChanged = applyEdits(profile, set);
-    if (proxyChanged && profile.proxy && !("timezone" in set)) {
+    if (proxyChanged && profile.proxy && !("timezone" in set) && !profile.timezoneManual) {
       await attachTimezones([profile], this.timezoneFetch, !("locale" in set)).catch(() => {});
       syncFirefoxTimezone(profile);
     }
@@ -225,6 +240,8 @@ export class CloudProfileEditor {
     };
     if (!("proxyError" in encoded.profile)) delete encodedProfile.proxyError;
     if (!("platformOs" in encoded.profile)) delete encodedProfile.platformOs;
+    if (!("timezoneManual" in encoded.profile)) delete encodedProfile.timezoneManual;
+    if (!("hardware" in encoded.profile)) delete (encodedProfile as { hardware?: unknown }).hardware;
     const payload = {
       ...authoritative.payload,
       ...encoded,

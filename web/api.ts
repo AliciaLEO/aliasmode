@@ -761,6 +761,12 @@ export interface EditProfile {
   timezone: string;
   /** Stored language tag, e.g. "en-GB"; blank when unset. */
   locale?: string;
+  /** The user typed the timezone; launches keep it. */
+  timezoneManual?: boolean;
+  /** Processor count the profile reports, or "" when the engine chooses. */
+  cores?: string;
+  fingerprintSeed?: string;
+
   cookieCount: number;
   seeded: boolean;
   mobilePersona: boolean;

@@ -479,6 +479,16 @@ export function bundleTelegramClient(bundle: string): TelegramWebClient | undefi
 }
 
 /**
+ * The Telegram client a profile opens on: the one it last used. A saved login of unknown client
+ * opens on Web A, where older logins were made. A profile without a login opens on Web K: a login
+ * made on Web A is logged out by Web K when its home data center is not 2 (Ajaxy/telegram-tt#475),
+ * while one made on Web K survives switching either way.
+ */
+export function telegramHomeClient(bundle: string): TelegramWebClient {
+  return bundleTelegramClient(bundle) ?? (bundleHasTelegramAuthStorage(bundle) ? "a" : "k");
+}
+
+/**
  * Stable, auth-only signature used by the fast checkpoint loop. Cache/message changes are excluded, so
  * this changes only when a Telegram login/passcode/client actually changes.
  */

@@ -31,7 +31,7 @@ import {
   bundleHasRestorableLogin,
   bundleHasTelegramOrigin,
   bundleTabUrls,
-  bundleTelegramClient,
+  telegramHomeClient,
   parseCapturedSessionBundle,
   sessionCaptureSeed,
   type SessionCaptureSeed,
@@ -940,7 +940,7 @@ export class RemoteCoordinator {
       if (ownsWriterLease) ownsWriterLease = await this.confirmWriterOwnership(profileId, "after session restore");
       // Now that the session is in place, replace stale normal pages with the
       // bundle's saved tabs followed by explicit caller URLs.
-      const home = platformHomeUrl(profile.platform, bundleTelegramClient(bundle) ?? "a");
+      const home = platformHomeUrl(profile.platform, telegramHomeClient(bundle));
       const savedTabs = bundleTabUrls(bundle);
       const urlsToOpen = savedTabs.length > 0 || startupUrls.length > 0
         ? [...savedTabs, ...startupUrls]

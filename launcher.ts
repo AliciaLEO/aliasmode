@@ -63,6 +63,7 @@ import { renameWhenUnlocked } from "./browser-install.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
   ALIASMODE_CHROMIUM_WEBRTC_IP,
+  ALIASMODE_CHROMIUM_KEEP_ALIVE,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   chromiumDeviceScale,
   cloakBrowserExecutableSha256,
@@ -612,6 +613,8 @@ export interface LaunchStartOptions extends BrowserOpenOptions {
   headless?: boolean;
   /** Hub session version the browser is being opened from; persisted for safe survivor reattach. */
   sessionBaseVersion?: number;
+  /** Keep the browser running after its last window closes, so the Cloud coordinator can save and stop it. */
+  keepAliveWithoutWindows?: boolean;
 }
 
 export interface LaunchStartResult {
@@ -1290,6 +1293,7 @@ export class Launcher {
     headless = this.headless,
     restoreLastSession = false,
     webRtcIp?: string,
+    keepAlive = false,
   ): string[] {
     const { chromeArgs } = splitLaunchUrls(launchArgs);
     const forwardedArgs = validateForwardedLaunchArgs(chromeArgs);
@@ -1361,6 +1365,10 @@ export class Launcher {
     // Headful matches AdsPower (real windows) and avoids the headless signal.
     if (headless) args.push("--headless=new");
     if (restoreLastSession) args.push("--restore-last-session");
+    // On macOS the browser outlives its last window anyway. Elsewhere only AliasMode's own build can.
+    if (keepAlive && this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_KEEP_ALIVE) {
+      args.push("--aliasmode-keep-alive");
+    }
     // Relayed proxies use a loopback HTTP endpoint. Everything else uses the
     // upstream proxy flag directly.
     if (relayPort) args.push(`--proxy-server=http://127.0.0.1:${relayPort}`);
@@ -1983,7 +1991,7 @@ export class Launcher {
         profile = this.requireUnchangedProfile(profileId, profileSnapshot, "proxy relay startup");
       }
       const args = this.buildArgs(
-        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp,
+        profile, port, userDataDir, chromeArgs, relayPort, headless, restoreLastSession, webRtcIp, opts.keepAliveWithoutWindows,
       );
       this.log(`launching ${profileId} on port ${port} (seed ${profile.fingerprintSeed})`);
       launchStartedAt = Date.now();
@@ -2442,6 +2450,8 @@ export class Launcher {
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
+          // Firefox outlives its last window on macOS anyway; elsewhere the engine keeps running for this pref.
+          ...(opts.keepAliveWithoutWindows && this.hostPlatform !== "darwin" ? { "aliasmode.keepAliveWithoutWindows": true } : {}),
         },
         sessionGeneration: `${launch.debugPort}:${launch.startedAt}`,
         timeoutMs: this.cdpReadyTimeoutMs,

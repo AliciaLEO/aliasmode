@@ -233,6 +233,7 @@ function setup(options: {
         autoNavigate: false,
         restoreLocalSession: false,
         sessionBaseVersion: -1,
+        keepAliveWithoutWindows: true,
       });
       expect(startOptions.headless).toBe(options.expectedHeadless);
       expect(queue.getOpen(profileId, "account1")?.phase).toBe("opening");

@@ -5125,6 +5125,34 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   }
 });
 
+test("a Cloud launch of Chromium 155 on Windows keeps the browser after its last window; other launches do not", async () => {
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", keepAliveWithoutWindows?: boolean) => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform,
+      hostArch: hostPlatform === "darwin" ? "arm64" : "x64",
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      chromiumSandboxBlocked: () => false,
+      captureFingerprint: async () => null,
+    });
+    await launcher.start(chromium155.id, [], { keepAliveWithoutWindows });
+    await launcher.stop(chromium155.id);
+    store.close();
+    return spawnedArgs[0]!.includes("--aliasmode-keep-alive");
+  };
+  expect(await launch("win32", "aliasmode", true)).toBe(true);
+  expect(await launch("win32", "aliasmode")).toBe(false);
+  // macOS keeps every browser after its last window; upstream's Linux build and CloakBrowser lack the switch.
+  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+    expect(await launch(host, engine, true)).toBe(false);
+  }
+});
+
 test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines do not", async () => {
   const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
   const launch = async (

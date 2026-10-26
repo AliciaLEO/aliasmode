@@ -33,7 +33,7 @@ import { proxyHostPort } from "./proxy.ts";
 import {
   bundleHasRestorableLogin,
   bundleTabUrls,
-  bundleTelegramClient,
+  telegramHomeClient,
   keepUncapturedOrigins,
   parseCapturedSessionBundle,
   sessionBundleSignature,
@@ -839,7 +839,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       }
       // ONE CDP attach: restore the authoritative bundle (no-op attach-free when
       // the bundle is empty) and open explicit pages after its saved tabs.
-      const home = platformHomeUrl(profile.platform, bundleTelegramClient(sessionBundle) ?? "a");
+      const home = platformHomeUrl(profile.platform, telegramHomeClient(sessionBundle));
       const savedTabs = bundleTabUrls(sessionBundle);
       const urls = startupUrls.length > 0
         ? startupUrls

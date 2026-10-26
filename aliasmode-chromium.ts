@@ -16,13 +16,13 @@ import { trackRuntimeDownload } from "./runtime-download.ts";
 // own directory, so a browser still running from an earlier build keeps its files.
 // A new build changes the version, the release tag, and the two SHA-256 values and archive size of its release.
 const WINDOWS_VERSION = "155.0.8059.85";
-const WINDOWS_RELEASE = "aliasmode.3";
+const WINDOWS_RELEASE = "aliasmode.4";
 const WINDOWS_BUILD = {
   root: `aliasmode-chromium-${WINDOWS_VERSION}-windows-x64`,
   url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${WINDOWS_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${WINDOWS_VERSION}-windows-x64.zip`,
   dir: `chromium-${WINDOWS_VERSION}-${WINDOWS_RELEASE}`,
-  archiveSha256: "80ab530d0c5280b427c58298987636cd003b12183b61f15a99c0a82598ca9580",
-  size: 203519818,
+  archiveSha256: "cfea275e4b7f3274b701e64c0483b46cbf6cd12ead9a6cfda6ff77b2680e7a23",
+  size: 203519527,
   executable: "chrome.exe",
   executableSha256: "0ef4de1bef7c12534031318e07ac89fa7942916a3abc89057985aafefbca619f",
   // Pages read and draw at --force-device-scale-factor, and

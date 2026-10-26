@@ -717,7 +717,7 @@ test("a Cloud Firefox launch on Windows and Linux keeps the browser after its la
   ] as const) {
     const f = fixture(platform, arch);
     await f.launcher.start(f.profile.id, [], { keepAliveWithoutWindows: keep });
-    expect(f.prefs()?.["aliasmode.keepAliveWithoutWindows"] === true).toBe(expected);
+    expect((f.prefs() as Record<string, unknown>)["aliasmode.keepAliveWithoutWindows"] === true).toBe(expected);
     await f.launcher.stop(f.profile.id);
   }
 });

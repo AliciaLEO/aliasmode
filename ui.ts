@@ -40,7 +40,7 @@ import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./c
 import { firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
-import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, decodeText } from "./parse.ts";
+import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, parseStrictCores, parseStrictSeed, decodeText } from "./parse.ts";
 import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
 import { generateTotp } from "./totp.ts";
@@ -54,7 +54,7 @@ import {
 import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
-import { convertMobilePersonaToDesktop, isMobileUserAgent } from "./fingerprint.ts";
+import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
 import { addBrowserCookie } from "./session.ts";
 import { join, resolve, dirname } from "node:path";
@@ -460,7 +460,10 @@ function profileEditView(p: Profile) {
     customNo: p.customNo ?? "",
     platformOs: p.platformOs ?? "",
     timezone: p.timezone,
+    ...(p.timezoneManual ? { timezoneManual: true } : {}),
     locale: p.locale ?? "",
+    cores: p.hardware ? String(p.hardware.cores) : "",
+    fingerprintSeed: String(p.fingerprintSeed),
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
     ...(conversion ? {
@@ -478,7 +481,9 @@ function fingerprintChanges(p: Profile, set: Record<string, unknown>): boolean {
   return !!(screen && (screen.width !== p.screenWidth || screen.height !== p.screenHeight)) ||
     ("platformOs" in set && parseStrictPlatformOs(set.platformOs) !== (p.platformOs ?? "")) ||
     ("timezone" in set && parseStrictTimezone(set.timezone) !== p.timezone) ||
-    ("locale" in set && (normalizeProfileLocale(set.locale) ?? p.locale) !== p.locale);
+    ("locale" in set && (normalizeProfileLocale(set.locale) ?? p.locale) !== p.locale) ||
+    ("cores" in set && parseStrictCores(set.cores) !== p.hardware?.cores) ||
+    ("fingerprintSeed" in set && parseStrictSeed(set.fingerprintSeed) !== p.fingerprintSeed);
 }
 
 /**
@@ -514,7 +519,16 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
   if ("locale" in set) p.locale = normalizeProfileLocale(set.locale) ?? p.locale;
   if ("timezone" in set) {
     p.timezone = parseStrictTimezone(set.timezone);
+    // A typed timezone stays when the proxy changes and on every launch. A blank one follows the proxy.
+    if (p.timezone) p.timezoneManual = true;
+    else delete p.timezoneManual;
     syncFirefoxTimezone(p);
+  }
+  if ("fingerprintSeed" in set) p.fingerprintSeed = parseStrictSeed(set.fingerprintSeed);
+  if ("cores" in set) {
+    const hardware = editedProfileHardware(p, parseStrictCores(set.cores));
+    if (hardware) p.hardware = hardware;
+    else delete p.hardware;
   }
   if ("proxy" in set) {
     const nextProxy = parseStrictProxy(set.proxyType ?? p.proxy?.type ?? "http", set.proxy);
@@ -1717,7 +1731,7 @@ export async function handleUiRequest(
       // A new proxy gets its exit timezone. A failed lookup keeps the saved one.
       const located = [...proxyChanged]
         .map((id) => pending.get(id))
-        .filter((profile): profile is Profile => !!profile?.proxy)
+        .filter((profile): profile is Profile => !!profile?.proxy && !profile.timezoneManual)
         .map((profile) => ({ ...profile, timezone: "" }));
       if (located.length > 0) {
         await attachTimezones(located, options.timezoneFetch).catch(() => {});
@@ -1998,6 +2012,7 @@ export async function handleUiRequest(
         return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
       }
       current.timezone = location.timezone;
+      delete current.timezoneManual;
       current.locale = localeForCountry(location.country) ?? localeForTimezone(location.timezone);
       syncFirefoxTimezone(current);
       store.upsertProfile(current);
@@ -2165,7 +2180,7 @@ export async function handleUiRequest(
           if (fingerprintChanges(live, set)) {
             return Response.json({ ok: false, error: "close the browser before editing fingerprint settings" }, { status: 409 });
           }
-          const liveProxyChanged = applyEdits(live, set);
+          const liveProxyChanged = applyEdits(live, set) && !live.timezoneManual;
           if (liveProxyChanged && live.proxy && !("timezone" in set)) {
             const location = await lookupExitLocation(live.proxy, options.timezoneFetch);
             if (location) live.timezone = location.timezone;
@@ -2210,7 +2225,7 @@ export async function handleUiRequest(
       let previousGroup = p.group;
       const proxyChanged = applyEdits(p, set);
       // A new proxy gets its exit timezone, like a Cloud edit. A failed lookup keeps the saved one.
-      if (!remote && proxyChanged && p.proxy && !("timezone" in set) && !store.getLaunch(id)) {
+      if (!remote && proxyChanged && p.proxy && !("timezone" in set) && !p.timezoneManual && !store.getLaunch(id)) {
         const location = await lookupExitLocation(p.proxy, options.timezoneFetch);
         // Apply the edit to the current copy, so changes saved during the lookup are kept.
         p = store.getProfile(id);
@@ -2232,6 +2247,7 @@ export async function handleUiRequest(
       else {
         store.upsertProfile(p);
         if ("timezone" in set) store.setTimezone(id, p.timezone);
+        if ("cores" in set) store.setHardware(id, p.hardware);
       }
       return Response.json({ ok: true });
     } catch (e) {

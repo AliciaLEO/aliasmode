@@ -315,6 +315,8 @@ export function firefoxLaunchConfig(
     Object.assign(config, graphics);
   }
   fitThreads(config, os, !!intelMac, (key) => seedFraction(seed(key)));
+  // A count the user set wins, even one no real desktop of this card shows.
+  if (profile.hardware) config["navigator.hardwareConcurrency"] = profile.hardware.cores;
   // With the stock list every profile of one OS shows the same fonts.
   if (isStrings(config.fonts)) config.fonts = firefoxProfileFonts(os, config.fonts, (group) => seedFraction(seed(`fonts:${group}`)), !fontsDir);
   // Of the Hiragino faces the macOS font pack holds only Hiragino Sans GB, so on another computer

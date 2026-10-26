@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { buildNewProfile } from "./create.ts";
-import { deriveFingerprintFlags, generateProfileHardware } from "./fingerprint.ts";
+import { deriveFingerprintFlags, editedProfileHardware, generateProfileHardware } from "./fingerprint.ts";
+import { firefoxLaunchConfig } from "./firefox-config.ts";
 import { parseExport, serializeAdsTxt, serializeXlsxRows } from "./parse.ts";
 import { decodePortableProfile, encodePortableProfile } from "./portable-profile.ts";
 import { ProfileStore } from "./store.ts";
@@ -30,7 +31,7 @@ test("profiles made before stored hardware, Chromium 155 profiles and Firefox pr
   expect(buildNewProfile({ engine: "firefox" }, () => false).hardware).toBeUndefined();
 });
 
-test("stored hardware survives edits and cannot change in place", () => {
+test("stored hardware survives edits, and a typed count replaces it on every engine", () => {
   const store = new ProfileStore(":memory:");
   const profile = cloakProfile();
   store.upsertProfile(profile);
@@ -39,19 +40,42 @@ test("stored hardware survives edits and cannot change in place", () => {
   const { hardware: _hardware, ...edited } = store.getProfile(profile.id)!;
   store.upsertProfile({ ...edited, name: "renamed" });
   expect(store.getProfile(profile.id)).toMatchObject({ name: "renamed", hardware: profile.hardware });
-  expect(() => store.upsertProfile({ ...store.getProfile(profile.id)!, hardware: { cores: profile.hardware.cores + 4 } }))
-    .toThrow("profile hardware cannot change in place");
-
-  // A profile from before this field keeps the engine default; an edit cannot add hardware later.
-  const { hardware: _dropped, ...legacy } = cloakProfile();
-  store.upsertProfile(legacy);
-  expect(store.getProfile(legacy.id)!.hardware).toBeUndefined();
-  expect(() => store.upsertProfile({ ...store.getProfile(legacy.id)!, hardware: { cores: 16 } }))
-    .toThrow("profile hardware cannot change in place");
+  store.upsertProfile({ ...store.getProfile(profile.id)!, hardware: { cores: profile.hardware.cores + 4 } });
+  expect(store.getProfile(profile.id)!.hardware).toEqual({ cores: profile.hardware.cores + 4 });
   expect(() => store.upsertProfile({ ...cloakProfile(), hardware: { cores: 0 } })).toThrow("unsupported profile hardware");
-  expect(() => store.upsertProfile({ ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), hardware: { cores: 8 } }))
-    .toThrow("only CloakBrowser profiles carry stored hardware");
+
+  const beta = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  store.upsertProfile({ ...beta, hardware: { cores: 6 } });
+  expect(store.getProfile(beta.id)!.hardware).toEqual({ cores: 6 });
+  store.setHardware(beta.id, undefined);
+  expect(store.getProfile(beta.id)!.hardware).toBeUndefined();
   store.close();
+});
+
+test("a typed count reaches every engine, and Chromium 155 shows at most this computer's", () => {
+  const cloak = { ...cloakProfile(), hardware: { cores: 32 } };
+  expect(deriveFingerprintFlags(cloak, 8)).toContain("--fingerprint-hardware-concurrency=32");
+  const beta = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), hardware: { cores: 32 } };
+  expect(deriveFingerprintFlags(beta, 8)).toContain("--fingerprint-hardware-concurrency=8");
+  expect(deriveFingerprintFlags({ ...beta, hardware: { cores: 4 } }, 8)).toContain("--fingerprint-hardware-concurrency=4");
+  const firefox = { ...buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false), hardware: { cores: 7 } };
+  expect(firefoxLaunchConfig(firefox)["navigator.hardwareConcurrency"]).toBe(7);
+
+  // Cleared, CloakBrowser draws from the seed again and the other engines choose.
+  expect(editedProfileHardware(cloak, undefined)).toEqual(generateProfileHardware(cloak.fingerprintSeed));
+  expect(editedProfileHardware(beta, undefined)).toBeUndefined();
+  expect(editedProfileHardware(firefox, undefined)).toBeUndefined();
+});
+
+test("Cloud carries typed cores for Firefox and Chromium 155 in their own schema versions", () => {
+  const beta = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), hardware: { cores: 6 } };
+  const betaPayload = encodePortableProfile(beta);
+  expect(betaPayload).toMatchObject({ schemaVersion: 3, profile: { hardware: { cores: 6 } } });
+  expect(decodePortableProfile(betaPayload).profile.hardware).toEqual({ cores: 6 });
+  const firefox = { ...buildNewProfile({ engine: "firefox", platformOs: "windows" }, () => false), hardware: { cores: 6 } };
+  const firefoxPayload = encodePortableProfile(firefox);
+  expect(firefoxPayload).toMatchObject({ schemaVersion: 2, profile: { hardware: { cores: 6 } } });
+  expect(decodePortableProfile(firefoxPayload).profile.hardware).toEqual({ cores: 6 });
 });
 
 test("Cloud carries stored hardware in schema V4, which older clients reject", () => {

@@ -1853,11 +1853,11 @@ export class Launcher {
     // The proxy exit is looked up once per launch. A missing or stale saved timezone (an import
     // whose lookup failed, a rotating proxy that moved) becomes the exit's before any engine reads
     // the profile, so pages see the timezone of the IP they come from. Without an answer the saved
-    // timezone stays. The exit IP is WebRTC's public address below.
+    // timezone stays, and so does one the user typed. The exit IP is WebRTC's public address below.
     const exit = profile.proxy && this.lookupExitLocationFn
       ? await this.lookupExitLocationFn(profile.proxy).catch(() => null)
       : null;
-    if (exit?.timezone && exit.timezone !== profile.timezone) {
+    if (exit?.timezone && exit.timezone !== profile.timezone && !profile.timezoneManual) {
       const updated = { ...this.requireUnchangedProfile(profileId, profileSnapshot, "proxy exit lookup"), timezone: exit.timezone };
       syncFirefoxTimezone(updated);
       this.store.upsertProfile(updated);

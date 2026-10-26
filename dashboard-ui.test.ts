@@ -309,7 +309,8 @@ test("dashboard selects browser for new profiles", () => {
   // The fingerprint hints hold for every engine, so they name none.
   const hints = [
     "The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.",
-    "Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.",
+    "Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.",
+    "We recommend keeping every setting automatic. Custom values can make the browser look inconsistent, easier to detect, and can trigger account checks.",
   ];
   for (const hint of hints) expect(app).toContain(`t("${hint}")`);
   expect(app).not.toContain("CloakBrowser keeps the locked values");
@@ -1025,5 +1026,5 @@ test("Firefox shows its screen, editable at creation and when editing", () => {
   expect(settings).toContain("onChange={(event) => onScreenChange(event.target.value)}");
   expect(app).not.toContain("screenReadOnly");
   expect(app).toContain("screen: form.screen,");
-  expect(app).toContain('t("Screen and timezone can be changed. The browser keeps the other values coordinated.")');
+  expect(app).toContain('t("Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.")');
 });

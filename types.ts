@@ -64,7 +64,10 @@ export interface ProxySpec {
  * of these — that mirrors the AdsPower launch invariant: launch uses stored
  * state, it does not mutate it.
  */
-/** Hardware that a CloakBrowser profile reports on every computer. Chosen once at creation. */
+/**
+ * Hardware a profile reports on every computer. A CloakBrowser profile gets it at creation;
+ * the other engines carry it only when the user sets it.
+ */
 export interface ProfileHardware {
   /** Logical processor count (navigator.hardwareConcurrency). */
   cores: number;
@@ -130,6 +133,8 @@ export interface Profile {
    * the timezone flag and CloakBrowser falls back to its default.
    */
   timezone: string;
+  /** The user typed this timezone. Launches and proxy changes keep it instead of the proxy's. */
+  timezoneManual?: boolean;
   /** Saved BCP-47 locale. Missing only on profiles awaiting closed-profile migration. */
   locale?: string;
   screenWidth: number;

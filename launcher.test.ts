@@ -5177,11 +5177,14 @@ test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and
   }
 });
 
-test("every proxied Chromium launch takes the proxy exit's timezone, and no answer keeps the saved one", async () => {
+test("every proxied Chromium launch takes the proxy exit's timezone, and no answer or a typed timezone keeps the saved one", async () => {
   const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
-  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", exit: ExitLocation | null) => {
+  const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", exit: ExitLocation | null, timezoneManual = false) => {
     const store = new ProfileStore(":memory:");
-    const chromium155 = { ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy, timezone: "Europe/London" };
+    const chromium155 = {
+      ...buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false), proxy, timezone: "Europe/London",
+      ...(timezoneManual ? { timezoneManual: true } : {}),
+    };
     const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
     store.upsertProfile(engine === "aliasmode" ? chromium155 : cloakbrowser);
     const f = fleet();
@@ -5212,6 +5215,10 @@ test("every proxied Chromium launch takes the proxy exit's timezone, and no answ
   }
   expect(await launch("win32", "aliasmode", null))
     .toEqual({ stored: "Europe/London", flags: ["--fingerprint-timezone=Europe/London"] });
+  for (const engine of ["aliasmode", "cloakbrowser"] as const) {
+    expect(await launch("win32", engine, tokyo, true))
+      .toEqual({ stored: "Europe/London", flags: ["--fingerprint-timezone=Europe/London"] });
+  }
 });
 
 test("a headed Chromium 155 window is kept on the profile's available screen until the browser stops", async () => {

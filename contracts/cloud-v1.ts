@@ -267,6 +267,8 @@ export interface PortableProfileV1 {
     tags: string[];
     ua: string;
     timezone: string;
+    /** The user typed the timezone; launches keep it instead of the proxy's. Older clients ignore it. */
+    timezoneManual?: true;
     locale?: string;
     screenWidth: number;
     screenHeight: number;
@@ -298,6 +300,8 @@ export interface PortableProfileV2 {
   profile: PortableProfileV1["profile"] & {
     engine: "firefox";
     firefox: FirefoxProfileConfig;
+    /** Cores the user set. Older clients reject a profile that carries it. */
+    hardware?: { cores: number };
   };
   session: PortableSessionV1;
 }
@@ -307,6 +311,8 @@ export interface PortableProfileV3 {
   schemaVersion: 3;
   profile: PortableProfileV1["profile"] & {
     chromiumRuntime: "aliasmode";
+    /** Cores the user set. Older clients reject a profile that carries it. */
+    hardware?: { cores: number };
   };
   session: PortableSessionV1;
 }

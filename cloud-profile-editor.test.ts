@@ -87,6 +87,26 @@ test("Cloud fingerprint edits round-trip manual timezone and OS without changing
   }
 });
 
+test("a typed Cloud timezone and CPU count travel to every device and survive a proxy change", async () => {
+  const authoritative = { ...response(), payload: payload() as any };
+  const calls: string[][] = [];
+  const editor = new CloudProfileEditor({
+    getProfile: async () => authoritative,
+    updateProfile: async (_id: string, request: any) => { authoritative.payload = request.payload; },
+  } as any, readOnlyStore(), timezoneFetch({ "new-proxy.example": "Asia/Tokyo" }, calls));
+  await editor.save("cloud1", 7, { timezone: "Europe/Paris", cores: "6" });
+  expect(authoritative.payload).toMatchObject({ schemaVersion: 4, profile: { timezone: "Europe/Paris", timezoneManual: true, hardware: { cores: 6 } } });
+  expect(await editor.get("cloud1")).toMatchObject({ timezone: "Europe/Paris", timezoneManual: true, cores: "6" });
+  await editor.save("cloud1", 7, { proxy: "new-proxy.example:8080" });
+  expect(calls).toEqual([]);
+  expect(authoritative.payload.profile).toMatchObject({ timezone: "Europe/Paris", timezoneManual: true });
+
+  // Blank fields go back to automatic: the proxy decides the timezone, the seed the cores.
+  await editor.save("cloud1", 7, { timezone: "", cores: "" });
+  expect(authoritative.payload.profile.timezoneManual).toBeUndefined();
+  expect(authoritative.payload.profile.hardware.cores).not.toBe(6);
+});
+
 test("Firefox Cloud edits set a new proxy's timezone in the saved config", async () => {
   const authoritative = { ...response(), payload: firefoxPayload() };
   let updated: any;

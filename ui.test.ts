@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { ProfileStore } from "./store.ts";
 import { BrowserLaunchError, Launcher } from "./launcher.ts";
 import { parseExport } from "./parse.ts";
-import { deriveFingerprintFlags } from "./fingerprint.ts";
+import { deriveFingerprintFlags, editedProfileHardware } from "./fingerprint.ts";
 import { listUiProfiles, handleUiRequest, LOW_DISK_SPACE_BYTES } from "./ui.ts";
 import { supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { trackRuntimeDownload } from "./runtime-download.ts";
@@ -1388,6 +1388,45 @@ test("a changed proxy gets its exit timezone", async () => {
     proxy: { type: "socks5", host: "new-proxy.example", port: "1080", user: "user", pass: "pass" },
     timezone: "Europe/Paris",
   });
+  s.close();
+});
+
+test("a typed timezone stays when the proxy changes, and a blank one follows the proxy again", async () => {
+  const s = store();
+  const update = (set: Record<string, unknown>) => handleUiRequest(
+    new Request("http://x/ui/api/profiles/k1d0cd11/update", { method: "POST", body: JSON.stringify({ set }) }),
+    {} as any,
+    s,
+    null,
+    { timezoneFetch: timezoneFetch({ "new-proxy.example": "Europe/Paris" }, []) },
+  );
+
+  expect((await update({ timezone: "America/Chicago" }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")).toMatchObject({ timezone: "America/Chicago", timezoneManual: true });
+  expect((await update({ proxyType: "http", proxy: "new-proxy.example:8080" }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")).toMatchObject({ timezone: "America/Chicago", timezoneManual: true });
+
+  expect((await update({ timezone: "" }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")!.timezoneManual).toBeUndefined();
+  expect((await update({ proxyType: "http", proxy: "other-proxy.example:8080" }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")).toMatchObject({ timezone: "Europe/Paris" });
+  s.close();
+});
+
+test("CPU cores and the seed can be typed, and a blank count goes back to automatic", async () => {
+  const s = store();
+  const update = (set: Record<string, unknown>) => handleUiRequest(
+    new Request("http://x/ui/api/profiles/k1d0cd11/update", { method: "POST", body: JSON.stringify({ set }) }),
+    {} as any,
+    s,
+  );
+  const seed = s.getProfile("k1d0cd11")!.fingerprintSeed;
+  expect((await update({ cores: "6", fingerprintSeed: String(seed + 1) }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")).toMatchObject({ hardware: { cores: 6 }, fingerprintSeed: seed + 1 });
+  expect((await update({ cores: "" }))!.status).toBe(200);
+  expect(s.getProfile("k1d0cd11")!.hardware).toEqual(editedProfileHardware(s.getProfile("k1d0cd11")!, undefined));
+  expect((await update({ cores: "0" }))!.status).toBe(500);
+  expect((await update({ fingerprintSeed: "abc" }))!.status).toBe(500);
   s.close();
 });
 

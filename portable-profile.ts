@@ -56,6 +56,7 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
     tags: [...(profile.tags ?? [])],
     ua: profile.ua,
     timezone: profile.timezone,
+    ...(profile.timezoneManual ? { timezoneManual: true as const } : {}),
     ...(profile.locale ? { locale: profile.locale } : {}),
     screenWidth: profile.screenWidth,
     screenHeight: profile.screenHeight,
@@ -63,18 +64,18 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
     ...(profile.platformOs ? { platformOs: profile.platformOs } : {}),
   };
 
+  const hardware = normalizeProfileHardware(profile.hardware);
   if (engine.engine === "firefox") {
     return {
       schemaVersion: 2,
-      profile: { ...portableProfile, engine: "firefox", firefox: engine.firefox! },
+      profile: { ...portableProfile, engine: "firefox", firefox: engine.firefox!, ...(hardware ? { hardware } : {}) },
       session,
     };
   }
   // A new schema version, so older clients reject it instead of opening it on CloakBrowser.
   const chromiumRuntime = normalizeChromiumRuntime(profile.chromiumRuntime, engine.engine);
-  if (chromiumRuntime) return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime }, session };
+  if (chromiumRuntime) return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime, ...(hardware ? { hardware } : {}) }, session };
   // Also a new version: an older client would open the profile with the engine default and then save it without the hardware.
-  const hardware = normalizeProfileHardware(profile.hardware, engine.engine, chromiumRuntime);
   if (hardware) return { schemaVersion: 4, profile: { ...portableProfile, hardware }, session };
   return { schemaVersion: 1, profile: portableProfile, session };
 }
@@ -89,19 +90,23 @@ export function decodePortableProfile(payload: PortableProfile): {
     firefox?: unknown;
     chromiumRuntime?: unknown;
     hardware?: unknown;
+    timezoneManual?: unknown;
   };
   let engine;
   let chromiumRuntime: ChromiumRuntime | undefined;
   let hardware: ProfileHardware | undefined;
+  try { hardware = normalizeProfileHardware(portableProfile.hardware); }
+  catch { throw new Error("unsupported portable profile payload"); }
+  if (portableProfile.timezoneManual !== undefined && portableProfile.timezoneManual !== true) {
+    throw new Error("unsupported portable profile payload");
+  }
   if (payload.schemaVersion === 1 || payload.schemaVersion === 3 || payload.schemaVersion === 4) {
     if (portableProfile.engine !== undefined || portableProfile.firefox !== undefined) {
       throw new Error("portable Chromium profile cannot include a Firefox config");
     }
     engine = normalizeProfileEngine(undefined, undefined);
     chromiumRuntime = normalizeChromiumRuntime(portableProfile.chromiumRuntime, engine.engine);
-    try { hardware = normalizeProfileHardware(portableProfile.hardware, engine.engine, chromiumRuntime); }
-    catch { throw new Error("unsupported portable profile payload"); }
-    // V1 carries neither; V3 always has a runtime; V4 always has stored hardware.
+    // V1 carries neither; V3 always has a runtime and may have hardware; V4 is CloakBrowser with hardware.
     const carried = chromiumRuntime ? 3 : hardware ? 4 : 1;
     if (payload.schemaVersion !== carried) throw new Error("unsupported portable profile payload");
   } else if (payload.schemaVersion === 2) {
@@ -133,6 +138,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     tags: [...portableProfile.tags],
     ua: portableProfile.ua,
     timezone: portableProfile.timezone,
+    ...(portableProfile.timezoneManual ? { timezoneManual: true } : {}),
     ...(portableProfile.locale !== undefined ? { locale: portableProfile.locale } : {}),
     screenWidth: portableProfile.screenWidth,
     screenHeight: portableProfile.screenHeight,

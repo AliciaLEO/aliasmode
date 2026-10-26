@@ -197,6 +197,22 @@ export function parseStrictTimezone(value: unknown): string {
   return timezone;
 }
 
+/** A typed processor count; "" means automatic. */
+export function parseStrictCores(value: unknown): number | undefined {
+  const raw = String(value ?? "").trim();
+  if (!raw) return undefined;
+  const cores = Number(raw);
+  if (!Number.isInteger(cores) || cores < 1 || cores > 256) throw new Error("invalid CPU cores: expected a whole number from 1 to 256");
+  return cores;
+}
+
+/** A typed fingerprint seed. */
+export function parseStrictSeed(value: unknown): number {
+  const seed = Number(String(value ?? "").trim());
+  if (!Number.isInteger(seed) || seed < 1 || seed > MAX_SEED) throw new Error(`invalid fingerprint seed: expected a whole number from 1 to ${MAX_SEED}`);
+  return seed;
+}
+
 /** Longest operator-chosen serial we accept. Wide enough for AdsPower-style ids. */
 export const MAX_CUSTOM_NO_LENGTH = 12;
 
@@ -397,7 +413,7 @@ export function recordToProfile(
   let hardware: ProfileHardware | undefined;
   try {
     const cores = rec.hardware_cores?.trim();
-    hardware = normalizeProfileHardware(cores ? { cores: Number(cores) } : undefined, browser.engine ?? "chromium", chromiumRuntime);
+    hardware = normalizeProfileHardware(cores ? { cores: Number(cores) } : undefined);
   } catch (error) { validationErrors.push(error instanceof Error ? error.message : String(error)); }
   const profile: Profile = {
     id,

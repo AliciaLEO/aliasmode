@@ -33,7 +33,7 @@ import { proxyHostPort } from "./proxy.ts";
 import {
   bundleHasRestorableLogin,
   bundleTabUrls,
-  bundleTelegramClient,
+  telegramHomeClient,
   keepUncapturedOrigins,
   parseCapturedSessionBundle,
   sessionBundleSignature,
@@ -558,6 +558,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
           if (this.options.store.getLaunch(summary.id)) continue;
           this.options.store.upsertProfile(profile);
           this.options.store.setTimezone(profile.id, profile.timezone);
+          this.options.store.setHardware(profile.id, profile.hardware);
           this.proxyCacheVersions.set(summary.id, response.profile.version);
           // A profile synced from another device may need a Firefox font pack here.
           this.options.launcher.prefetchFirefoxFontPacks?.([profile]);
@@ -751,6 +752,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       if (decoded.id !== profileId) throw new Error("Cloud returned a mismatched profile payload");
       this.options.store.upsertProfile(completeProfileFingerprint(decoded));
       this.options.store.setTimezone(decoded.id, decoded.timezone);
+      this.options.store.setHardware(decoded.id, decoded.hardware);
       const profile = this.options.store.getProfile(profileId)!;
       this.proxyCacheVersions.set(profileId, opened.baseVersion);
 
@@ -838,7 +840,7 @@ export class CloudBrowserCoordinator implements CloudBrowserLifecycle {
       }
       // ONE CDP attach: restore the authoritative bundle (no-op attach-free when
       // the bundle is empty) and open explicit pages after its saved tabs.
-      const home = platformHomeUrl(profile.platform, bundleTelegramClient(sessionBundle) ?? "a");
+      const home = platformHomeUrl(profile.platform, telegramHomeClient(sessionBundle));
       const savedTabs = bundleTabUrls(sessionBundle);
       const urls = startupUrls.length > 0
         ? startupUrls

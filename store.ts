@@ -53,6 +53,7 @@ export class ProfileStore {
         proxy_json TEXT,
         ua TEXT NOT NULL DEFAULT '',
         timezone TEXT NOT NULL DEFAULT '',
+        timezone_manual INTEGER NOT NULL DEFAULT 0,
         locale TEXT NOT NULL DEFAULT '',
         screen_width INTEGER NOT NULL DEFAULT 1920,
         screen_height INTEGER NOT NULL DEFAULT 1080,
@@ -169,6 +170,7 @@ export class ProfileStore {
       "firefox_config_json TEXT NOT NULL DEFAULT ''",
       "chromium_runtime TEXT NOT NULL DEFAULT ''",
       "hardware_json TEXT NOT NULL DEFAULT ''",
+      "timezone_manual INTEGER NOT NULL DEFAULT 0",
     ]) {
       try {
         this.db.exec(`ALTER TABLE profiles ADD COLUMN ${col}`);
@@ -315,7 +317,7 @@ export class ProfileStore {
     // The runtime is fixed at creation. An edit or re-import that omits it keeps it.
     const storedRuntime = existing ? normalizeChromiumRuntime(existing.chromium_runtime, storedProfileEngine(existing.engine)) : undefined;
     if (!p.chromiumRuntime && storedRuntime) p = { ...p, chromiumRuntime: storedRuntime };
-    // Stored hardware is fixed at creation too. An edit or re-import that omits it keeps it.
+    // An edit or re-import that omits stored hardware keeps it. setHardware clears it.
     const storedHardware = existing?.hardware_json || "";
     if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
     if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
@@ -331,24 +333,21 @@ export class ProfileStore {
     if (existing && storedRuntime !== chromiumRuntime) {
       throw new Error("profile Chromium runtime cannot change in place");
     }
-    const hardware = normalizeProfileHardware(p.hardware, browser.engine, chromiumRuntime);
+    const hardware = normalizeProfileHardware(p.hardware);
     const hardwareJson = hardware ? JSON.stringify(hardware) : "";
-    if (existing && storedHardware !== hardwareJson) {
-      throw new Error("profile hardware cannot change in place");
-    }
     const seeded = existing ? existing.seeded : p.seeded ? 1 : 0;
     this.db
       .query(
         `INSERT INTO profiles
-           (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, locale,
+           (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, timezone_manual, locale,
             screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
          ON CONFLICT(id) DO UPDATE SET
-           engine=$engine, firefox_config_json=$firefox,
+           engine=$engine, firefox_config_json=$firefox, hardware_json=$hardware, timezone_manual=$tzManual,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
            email=$email, email_password=$emailPass, twofa=$twofa,
            -- An unrelated edit to a quarantined profile must preserve the raw
@@ -411,6 +410,7 @@ export class ProfileStore {
         $customNo: p.customNo ?? "",
         $ua: p.ua,
         $tz: p.timezone ?? "",
+        $tzManual: p.timezoneManual ? 1 : 0,
         $locale: p.locale ?? "",
         $w: p.screenWidth,
         $h: p.screenHeight,
@@ -427,6 +427,11 @@ export class ProfileStore {
       });
     if (p.group) this.registerGroup(p.group);
     this.onProfileSaved?.(p);
+  }
+
+  /** Explicit edits and authoritative restores may clear stored hardware; the engine then chooses. */
+  setHardware(id: string, hardware: Profile["hardware"]): void {
+    this.db.query("UPDATE profiles SET hardware_json = ? WHERE id = ?").run(hardware ? JSON.stringify(hardware) : "", id);
   }
 
   /** Explicit edits and authoritative restores may clear a saved timezone. */
@@ -1013,7 +1018,7 @@ function rowToProfile(row: any): Profile {
     id: row.id,
     engine: browser.engine,
     ...(row.chromium_runtime ? { chromiumRuntime: normalizeChromiumRuntime(row.chromium_runtime, browser.engine) } : {}),
-    ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json), browser.engine, row.chromium_runtime) } : {}),
+    ...(row.hardware_json ? { hardware: normalizeProfileHardware(JSON.parse(row.hardware_json)) } : {}),
     ...(browser.firefox ? { firefox: browser.firefox } : {}),
     accId: row.acc_id ?? "",
     name: row.name ?? "",
@@ -1031,6 +1036,7 @@ function rowToProfile(row: any): Profile {
     customNo: typeof row.custom_no === "string" ? row.custom_no : "",
     ua: row.ua ?? "",
     timezone: row.timezone ?? "",
+    ...(row.timezone_manual ? { timezoneManual: true } : {}),
     ...(row.locale ? { locale: row.locale } : {}),
     screenWidth: row.screen_width ?? 1920,
     screenHeight: row.screen_height ?? 1080,

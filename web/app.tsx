@@ -758,7 +758,10 @@ const AUTOMATIC_FINGERPRINT_FIELDS = [
   ["WebRTC", "Automatic · proxy-aware"],
 ] as const;
 
-const FINGERPRINT_EDIT_WARNING = "These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.\n\nSave fingerprint changes?";
+// A template literal, so the translation key holds the same line breaks as the source.
+const FINGERPRINT_EDIT_WARNING = `These settings work together. Changing them can create an inconsistent fingerprint, make your browser easier to detect, or trigger account verification. We recommend automatic settings. Custom changes are your responsibility.
+
+Save fingerprint changes?`;
 
 const CLOAKBROWSER_NOTE = "CloakBrowser profiles on one computer can be linked to each other. Use AliasMode Chromium or AliasMode Firefox for separate identities.";
 
@@ -779,6 +782,12 @@ function FingerprintSettings({
   onPlatformOsChange,
   timezone,
   onTimezoneChange,
+  locale,
+  onLocaleChange,
+  cores,
+  onCoresChange,
+  seed,
+  onSeedChange,
   disabled = false,
   onUndo,
   hardware,
@@ -792,6 +801,12 @@ function FingerprintSettings({
   onPlatformOsChange?: (value: string) => void;
   timezone?: string;
   onTimezoneChange?: (value: string) => void;
+  locale?: string;
+  onLocaleChange?: (value: string) => void;
+  cores?: string;
+  onCoresChange?: (value: string) => void;
+  seed?: string;
+  onSeedChange?: (value: string) => void;
   disabled?: boolean;
   onUndo?: () => void;
   hardware?: { gpu?: string; cores?: number };
@@ -831,7 +846,27 @@ function FingerprintSettings({
             <input value={timezone ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. Europe/Paris")} onChange={(event) => onTimezoneChange(event.target.value)} />
           </label>
         )}
-        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => label !== "Timezone" || !onTimezoneChange).map(([label, value]) => {
+        {onLocaleChange && (
+          <label className="fld">
+            <span>{t("Language")}</span>
+            <input value={locale ?? ""} disabled={disabled} placeholder={t("Automatic · e.g. en-US")} onChange={(event) => onLocaleChange(event.target.value)} />
+          </label>
+        )}
+        {onCoresChange && (
+          <label className="fld">
+            <span>{t("CPU")}</span>
+            <input value={cores ?? ""} disabled={disabled} inputMode="numeric" placeholder={hardware?.cores ? t("Automatic · {n} cores", { n: hardware.cores }) : t("Automatic · e.g. 8")} onChange={(event) => onCoresChange(event.target.value)} />
+          </label>
+        )}
+        {onSeedChange && (
+          <label className="fld">
+            <span>{t("Fingerprint seed")}</span>
+            <input value={seed ?? ""} disabled={disabled} inputMode="numeric" onChange={(event) => onSeedChange(event.target.value)} />
+          </label>
+        )}
+        {AUTOMATIC_FINGERPRINT_FIELDS.filter(([label]) => !(
+          (label === "Timezone" && onTimezoneChange) || (label === "CPU" && onCoresChange) || (label === "Fingerprint seed" && onSeedChange)
+        )).map(([label, value]) => {
           // A stored value is the same on every computer that opens the profile.
           const stored = label === "GPU" ? hardware?.gpu : label === "CPU" && hardware?.cores ? `${hardware.cores} cores` : undefined;
           return (
@@ -841,12 +876,11 @@ function FingerprintSettings({
             </label>
           );
         })}
+        <div className="hint">{t("We recommend keeping every setting automatic. Custom values can make the browser look inconsistent, easier to detect, and can trigger account checks.")}</div>
         <div className="hint">{disabled
           ? t("Close the browser before changing fingerprint settings.")
           : onTimezoneChange
-            ? engine === "firefox"
-              ? t("Screen and timezone can be changed. The browser keeps the other values coordinated.")
-              : t("Screen, operating system, and timezone can be changed. The browser keeps the other values coordinated.")
+            ? `${t("Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.")}${chromiumRuntime && cores ? ` ${t("AliasMode Chromium shows at most the processor count of the computer it runs on.")}` : ""}`
             : engine === "firefox"
               ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
               : t("The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
@@ -2710,9 +2744,14 @@ function App() {
           platformOs: p.platformOs ?? "",
           timezone: p.timezone,
           locale: p.locale ?? "",
+          cores: p.cores ?? "",
+          fingerprintSeed: p.fingerprintSeed ?? "",
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
-        setEditInitialFingerprint({ resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "" });
+        setEditInitialFingerprint({
+          resolution: p.resolution, platformOs: p.platformOs ?? "", timezone: p.timezone ?? "",
+          locale: p.locale ?? "", cores: p.cores ?? "", fingerprintSeed: p.fingerprintSeed ?? "",
+        });
         setEditEngine(p.engine === "firefox" ? "firefox" : "chromium");
         setEditChromiumRuntime(p.chromiumRuntime ?? "");
         setEditHardware(p.hardware);
@@ -2779,7 +2818,7 @@ function App() {
     }
   };
   const refreshEditedTimezone = async () => {
-    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    if (!editId || editProxyChanged || timezoneBusy || editSaving || editForm.proxyError || editRunning || editLive || !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
     const id = editId;
     const generation = editProxyCheckGeneration.current;
     setTimezoneBusy(true);
@@ -2801,7 +2840,7 @@ function App() {
     const fingerprintEdits = Object.fromEntries(Object.entries(editInitialFingerprint)
       .filter(([key, value]) => editForm[key] !== value)
       .map(([key]) => [key, editForm[key] ?? ""]));
-    if (Object.keys(fingerprintEdits).length && !confirm(FINGERPRINT_EDIT_WARNING)) return;
+    if (Object.keys(fingerprintEdits).length && !confirm(t(FINGERPRINT_EDIT_WARNING))) return;
     setEditSaving(true);
     setEditErr(null);
     try {
@@ -4921,13 +4960,8 @@ function App() {
                         : t("This action saves the timezone immediately. It applies the next time this profile opens.")}</p>
                     </>
                   )}
-                  {editForm.locale && (
-                    <p className="hint">
-                      {t("Language")}: {editForm.locale}
-                      {localeTimezoneMismatch(editForm.locale, editForm.timezone ?? "") && (
-                        <><br />{t("This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.")}</>
-                      )}
-                    </p>
+                  {editForm.locale && localeTimezoneMismatch(editForm.locale, editForm.timezone ?? "") && (
+                    <p className="hint">{t("This language does not match the timezone's country. Use “Set timezone and language from proxy” to match them.")}</p>
                   )}
                   <div className="fld-row">
                     <CopyField label={t("Username")} value={editForm.username ?? ""} onChange={(value) => setEF("username", value)} />
@@ -4952,6 +4986,9 @@ function App() {
                     engine={editEngine} chromiumRuntime={editChromiumRuntime} ownChromium={ownChromium} screen={editForm.resolution ?? ""} onScreenChange={(value) => setEF("resolution", value)}
                     platformOs={editForm.platformOs ?? ""} onPlatformOsChange={editEngine === "chromium" ? (value) => setEF("platformOs", value) : undefined}
                     timezone={editForm.timezone ?? ""} onTimezoneChange={(value) => setEF("timezone", value)}
+                    locale={editForm.locale ?? ""} onLocaleChange={(value) => setEF("locale", value)}
+                    cores={editForm.cores ?? ""} onCoresChange={(value) => setEF("cores", value)}
+                    seed={editForm.fingerprintSeed ?? ""} onSeedChange={(value) => setEF("fingerprintSeed", value)}
                     disabled={editRunning || editLive || editSaving || timezoneBusy}
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
                     hardware={editHardware}

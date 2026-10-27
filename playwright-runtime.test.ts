@@ -622,6 +622,58 @@ test("native restore applies an explicit empty localStorage capture", async () =
   expect(localStorage.stale).toBeUndefined();
 });
 
+test("a Chromium restore never loads a Chrome Web Store origin and still restores the cookies", async () => {
+  // AliasMode Chromium 155 exits when a routed document loads on a Web Store origin.
+  let handler: ((route: { fulfill: () => Promise<void> }) => Promise<void>) | undefined;
+  const visited: string[] = [];
+  let cookies: unknown[] = [];
+  const makePage = () => {
+    let current = "about:blank";
+    return {
+      url: () => current,
+      async goto(url: string) { current = url; visited.push(new URL(url).origin); await handler?.({ fulfill: async () => {} }); },
+      async evaluate() {},
+      async close() {},
+    };
+  };
+  const context = {
+    pages: () => [],
+    async newPage() { return makePage(); },
+    async route(_url: string, value: typeof handler) { handler = value; },
+    async unroute() { handler = undefined; },
+    async clearCookies() {},
+    async addCookies(value: unknown[]) { cookies = value; },
+  };
+  const cookie = { name: "sid", value: "1", domain: ".example.com", path: "/" };
+  await restoreSession({}, context, {
+    bundle: JSON.stringify({ cookies: [cookie], origins: [
+      { origin: "https://chrome.google.com", localStorage: [{ name: "a", value: "1" }] },
+      { origin: "https://chromewebstore.google.com", localStorage: [] },
+      { origin: "https://example.com", localStorage: [{ name: "b", value: "2" }] },
+    ] }),
+    urls: [],
+  });
+  expect(visited).toEqual(["https://example.com"]);
+  expect(cookies).toEqual([cookie]);
+});
+
+test("a Chromium capture keeps a Chrome Web Store tab but reads no Web Store storage", async () => {
+  const page = (url: string) => ({
+    url: () => url,
+    async evaluate() { return { origin: new URL(url).origin, localStorage: [{ name: "k", value: "v" }] }; },
+  });
+  const context = {
+    pages: () => [page("https://chromewebstore.google.com/detail/x"), page("https://site.example/")],
+    async cookies() { return []; },
+  };
+  const captured = JSON.parse(await captureSession({ contexts: () => [context] }, {
+    captureSeed: { origins: ["https://chrome.google.com"] },
+  }));
+  expect(captured.origins).toEqual([{ origin: "https://site.example", localStorage: [{ name: "k", value: "v" }] }]);
+  expect(captured.tabs).toEqual(["https://chromewebstore.google.com/detail/x", "https://site.example/"]);
+  expect(captured.unreadableOrigins).toBeUndefined();
+});
+
 // Chromium shows the search engine's new tab page as chrome://newtab/, but Playwright reports the
 // address that the page loads from. The CDP target has the address that the tab shows.
 const SEARCH_NEW_TAB_URL = "https://duckduckgo.com/chrome_newtab";

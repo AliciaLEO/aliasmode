@@ -163,6 +163,10 @@ function canonicalWebOrigin(value) {
   }
 }
 
+// AliasMode Chromium 155 exits when a document from a route loads on a Chrome Web Store origin, as
+// the storage reads and restores below do. The Web Store keeps no login, so its storage is skipped.
+const WEB_STORE_ORIGINS = new Set(["https://chromewebstore.google.com", "https://chrome.google.com"]);
+
 function canonicalUserPageUrl(value) {
   if (typeof value !== "string") return undefined;
   try {
@@ -782,6 +786,7 @@ export async function captureSession(browser, payload, options = {}) {
     const readTimeoutMs = options.originReadTimeoutMs ?? ORIGIN_READ_TIMEOUT_MS;
     let stalled = false;
     for (const origin of [...origins].sort()) {
+      if (WEB_STORE_ORIGINS.has(origin)) continue;
       // A site that the browser refuses to open as a page (for example one that an extension
       // blocks), a storage or IndexedDB read that throws, or a tab that hangs must not stop the
       // capture: the caller keeps the storage that it saved for this origin before, and the cookies
@@ -936,7 +941,8 @@ export async function restoreSession(browser, context, payload, options = {}) {
   let bundle;
   try { bundle = JSON.parse(payload.bundle); } catch { throw sessionError("invalid_bundle"); }
   const origins = Array.isArray(bundle.origins)
-    ? bundle.origins.map((target) => normalizeWebOriginStorage(target?.origin, target)).filter(Boolean)
+    ? bundle.origins.map((target) => normalizeWebOriginStorage(target?.origin, target))
+      .filter((target) => target && !WEB_STORE_ORIGINS.has(target.origin))
     : [];
   const cookies = Array.isArray(bundle.cookies) ? bundle.cookies : [];
   if (!cookies.length && !origins.length && !(payload.urls || []).length && !payload.replacePages && !payload.authoritative) return null;

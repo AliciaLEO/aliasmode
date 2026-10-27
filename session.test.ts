@@ -793,6 +793,42 @@ test("restoreOriginStorage restores only origins present in the bundle, never wi
   expect(restored[1]).toContain("localStorage.setItem");
 });
 
+test("restoreOriginStorage never loads a Chrome Web Store origin", async () => {
+  // AliasMode Chromium 155 exits when a routed document loads on a Web Store origin.
+  const navigated: string[] = [];
+  const page = { async goto(url: string) { navigated.push(url); }, async evaluate() {}, async close() {} };
+  await restoreOriginStorage({ pages: () => [page] }, [
+    { origin: "https://chrome.google.com", localStorage: [{ name: "a", value: "1" }] },
+    { origin: "https://chromewebstore.google.com", localStorage: [] },
+    { origin: "https://example.com", localStorage: [{ name: "auth", value: "value" }] },
+  ]);
+  expect(navigated.filter((u) => u !== "about:blank")).toEqual(["https://example.com"]);
+});
+
+test("collectSessionFromContext opens no capture page on a Chrome Web Store origin", async () => {
+  const routed: string[] = [];
+  let handler: ((route: { fulfill: () => Promise<void> }) => unknown) | undefined;
+  const makePage = () => {
+    let current = "about:blank";
+    return {
+      url: () => current,
+      async goto(url: string) { current = url; await handler?.({ fulfill: async () => {} }); },
+      async close() {},
+    };
+  };
+  const ctx = {
+    pages: () => [],
+    async newPage() { return makePage(); },
+    async route(url: string, value: typeof handler) { routed.push(new URL(url).origin); handler = value; },
+    async unroute() { handler = undefined; },
+    async storageState() { return { cookies: [], origins: [] }; },
+  };
+  await collectSessionFromContext(ctx, {
+    origins: ["https://chrome.google.com", "https://chromewebstore.google.com", "https://example.com"],
+  });
+  expect(routed).toEqual(["https://example.com"]);
+});
+
 test("restoreOriginStorage restores selected passcode IndexedDB first, then verified localStorage", async () => {
   const restored: string[] = [];
   const page = {

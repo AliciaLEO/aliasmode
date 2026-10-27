@@ -215,6 +215,10 @@ function canonicalWebOrigin(value: string): string | null {
   }
 }
 
+// AliasMode Chromium 155 exits when a document from a route loads on a Chrome Web Store origin, as
+// the storage captures and restores here do. The Web Store keeps no login, so its storage is skipped.
+const WEB_STORE_ORIGINS = new Set(["https://chromewebstore.google.com", "https://chrome.google.com"]);
+
 /** Canonical user-visible web page URL, excluding AliasMode's temporary/internal pages. */
 export function canonicalUserPageUrl(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -686,6 +690,7 @@ async function primeCaptureOrigins(context: any, seed: SessionCaptureSeed): Prom
       if (pageUrl) origins.add(new URL(pageUrl).origin);
     } catch {}
   }
+  for (const origin of WEB_STORE_ORIGINS) origins.delete(origin);
   const pages: any[] = [];
   const routes: Array<{ url: string; handler: (route: any) => unknown }> = [];
   const cdpSessions: any[] = [];
@@ -1072,7 +1077,7 @@ export async function restoreOriginStorage(context: any, origins: OriginStorage[
   // production so seeding never navigates or races the operator's real tabs.
   const targets = origins.flatMap((target) => {
     const origin = canonicalWebOrigin(target.origin);
-    return origin ? [{ ...target, origin }] : [];
+    return origin && !WEB_STORE_ORIGINS.has(origin) ? [{ ...target, origin }] : [];
   });
   if (targets.length === 0) return;
   const existing = context.pages();

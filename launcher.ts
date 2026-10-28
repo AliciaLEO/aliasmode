@@ -1080,16 +1080,40 @@ export class Launcher {
       this.prefetchRuntime("CloakBrowser", this.ensureDownloadedCloakBrowserFn);
     }
     if (chromium.some((profile) => profile.chromiumRuntime) && supportsChromium155Host(this.hostPlatform, this.hostArch)) {
-      this.prefetchRuntime("Chromium 155 beta", this.ensureAliasmodeChromiumFn);
+      this.prefetchRuntime("Chromium 155 beta", this.ensureAliasmodeChromiumFn, (executable) => this.shareStoppedProfilesComponents(executable));
     }
   }
 
-  private prefetchRuntime(label: string, ensure: (root: string) => Promise<string>): void {
+  private prefetchRuntime(label: string, ensure: (root: string) => Promise<string>, ready?: (executable: string) => Promise<void>): void {
     if (this.runtimePrefetches.has(label)) return;
     this.runtimePrefetches.add(label);
-    ensure(this.chromiumRuntimeRoot).catch((error) => {
+    ensure(this.chromiumRuntimeRoot).then((executable) => ready?.(executable)).catch((error) => {
       this.log(`${label} download failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  /**
+   * Once per run, when the Chromium 155 runtime is ready, also share the components of the 155
+   * profiles that are stopped now. A profile that is not opened again then gives back its copies too.
+   */
+  private async shareStoppedProfilesComponents(executable: string): Promise<void> {
+    const componentsDir = chromiumComponentsDir(executable, this.hostPlatform);
+    if (!componentsDir) return;
+    const startedAt = Date.now();
+    let checked = 0;
+    for (const { id, chromiumRuntime } of this.store.listProfiles()) {
+      if (!chromiumRuntime || this.startsInFlight.has(id) || this.stopsInFlight.has(id) || this.cacheClears.has(id) || this.store.getLaunch(id)) continue;
+      // A start that begins now waits for this, as it does for the cleanup after a stop.
+      const sharing: Promise<void> = this.clearCacheDirs(id, ["component_crx_cache"], "Chromium component cleanup")
+        .then(() => this.shareComponents(id, componentsDir))
+        .finally(() => {
+          if (this.cacheClears.get(id) === sharing) this.cacheClears.delete(id);
+        });
+      this.cacheClears.set(id, sharing);
+      await sharing;
+      checked++;
+    }
+    this.log(`Chromium 155 components shared: ${checked} stopped profiles checked (${Date.now() - startedAt}ms)`);
   }
 
   /** The desktop apps ship no CloakBrowser; they download the pinned build on first use. */

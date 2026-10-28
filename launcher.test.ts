@@ -5018,6 +5018,46 @@ test("a stopped Chromium 155 profile shares its components beside the browser; C
   expect(await run("cloakbrowser")).toEqual({ shared: false, own: true, crxCache: false });
 });
 
+test("at app start, stopped Chromium 155 profiles share their components; CloakBrowser profiles keep theirs", async () => {
+  const store = new ProfileStore(":memory:");
+  const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  store.upsertProfile(chromium155);
+  store.upsertProfile(cloak);
+  const runtimes = join(testDataRoot(store), "runtimes");
+  const executable = aliasmodeChromiumExecutable(runtimes, "win32");
+  mkdirSync(join(executable, ".."), { recursive: true });
+  for (const id of [chromium155.id, cloak.id]) {
+    const version = join(testDataRoot(store), id, "WidevineCdm", "4.10.3112.0");
+    mkdirSync(version, { recursive: true });
+    writeFileSync(join(version, "manifest.json"), JSON.stringify({ version: "4.10.3112.0" }));
+    mkdirSync(join(testDataRoot(store), id, "component_crx_cache"), { recursive: true });
+    writeFileSync(join(testDataRoot(store), id, "component_crx_cache", "widevine.crx3"), "crx");
+  }
+  const logs: string[] = [];
+  const launcher = new ProductionLauncher({
+    store,
+    binaryPath: "",
+    dataRoot: testDataRoot(store),
+    chromiumRuntimeRoot: runtimes,
+    hostPlatform: "win32",
+    hostArch: "x64",
+    ensureDownloadedCloakBrowser: async () => "unused",
+    ensureAliasmodeChromium: async () => executable,
+    log: (message) => logs.push(message),
+    spawn: () => { throw new Error("must not spawn"); },
+  });
+  launcher.prefetchBrowserRuntimes(store.listProfiles());
+  for (let i = 0; i < 100 && !logs.some((line) => line.startsWith("Chromium 155 components shared")); i++) await Bun.sleep(10);
+  expect(logs.find((line) => line.startsWith("Chromium 155 components shared"))).toContain(": 1 stopped profiles checked");
+  expect(existsSync(join(executable, "..", "WidevineCdm", "manifest.json"))).toBe(true);
+  expect(existsSync(join(testDataRoot(store), chromium155.id, "WidevineCdm"))).toBe(false);
+  expect(existsSync(join(testDataRoot(store), chromium155.id, "component_crx_cache"))).toBe(false);
+  expect(existsSync(join(testDataRoot(store), cloak.id, "WidevineCdm", "4.10.3112.0", "manifest.json"))).toBe(true);
+  expect(existsSync(join(testDataRoot(store), cloak.id, "component_crx_cache", "widevine.crx3"))).toBe(true);
+  store.close();
+});
+
 test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Windows displays, and its own canvas", async () => {
   const launchArgs = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser") => {
     const store = new ProfileStore(":memory:");

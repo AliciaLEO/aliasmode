@@ -521,11 +521,13 @@ test("Telegram client/signature recognizes current accountN storage and preserve
   expect(bundleTelegramClient(JSON.stringify({ origins: [{ origin: "https://web.telegram.org", localStorage: [{ name: "kz_version", value: '"K"' }] }] }))).toBe("k");
 });
 
-test("Telegram opens on the client it last used, a saved login of unknown client on Web A, and a new profile on Web K", () => {
+test("Telegram opens on Web K unless a live login was made on Web A", () => {
   const login = { origin: "https://web.telegram.org", localStorage: [{ name: "account1", value: JSON.stringify({ dcId: 4, dc4_auth_key: "KEY", userId: "1" }) }] };
   expect(telegramHomeClient(JSON.stringify({ cookies: [], telegramClient: "k", origins: [login] }))).toBe("k");
-  expect(telegramHomeClient(JSON.stringify({ cookies: [], telegramClient: "a", origins: [] }))).toBe("a");
+  expect(telegramHomeClient(JSON.stringify({ cookies: [], telegramClient: "a", origins: [login] }))).toBe("a");
   expect(telegramHomeClient(JSON.stringify({ cookies: [], origins: [login] }))).toBe("a");
+  // Logged out: the next login is made on Web K, even where the last one was on Web A.
+  expect(telegramHomeClient(JSON.stringify({ cookies: [], telegramClient: "a", origins: [] }))).toBe("k");
   expect(telegramHomeClient(JSON.stringify({ cookies: [] }))).toBe("k");
 });
 

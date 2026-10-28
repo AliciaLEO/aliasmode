@@ -3,8 +3,10 @@
  * the opt-in Chromium 155 beta, and CloakBrowser. Each is pinned by archive and
  * executable SHA-256, and lives in the app's data folder, which survives app updates.
  */
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { cp, readdir, readFile, rename, rm } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import {
   CLOAKBROWSER_MACOS_VERSION, CLOAKBROWSER_VERSION, CLOAKBROWSER_WINDOWS_X64_ARCHIVE_SHA256,
   CLOAKBROWSER_WINDOWS_X64_EXECUTABLE_SHA256, renameWhenUnlocked, sha256File,
@@ -304,6 +306,65 @@ async function downloadWithRetry(
 export function aliasmodeChromiumExecutable(root: string, platform = process.platform): string {
   const build = chromiumBuild(platform);
   return join(root, build.dir, build.executable);
+}
+
+/**
+ * The folder of Chromium 155's own files on Windows and Linux. Chromium loads the components it
+ * finds there before it downloads them into a profile. On macOS that folder is inside the signed app.
+ */
+export function chromiumComponentsDir(executable: string, platform = process.platform): string | null {
+  if (platform === "darwin") return null;
+  const dir = dirname(executable);
+  return basename(dir) === chromiumBuild(platform).dir ? dir : null;
+}
+
+const COMPONENT_VERSION = /^\d+(\.\d+)*$/;
+
+function compareVersions(a: string, b: string): number {
+  const x = a.split(".").map(Number);
+  const y = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return d;
+  }
+  return 0;
+}
+
+async function manifestVersion(dir: string): Promise<string | null> {
+  try {
+    const { version } = JSON.parse(await readFile(join(dir, "manifest.json"), "utf8"));
+    return typeof version === "string" && COMPONENT_VERSION.test(version) ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Chromium 155 downloads about 85 MB of components (Widevine, hyphenation data, models) into every
+ * profile, and thousands of profiles filled an operator's disk. After a profile stops, keep one copy
+ * of each component in `componentsDir`, where every profile loads it at its next start, and delete
+ * the profile's own copies that are not newer.
+ */
+export async function shareChromiumComponents(userDataDir: string, componentsDir: string): Promise<void> {
+  for (const entry of await readdir(userDataDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const own = join(userDataDir, entry.name);
+    const versions = (await readdir(own, { withFileTypes: true }))
+      .filter((v) => v.isDirectory() && COMPONENT_VERSION.test(v.name) && existsSync(join(own, v.name, "manifest.json")))
+      .map((v) => v.name)
+      .sort(compareVersions);
+    const newest = versions.at(-1);
+    if (!newest) continue;
+    const shared = join(componentsDir, entry.name);
+    if (!existsSync(shared)) {
+      // Copy beside the target and rename, so a browser that starts now never sees half a component.
+      const temp = join(componentsDir, `.${entry.name}.${randomUUID()}.tmp`);
+      await cp(join(own, newest), temp, { recursive: true });
+      await rename(temp, shared).catch(() => rm(temp, { recursive: true, force: true }));
+    }
+    const sharedVersion = await manifestVersion(shared);
+    if (sharedVersion && compareVersions(newest, sharedVersion) <= 0) await rm(own, { recursive: true, force: true });
+  }
 }
 
 /** The pinned 155 archive of one system. */

@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import {
   aliasmodeChromiumArchive,
   aliasmodeChromiumExecutable,
+  chromiumComponentsDir,
   CLOAKBROWSER_LINUX_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_EXECUTABLE_SHA256,
   CLOAKBROWSER_MACOS_X64_EXECUTABLE_SHA256,
@@ -18,6 +19,7 @@ import {
   LINUX_CHROMIUM_APPARMOR_PROFILE,
   linuxChromiumSandboxBlocked,
   pruneBrowserRuntimes,
+  shareChromiumComponents,
   supportsChromium155Host,
   type AliasmodeChromiumDeps,
 } from "./aliasmode-chromium.ts";
@@ -409,4 +411,54 @@ test("Linux blocks the Chrome sandbox only when AppArmor restricts user namespac
   expect(linuxChromiumSandboxBlocked(read("1\n"), (path) => path === LINUX_CHROMIUM_APPARMOR_PROFILE)).toBe(false);
   expect(linuxChromiumSandboxBlocked(read("0\n"), () => false)).toBe(false);
   expect(linuxChromiumSandboxBlocked(missing, () => false)).toBe(false);
+});
+
+test("Chromium 155 profiles share one copy of each downloaded component beside the browser", async () => {
+  const root = mkdtempSync(join(tmpdir(), "aliasmode-components-"));
+  const runtime = dirname(aliasmodeChromiumExecutable(root));
+  mkdirSync(join(runtime, "locales"), { recursive: true });
+  writeFileSync(join(runtime, "locales", "en-US.pak"), "pak");
+  const component = (profile: string, name: string, version: string) => {
+    const dir = join(root, profile, name, version);
+    mkdirSync(join(dir, "_platform_specific"), { recursive: true });
+    writeFileSync(join(dir, "manifest.json"), JSON.stringify({ version }));
+    writeFileSync(join(dir, "_platform_specific", "cdm.dll"), `cdm ${version}`);
+  };
+  component("a", "WidevineCdm", "4.10.3112.0");
+  writeFileSync(join(root, "a", "WidevineCdm", "latest-component-updated-widevine-cdm"), "{}");
+  component("a", "hyphen-data", "120.0.6050.0");
+  mkdirSync(join(root, "a", "Default", "Network"), { recursive: true });
+  writeFileSync(join(root, "a", "Default", "Network", "Cookies"), "login");
+  mkdirSync(join(root, "a", "aliasmode-autofill"), { recursive: true });
+  writeFileSync(join(root, "a", "aliasmode-autofill", "manifest.json"), JSON.stringify({ version: "1" }));
+
+  await shareChromiumComponents(join(root, "a"), runtime);
+  expect(JSON.parse(readFileSync(join(runtime, "WidevineCdm", "manifest.json"), "utf8")).version).toBe("4.10.3112.0");
+  expect(readFileSync(join(runtime, "WidevineCdm", "_platform_specific", "cdm.dll"), "utf8")).toBe("cdm 4.10.3112.0");
+  expect(existsSync(join(runtime, "hyphen-data", "manifest.json"))).toBe(true);
+  expect(existsSync(join(root, "a", "WidevineCdm"))).toBe(false);
+  expect(existsSync(join(root, "a", "hyphen-data"))).toBe(false);
+  // Logins, extensions and the browser's own folders stay.
+  expect(readFileSync(join(root, "a", "Default", "Network", "Cookies"), "utf8")).toBe("login");
+  expect(existsSync(join(root, "a", "aliasmode-autofill", "manifest.json"))).toBe(true);
+  expect(readdirSync(join(runtime, "locales"))).toEqual(["en-US.pak"]);
+  expect(readdirSync(runtime).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+
+  // An older or equal copy goes; a newer one stays until a new browser version brings it.
+  component("b", "WidevineCdm", "4.10.3000.0");
+  component("c", "WidevineCdm", "4.10.3200.0");
+  await shareChromiumComponents(join(root, "b"), runtime);
+  await shareChromiumComponents(join(root, "c"), runtime);
+  expect(existsSync(join(root, "b", "WidevineCdm"))).toBe(false);
+  expect(existsSync(join(root, "c", "WidevineCdm", "4.10.3200.0", "manifest.json"))).toBe(true);
+  expect(readFileSync(join(runtime, "WidevineCdm", "_platform_specific", "cdm.dll"), "utf8")).toBe("cdm 4.10.3112.0");
+});
+
+test("Chromium components are shared only beside the Windows and Linux 155 builds", () => {
+  expect(chromiumComponentsDir(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4", "chrome.exe"), "win32"))
+    .toBe(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4"));
+  expect(chromiumComponentsDir(join("/data", "runtimes", "chromium-155.0.8059.31", "chrome"), "linux"))
+    .toBe(join("/data", "runtimes", "chromium-155.0.8059.31"));
+  expect(chromiumComponentsDir(join("/data", ".cloakbrowser", "chromium-146.0.7680.177.5", "chrome.exe"), "win32")).toBeNull();
+  expect(chromiumComponentsDir(aliasmodeChromiumExecutable("/data/runtimes", "darwin"), "darwin")).toBeNull();
 });

@@ -44,6 +44,7 @@ import {
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
 import { parseExport } from "./parse.ts";
 import { buildNewProfile } from "./create.ts";
+import { aliasmodeChromiumExecutable } from "./aliasmode-chromium.ts";
 import { SessionRestoreError } from "./session.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 
@@ -4957,6 +4958,43 @@ test("Chromium 155 beta profiles launch the installed beta runtime without Cloak
   expect(store.getLaunch(profile.id)?.binaryPath).toBe("/fake/runtimes/chromium-155/chrome.exe");
   expect(await launcher.stop(profile.id)).toBe(true);
   store.close();
+});
+
+test("a stopped Chromium 155 profile shares its components beside the browser; CloakBrowser profiles keep theirs", async () => {
+  const run = async (engine: "aliasmode" | "cloakbrowser") => {
+    const store = new ProfileStore(":memory:");
+    const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
+    const { chromiumRuntime: _runtime, ...cloakbrowser } = chromium155;
+    const profile = engine === "aliasmode" ? chromium155 : cloakbrowser;
+    store.upsertProfile(profile);
+    const runtimes = join(testDataRoot(store), "runtimes");
+    const executable = aliasmodeChromiumExecutable(runtimes, "win32");
+    const own = join(testDataRoot(store), profile.id, "WidevineCdm");
+    const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+      hostPlatform: "win32",
+      hostArch: "x64",
+      chromiumRuntimeRoot: runtimes,
+      ensureAliasmodeChromium: async () => executable,
+    });
+    await launcher.start(profile.id);
+    mkdirSync(join(own, "4.10.3112.0"), { recursive: true });
+    writeFileSync(join(own, "4.10.3112.0", "manifest.json"), JSON.stringify({ version: "4.10.3112.0" }));
+    mkdirSync(join(testDataRoot(store), profile.id, "component_crx_cache"), { recursive: true });
+    writeFileSync(join(testDataRoot(store), profile.id, "component_crx_cache", "widevine.crx3"), "crx");
+    await launcher.stop(profile.id);
+    // The next start waits for the cleanup after the stop.
+    await launcher.start(profile.id);
+    await launcher.stop(profile.id);
+    const result = {
+      shared: existsSync(join(executable, "..", "WidevineCdm", "manifest.json")),
+      own: existsSync(own),
+      crxCache: existsSync(join(testDataRoot(store), profile.id, "component_crx_cache")),
+    };
+    store.close();
+    return result;
+  };
+  expect(await run("aliasmode")).toEqual({ shared: true, own: false, crxCache: false });
+  expect(await run("cloakbrowser")).toEqual({ shared: false, own: true, crxCache: false });
 });
 
 test("Chromium 155 keeps WebGL without a graphics card, sharp pages on scaled Windows displays, and its own canvas", async () => {

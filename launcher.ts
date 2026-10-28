@@ -66,6 +66,7 @@ import {
   ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_KEEP_ALIVE,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
+  chromiumComponentsDir,
   chromiumDeviceScale,
   cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
@@ -73,6 +74,7 @@ import {
   hostDisplayAvail,
   hostDisplayScale,
   pruneBrowserRuntimes,
+  shareChromiumComponents,
   supportsChromium155Host,
 } from "./aliasmode-chromium.ts";
 
@@ -775,6 +777,8 @@ const POST_STOP_CACHE_DIRS = [
   "GrShaderCache",
   "ShaderCache",
   "GraphiteDawnCache",
+  // Chromium 155's copies of downloaded component packages. Without them, nothing downloads again.
+  "component_crx_cache",
 ];
 
 /**
@@ -2953,7 +2957,7 @@ export class Launcher {
     // launch generation is dead. Cleaning here covers explicit stops, direct
     // window closes discovered by reconciliation, and failed-start rollback.
     // start() cannot reuse the profile until its lifecycle transition finishes.
-    this.clearPostStopCache(profileId);
+    this.clearPostStopCache(profileId, launch.binaryPath);
     return true;
   }
 
@@ -3838,17 +3842,31 @@ export class Launcher {
     return this.clearCacheDirs(profileId, dirs, "clearCache");
   }
 
-  private clearPostStopCache(profileId: string): void {
+  private clearPostStopCache(profileId: string, binaryPath?: string): void {
     const dirs = this.store.getProfile(profileId)?.engine === "firefox" ? FIREFOX_CACHE_DIRS : POST_STOP_CACHE_DIRS;
+    const componentsDir = binaryPath ? chromiumComponentsDir(binaryPath, this.hostPlatform) : null;
     const startedAt = Date.now();
     const clearing: Promise<void> = this.clearCacheDirs(profileId, dirs, "post-stop cache cleanup")
-      .then(({ cleared }) => {
+      .then(async ({ cleared }) => {
         if (cleared) this.log(`${profileId}: rebuildable disk caches cleared after confirmed stop (${Date.now() - startedAt}ms)`);
+        if (componentsDir) await this.shareComponents(profileId, componentsDir);
       })
       .finally(() => {
         if (this.cacheClears.get(profileId) === clearing) this.cacheClears.delete(profileId);
       });
     this.cacheClears.set(profileId, clearing);
+  }
+
+  /** Keep one copy of Chromium 155's components beside the browser; see shareChromiumComponents. */
+  private async shareComponents(profileId: string, componentsDir: string): Promise<void> {
+    if (!this.store.getProfile(profileId) || this.store.getLaunch(profileId)) return;
+    const base = this.containedUserDataDir(profileId, "share Chromium components");
+    if (!base) return;
+    try {
+      await shareChromiumComponents(base, componentsDir);
+    } catch (error) {
+      this.log(`${profileId}: sharing Chromium components failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private async clearCacheDirs(

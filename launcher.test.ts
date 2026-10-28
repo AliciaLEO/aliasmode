@@ -509,6 +509,27 @@ test("Local imports restore storage once before navigation, not on subsequent la
   } finally { await launcher.stop(id); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a Local Telegram restore lands on Web K unless the session holds a Web A login", async () => {
+  const login = { origin: "https://web.telegram.org", localStorage: [{ name: "dc4_auth_key", value: "KEY" }] };
+  for (const [bundle, expected] of [
+    [{ cookies: [], telegramClient: "a", origins: [] }, "https://web.telegram.org/k/"],
+    [{ cookies: [], telegramClient: "a", origins: [login] }, "https://web.telegram.org/a/"],
+  ] as const) {
+    const store = seeded();
+    makeDirect(store);
+    const id = "k1d0cd11";
+    store.upsertProfiles([{ ...store.getProfile(id)!, platform: "telegram.org" }], new Map([[id, JSON.stringify(bundle)]]));
+    const opened: string[][] = [];
+    const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+      applySession: async (_ws: string, _bundle: string, urls: readonly string[]) => { opened.push([...urls]); },
+    });
+    try {
+      await launcher.start(id);
+      expect(opened).toEqual([[expected]]);
+    } finally { await launcher.stop(id); store.close(); }
+  }
+});
+
 test("failed Local restore stays pending for retry and Cloud/remote can disable it", async () => {
   const store = seeded();
   makeDirect(store);

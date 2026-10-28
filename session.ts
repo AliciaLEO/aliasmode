@@ -483,13 +483,13 @@ export function bundleTelegramClient(bundle: string): TelegramWebClient | undefi
 }
 
 /**
- * The Telegram client a profile opens on: the one it last used. A saved login of unknown client
- * opens on Web A, where older logins were made. A profile without a login opens on Web K: a login
- * made on Web A is logged out by Web K when its home data center is not 2 (Ajaxy/telegram-tt#475),
- * while one made on Web K survives switching either way.
+ * The Telegram client a profile opens on. A profile without a live login opens on Web K, so its next
+ * login is made there: Web K logs out a login made on Web A when its home data center is not 2
+ * (Ajaxy/telegram-tt#475), while one made on Web K survives switching either way. A live login
+ * keeps the client it last used, and one of unknown client keeps Web A, where older logins were made.
  */
 export function telegramHomeClient(bundle: string): TelegramWebClient {
-  return bundleTelegramClient(bundle) ?? (bundleHasTelegramAuthStorage(bundle) ? "a" : "k");
+  return bundleHasTelegramAuthStorage(bundle) ? bundleTelegramClient(bundle) ?? "a" : "k";
 }
 
 /**

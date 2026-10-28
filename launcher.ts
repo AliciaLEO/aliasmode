@@ -50,7 +50,7 @@ import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
-import { applySessionToEndpoint, bundleTabUrls, bundleTelegramClient, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError } from "./session.ts";
+import { applySessionToEndpoint, bundleTabUrls, canonicalUserPageUrl, parseCapturedSessionBundle, readSessionInSubprocess, sessionCaptureSeed, SessionRestoreError, telegramHomeClient } from "./session.ts";
 import { resolvePlaywrightRuntime, runPlaywrightWorker } from "./playwright-runtime.ts";
 import { callFirefoxOwner, closeFirefoxOwner, firefoxEndpoint, forgetFirefoxOwner, reserveFirefoxOwner, startFirefoxOwner, type FirefoxOwner } from "./firefox-runtime.ts";
 import { matchFirefoxProcesses } from "./firefox-lifecycle.ts";
@@ -2152,7 +2152,7 @@ export class Launcher {
       // Cookie-only import remains best-effort; a failure must not fail the launch.
       profile = this.requireUnchangedProfile(profileId, profileSnapshot, "session injection");
       if (pendingSession) {
-        const home = platformHomeUrl(profile.platform, bundleTelegramClient(pendingSession));
+        const home = platformHomeUrl(profile.platform, telegramHomeClient(pendingSession));
         const urls = (opts.autoNavigate ?? true)
           ? startupUrls.length ? startupUrls : !bundleTabUrls(pendingSession).length && home ? [home] : []
           : [];
@@ -2513,7 +2513,7 @@ export class Launcher {
         nativeSessionRestored = closedTabs.length > 0;
       }
       if (pendingSession) {
-        const home = platformHomeUrl(profile.platform, bundleTelegramClient(pendingSession));
+        const home = platformHomeUrl(profile.platform, telegramHomeClient(pendingSession));
         const urls = (opts.autoNavigate ?? true)
           ? startupUrls.length ? startupUrls : !bundleTabUrls(pendingSession).length && home ? [home] : []
           : [];

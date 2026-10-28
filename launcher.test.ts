@@ -5021,7 +5021,7 @@ test("a stopped Chromium 155 profile shares its components beside the browser; C
 test("at app start, stopped Chromium 155 profiles share their components; CloakBrowser profiles keep theirs", async () => {
   const store = new ProfileStore(":memory:");
   const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
-  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({}, () => false);
+  const { chromiumRuntime: _runtime, ...cloak } = buildNewProfile({ engine: "chromium" }, () => false);
   store.upsertProfile(chromium155);
   store.upsertProfile(cloak);
   const runtimes = join(testDataRoot(store), "runtimes");

@@ -98,7 +98,7 @@ test("a download in progress reports the bytes of its part against the pinned ar
   expect(runtimeDownloads()).toEqual([]);
 });
 
-test("Linux x64 installs upstream's 155 build from its zstd tar archive", async () => {
+test("Linux x64 installs AliasMode's own 155 build from its zstd tar archive", async () => {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-chromium-"));
   const linux = aliasmodeChromiumArchive("linux");
   const downloads: string[] = [];
@@ -108,7 +108,7 @@ test("Linux x64 installs upstream's 155 build from its zstd tar archive", async 
       writeFileSync(output, linux.archiveSha256);
     },
     extract: async (_archive, directory) => {
-      const runtime = join(directory, "apostate-155.0.8059.31-linux-x64");
+      const runtime = join(directory, "aliasmode-chromium-155.0.8059.85-linux-x64");
       mkdirSync(runtime, { recursive: true });
       writeFileSync(join(runtime, "chrome"), linux.executableSha256);
     },
@@ -117,17 +117,23 @@ test("Linux x64 installs upstream's 155 build from its zstd tar archive", async 
   expect(supportsChromium155Host("linux", "x64")).toBe(true);
   expect(supportsChromium155Host("linux", "arm64")).toBe(false);
   const executable = await ensureAliasmodeChromium(root, deps, "linux");
-  expect(executable).toBe(join(root, "chromium-155.0.8059.31", "chrome"));
+  expect(executable).toBe(join(root, "chromium-155.0.8059.85-aliasmode.4", "chrome"));
   expect(executable).toBe(aliasmodeChromiumExecutable(root, "linux"));
-  expect(downloads).toEqual(["https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-linux-x64.tar.zst"]);
-  expect(readdirSync(root)).toEqual(["chromium-155.0.8059.31"]);
+  expect(downloads).toEqual([
+    "https://github.com/aliasmode/aliasmode-chromium/releases/download/v155.0.8059.85-aliasmode.4/aliasmode-chromium-155.0.8059.85-linux-x64.tar.zst",
+  ]);
+  expect([linux.archiveSha256, linux.executableSha256]).toEqual([
+    "00981c9e79e80accabd5707b140cf710c68797b6f905e990393d2a1224121f98",
+    "ee0bfec11c3da08f9ab8da0ef42f8b420cc13e80f389f09bcdc94fa582d3172a",
+  ]);
+  expect(readdirSync(root)).toEqual(["chromium-155.0.8059.85-aliasmode.4"]);
 });
 
-test("Windows pins its own 155.0.8059.85 build while macOS and Linux keep upstream's 155.0.8059.31", () => {
+test("Windows and Linux pin AliasMode's own 155.0.8059.85 build while macOS keeps upstream's 155.0.8059.31", () => {
   expect(aliasmodeChromiumExecutable("/runtimes", "win32")).toBe(join("/runtimes", "chromium-155.0.8059.85-aliasmode.4", "chrome.exe"));
   expect(aliasmodeChromiumExecutable("/runtimes", "darwin"))
     .toBe(join("/runtimes", "chromium-155.0.8059.31", "Chromium.app/Contents/MacOS/Chromium"));
-  expect(aliasmodeChromiumExecutable("/runtimes", "linux")).toBe(join("/runtimes", "chromium-155.0.8059.31", "chrome"));
+  expect(aliasmodeChromiumExecutable("/runtimes", "linux")).toBe(join("/runtimes", "chromium-155.0.8059.85-aliasmode.4", "chrome"));
   expect(aliasmodeChromiumArchive("darwin").url)
     .toBe("https://github.com/heretic-tech/apostate/releases/download/v0.5.1/apostate-155.0.8059.31-macos-arm64.zip");
 });
@@ -457,8 +463,8 @@ test("Chromium 155 profiles share one copy of each downloaded component beside t
 test("Chromium components are shared only beside the Windows and Linux 155 builds", () => {
   expect(chromiumComponentsDir(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4", "chrome.exe"), "win32"))
     .toBe(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4"));
-  expect(chromiumComponentsDir(join("/data", "runtimes", "chromium-155.0.8059.31", "chrome"), "linux"))
-    .toBe(join("/data", "runtimes", "chromium-155.0.8059.31"));
+  expect(chromiumComponentsDir(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4", "chrome"), "linux"))
+    .toBe(join("/data", "runtimes", "chromium-155.0.8059.85-aliasmode.4"));
   expect(chromiumComponentsDir(join("/data", ".cloakbrowser", "chromium-146.0.7680.177.5", "chrome.exe"), "win32")).toBeNull();
   expect(chromiumComponentsDir(aliasmodeChromiumExecutable("/data/runtimes", "darwin"), "darwin")).toBeNull();
 });

@@ -5212,6 +5212,8 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   // The engine adds the trailing space itself; Windows would strip it from a switch value.
   expect(native.switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   expect(native.scripted).toEqual([]);
+  // AliasMode's own Linux build takes the same switch.
+  expect((await launch("linux", "aliasmode")).switches).toEqual(["--aliasmode-window-label=sophie · #1 —"]);
   // CloakBrowser on Windows has no such switch, so it keeps the page script.
   const cloak = await launch("win32", "cloakbrowser");
   expect(cloak.switches).toEqual([]);
@@ -5224,7 +5226,7 @@ test("Chromium 155 on Windows names its window with a launch switch instead of a
   }
 });
 
-test("a Cloud launch of Chromium 155 on Windows keeps the browser after its last window; other launches do not", async () => {
+test("a Cloud launch of Chromium 155 on Windows or Linux keeps the browser after its last window; other launches do not", async () => {
   const launch = async (hostPlatform: NodeJS.Platform, engine: "aliasmode" | "cloakbrowser", keepAliveWithoutWindows?: boolean) => {
     const store = new ProfileStore(":memory:");
     const chromium155 = buildNewProfile({ chromiumRuntime: "aliasmode" }, () => false);
@@ -5245,14 +5247,15 @@ test("a Cloud launch of Chromium 155 on Windows keeps the browser after its last
     return spawnedArgs[0]!.includes("--aliasmode-keep-alive");
   };
   expect(await launch("win32", "aliasmode", true)).toBe(true);
+  expect(await launch("linux", "aliasmode", true)).toBe(true);
   expect(await launch("win32", "aliasmode")).toBe(false);
-  // macOS keeps every browser after its last window; upstream's Linux build and CloakBrowser lack the switch.
-  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+  // macOS keeps every browser after its last window; CloakBrowser lacks the switch.
+  for (const [host, engine] of [["darwin", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
     expect(await launch(host, engine, true)).toBe(false);
   }
 });
 
-test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and engines do not", async () => {
+test("Chromium 155 on Windows and Linux shows the proxy exit IP to WebRTC; macOS and CloakBrowser do not", async () => {
   const proxy = { type: "http" as const, host: "proxy.example", port: "8080", user: "", pass: "" };
   const launch = async (
     hostPlatform: NodeJS.Platform,
@@ -5297,9 +5300,10 @@ test("Chromium 155 on Windows shows the proxy exit IP to WebRTC; other hosts and
   // Without a proxy WebRTC keeps the computer's own route and nothing is looked up.
   expect(await launch("win32", "aliasmode", async () => "203.0.113.7", null))
     .toEqual({ asked: [], webrtc: ["--force-webrtc-ip-handling-policy=default_public_interface_only"] });
-  // Upstream's Mac and Linux builds and CloakBrowser lack the engine change. Their exit is asked
+  expect((await launch("linux", "aliasmode", async () => "203.0.113.7")).webrtc).toEqual([policy, "--fingerprint-webrtc-ip=203.0.113.7"]);
+  // Upstream's Mac build and CloakBrowser lack the engine change. Their exit is asked
   // for its timezone only.
-  for (const [host, engine] of [["darwin", "aliasmode"], ["linux", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
+  for (const [host, engine] of [["darwin", "aliasmode"], ["win32", "cloakbrowser"]] as const) {
     expect(await launch(host, engine, async () => "203.0.113.7")).toEqual({ asked: [proxy], webrtc: [policy] });
   }
 });

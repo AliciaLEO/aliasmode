@@ -13,16 +13,17 @@ import {
 } from "./browser-install.ts";
 import { trackRuntimeDownload } from "./runtime-download.ts";
 
-// AliasMode's own Windows build of the patch series. Its package includes Chromium's
-// version manifest, which upstream's Windows archive omits. Each build gets its
+// AliasMode's own Windows and Linux builds of the patch series. The Windows package includes
+// Chromium's version manifest, which upstream's Windows archive omits. Each build gets its
 // own directory, so a browser still running from an earlier build keeps its files.
-// A new build changes the version, the release tag, and the two SHA-256 values and archive size of its release.
-const WINDOWS_VERSION = "155.0.8059.85";
-const WINDOWS_RELEASE = "aliasmode.4";
+// A new build changes the version, the release tag, and each target's two SHA-256 values and archive size.
+const OWN_VERSION = "155.0.8059.85";
+const OWN_RELEASE = "aliasmode.4";
+const OWN_RELEASE_URL = `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${OWN_VERSION}-${OWN_RELEASE}`;
 const WINDOWS_BUILD = {
-  root: `aliasmode-chromium-${WINDOWS_VERSION}-windows-x64`,
-  url: `https://github.com/aliasmode/aliasmode-chromium/releases/download/v${WINDOWS_VERSION}-${WINDOWS_RELEASE}/aliasmode-chromium-${WINDOWS_VERSION}-windows-x64.zip`,
-  dir: `chromium-${WINDOWS_VERSION}-${WINDOWS_RELEASE}`,
+  root: `aliasmode-chromium-${OWN_VERSION}-windows-x64`,
+  url: `${OWN_RELEASE_URL}/aliasmode-chromium-${OWN_VERSION}-windows-x64.zip`,
+  dir: `chromium-${OWN_VERSION}-${OWN_RELEASE}`,
   archiveSha256: "cfea275e4b7f3274b701e64c0483b46cbf6cd12ead9a6cfda6ff77b2680e7a23",
   size: 203519527,
   executable: "chrome.exe",
@@ -37,7 +38,7 @@ const WINDOWS_BUILD = {
   // --aliasmode-keep-alive keeps the browser running after its last window closes.
   keepAlive: true,
 };
-// Upstream's Apostate v0.5.1 keeps its own Chromium version.
+// Upstream's Apostate v0.5.1 (macOS only) keeps its own Chromium version.
 const APOSTATE_VERSION = "155.0.8059.31";
 const APOSTATE_RELEASE = "https://github.com/heretic-tech/apostate/releases/download/v0.5.1";
 const MACOS_BUILD = {
@@ -54,19 +55,19 @@ const MACOS_BUILD = {
   keepAlive: false,
 };
 const LINUX_BUILD = {
-  root: `apostate-${APOSTATE_VERSION}-linux-x64`,
-  url: `${APOSTATE_RELEASE}/apostate-${APOSTATE_VERSION}-linux-x64.tar.zst`,
-  dir: `chromium-${APOSTATE_VERSION}`,
-  archiveSha256: "351955271b7ba1aed314bf14c2d64f6bd59bfdcb5c4a1541c9c921c570ff97bb",
-  size: 196782260,
+  root: `aliasmode-chromium-${OWN_VERSION}-linux-x64`,
+  url: `${OWN_RELEASE_URL}/aliasmode-chromium-${OWN_VERSION}-linux-x64.tar.zst`,
+  dir: `chromium-${OWN_VERSION}-${OWN_RELEASE}`,
+  archiveSha256: "00981c9e79e80accabd5707b140cf710c68797b6f905e990393d2a1224121f98",
+  size: 198069298,
   executable: "chrome",
-  executableSha256: "c0b906dc621cec05330aed9d3b09bbb7b655a9c8546e4c61d222705fabfde6d3",
+  executableSha256: "ee0bfec11c3da08f9ab8da0ef42f8b420cc13e80f389f09bcdc94fa582d3172a",
   hostScale: false,
-  windowLabel: false,
-  webRtcIp: false,
-  keepAlive: false,
+  windowLabel: true,
+  webRtcIp: true,
+  keepAlive: true,
 };
-// Apple Silicon macOS and Linux get upstream's builds; every other host keeps the Windows pins.
+// Apple Silicon macOS gets upstream's build; Windows and Linux get AliasMode's own builds.
 function chromiumBuild(platform: NodeJS.Platform): typeof WINDOWS_BUILD {
   return platform === "darwin" ? MACOS_BUILD : platform === "linux" ? LINUX_BUILD : WINDOWS_BUILD;
 }

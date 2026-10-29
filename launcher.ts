@@ -1396,8 +1396,8 @@ export class Launcher {
     // Headful matches AdsPower (real windows) and avoids the headless signal.
     if (headless) args.push("--headless=new");
     if (restoreLastSession) args.push("--restore-last-session");
-    // On macOS the browser outlives its last window anyway. Elsewhere only AliasMode's own build can.
-    if (keepAlive && this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_KEEP_ALIVE) {
+    // On macOS the browser outlives its last window anyway. Elsewhere only AliasMode's own builds can.
+    if (keepAlive && this.hostPlatform !== "darwin" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_KEEP_ALIVE) {
       args.push("--aliasmode-keep-alive");
     }
     // Relayed proxies use a loopback HTTP endpoint. Everything else uses the
@@ -1489,16 +1489,16 @@ export class Launcher {
   }
 
   /**
-   * Chromium 155 on Windows shows --fingerprint-webrtc-ip behind the HTTP proxy it always gets.
-   * Upstream's Mac and Linux builds open no WebRTC UDP socket there, so the switch shows nothing.
+   * AliasMode's own Chromium 155 builds (Windows, Linux) show --fingerprint-webrtc-ip behind the HTTP proxy
+   * they always get. Upstream's Mac build opens no WebRTC UDP socket there, so the switch shows nothing.
    */
   private chromiumWebRtcIp(profile: Profile): boolean {
-    return this.hostPlatform === "win32" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
+    return this.hostPlatform !== "darwin" && !!profile.proxy && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WEBRTC_IP;
   }
 
-  /** Chromium 155 on Windows takes the window label as a launch switch instead of a page script. */
+  /** AliasMode's own Chromium 155 builds (Windows, Linux) take the window label as a launch switch instead of a page script. */
   private nativeWindowLabel(profile: Profile): boolean {
-    return this.hostPlatform === "win32" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
+    return this.hostPlatform !== "darwin" && !!profile.chromiumRuntime && ALIASMODE_CHROMIUM_WINDOW_LABEL;
   }
 
   private startWindowFit(profile: Profile, ws: string, sample: FingerprintSample | null): void {

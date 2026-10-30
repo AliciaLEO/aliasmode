@@ -63,6 +63,7 @@ import { ensureFirefoxFontPack, firefoxFontPackFor, firefoxFontPackPrefs, pruneF
 import { renameWhenUnlocked } from "./browser-install.ts";
 import {
   ALIASMODE_CHROMIUM_EXECUTABLE_SHA256,
+  ALIASMODE_CHROMIUM_HOST_SCALE,
   ALIASMODE_CHROMIUM_WEBRTC_IP,
   ALIASMODE_CHROMIUM_KEEP_ALIVE,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
@@ -1473,9 +1474,12 @@ export class Launcher {
     ]);
   }
 
-  /** Chromium 155 on Windows draws pages at the primary display's scale; every other launch at 1. */
+  /**
+   * Chromium 155 on Windows draws pages at the display scale pinned at the profile's first open,
+   * which was that computer's; every other launch at 1.
+   */
   private deviceScale(profile: Profile): number {
-    return chromiumDeviceScale(this.hostPlatform, profile.chromiumRuntime, this.hostScale);
+    return chromiumDeviceScale(this.hostPlatform, profile.chromiumRuntime, profile.displayScale ?? this.hostScale);
   }
 
   /**
@@ -1711,6 +1715,12 @@ export class Launcher {
     if (!profile) throw new Error(`Unknown profile: ${profileId}`);
     if (profile.proxyError) {
       throw new BrowserLaunchError("preflight", "proxy_invalid");
+    }
+    // Pages measure the screen divided by the scale they draw at. With this computer's scale on every
+    // open, one profile would show a different screen on each computer.
+    if (profile.displayScale === undefined && this.hostPlatform === "win32" && profile.chromiumRuntime && ALIASMODE_CHROMIUM_HOST_SCALE) {
+      this.store.setDisplayScale(profileId, this.hostScale);
+      profile = this.store.getProfile(profileId)!;
     }
     let profileSnapshot = JSON.stringify(profile);
     let approvedBinarySha256: string;

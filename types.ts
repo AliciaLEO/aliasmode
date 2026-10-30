@@ -135,6 +135,12 @@ export interface Profile {
   timezone: string;
   /** The user typed this timezone. Launches and proxy changes keep it instead of the proxy's. */
   timezoneManual?: boolean;
+  /**
+   * Chromium 155 on Windows: the display scale its pages draw at (1.25 at 125%), fixed at the first
+   * open so the pages measure one screen on every computer. A site that sees a returning visitor's
+   * screen change can flag it.
+   */
+  displayScale?: number;
   /** Saved BCP-47 locale. Missing only on profiles awaiting closed-profile migration. */
   locale?: string;
   screenWidth: number;

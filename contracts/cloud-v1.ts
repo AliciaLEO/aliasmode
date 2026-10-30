@@ -313,6 +313,8 @@ export interface PortableProfileV3 {
     chromiumRuntime: "aliasmode";
     /** Cores the user set. Older clients reject a profile that carries it. */
     hardware?: { cores: number };
+    /** Windows display scale the pages draw at, fixed at the profile's first open (1.25 at 125%). */
+    displayScale?: number;
   };
   session: PortableSessionV1;
 }

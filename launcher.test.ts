@@ -5116,6 +5116,38 @@ test("AliasMode Chromium starts without the missing Google API keys bar; CloakBr
   expect(await launchEnv("cloakbrowser")).toEqual([undefined]);
 });
 
+test("a Chromium 155 profile keeps the display scale of its first open on every Windows computer", async () => {
+  const store = new ProfileStore(":memory:");
+  const profile = buildNewProfile({ chromiumRuntime: "aliasmode", screen: "1920x1080" }, () => false);
+  store.upsertProfile(profile);
+  const open = async (hostScale: number) => {
+    const spawnedArgs: string[][] = [];
+    const launcher = newLauncher(store, fleet(), spawnedArgs, undefined, undefined, {
+      hostPlatform: "win32",
+      hostArch: "x64",
+      hostScale,
+      chromiumRuntimeRoot: "/fake/runtimes",
+      ensureAliasmodeChromium: async () => "/fake/runtimes/chromium-155/chrome.exe",
+      captureFingerprint: async () => null,
+      watchWindowFit: () => ({ stop: () => {} }),
+    });
+    await launcher.start(profile.id);
+    await launcher.stop(profile.id);
+    return spawnedArgs[0]!.filter((arg) => /^--(force-device-scale-factor|fingerprint-screen-(width|height))=/.test(arg));
+  };
+  const firstOpen = ["--fingerprint-screen-width=1536", "--fingerprint-screen-height=864", "--force-device-scale-factor=1.25"];
+  expect(await open(1.25)).toEqual(firstOpen);
+  expect(store.getProfile(profile.id)!.displayScale).toBe(1.25);
+  // A computer at 100% or 150% shows the pages the same screen.
+  expect(await open(1)).toEqual(firstOpen);
+  expect(await open(1.5)).toEqual(firstOpen);
+  // An edit that omits the scale keeps it.
+  const { displayScale: _scale, ...edited } = store.getProfile(profile.id)!;
+  store.upsertProfile({ ...edited, name: "renamed" });
+  expect(store.getProfile(profile.id)!.displayScale).toBe(1.25);
+  store.close();
+});
+
 test("Chromium 155 on a scaled Windows display reports the screen in CSS pixels, as Chrome does there", async () => {
   const launch = async (
     hostPlatform: NodeJS.Platform,

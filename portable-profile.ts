@@ -2,7 +2,7 @@ import type { PortableProfile, PortableProfileV1, PortableProfileV2, PortablePro
 import type { ChromiumRuntime, FirefoxProfileConfig, Profile, ProfileHardware } from "./types.ts";
 import { normalizeChromiumRuntime, normalizeProfileEngine } from "./firefox-config.ts";
 import { normalizeProfileHardware } from "./fingerprint.ts";
-import { assertValidProfile } from "./profile-validation.ts";
+import { assertValidProfile, isDisplayScale } from "./profile-validation.ts";
 import { normalizeBundle } from "./session.ts";
 
 function portableSession(raw: unknown): PortableSessionV1 {
@@ -74,7 +74,10 @@ export function encodePortableProfile(profile: Profile, sessionBundle?: string):
   }
   // A new schema version, so older clients reject it instead of opening it on CloakBrowser.
   const chromiumRuntime = normalizeChromiumRuntime(profile.chromiumRuntime, engine.engine);
-  if (chromiumRuntime) return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime, ...(hardware ? { hardware } : {}) }, session };
+  if (chromiumRuntime) {
+    const displayScale = profile.displayScale !== undefined ? { displayScale: profile.displayScale } : {};
+    return { schemaVersion: 3, profile: { ...portableProfile, chromiumRuntime, ...(hardware ? { hardware } : {}), ...displayScale }, session };
+  }
   // Also a new version: an older client would open the profile with the engine default and then save it without the hardware.
   if (hardware) return { schemaVersion: 4, profile: { ...portableProfile, hardware }, session };
   return { schemaVersion: 1, profile: portableProfile, session };
@@ -91,6 +94,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     chromiumRuntime?: unknown;
     hardware?: unknown;
     timezoneManual?: unknown;
+    displayScale?: unknown;
   };
   let engine;
   let chromiumRuntime: ChromiumRuntime | undefined;
@@ -98,6 +102,10 @@ export function decodePortableProfile(payload: PortableProfile): {
   try { hardware = normalizeProfileHardware(portableProfile.hardware); }
   catch { throw new Error("unsupported portable profile payload"); }
   if (portableProfile.timezoneManual !== undefined && portableProfile.timezoneManual !== true) {
+    throw new Error("unsupported portable profile payload");
+  }
+  // Only Chromium 155 (V3) profiles carry a display scale.
+  if (portableProfile.displayScale !== undefined && (payload.schemaVersion !== 3 || !isDisplayScale(portableProfile.displayScale))) {
     throw new Error("unsupported portable profile payload");
   }
   if (payload.schemaVersion === 1 || payload.schemaVersion === 3 || payload.schemaVersion === 4) {
@@ -139,6 +147,7 @@ export function decodePortableProfile(payload: PortableProfile): {
     ua: portableProfile.ua,
     timezone: portableProfile.timezone,
     ...(portableProfile.timezoneManual ? { timezoneManual: true } : {}),
+    ...(isDisplayScale(portableProfile.displayScale) ? { displayScale: portableProfile.displayScale } : {}),
     ...(portableProfile.locale !== undefined ? { locale: portableProfile.locale } : {}),
     screenWidth: portableProfile.screenWidth,
     screenHeight: portableProfile.screenHeight,

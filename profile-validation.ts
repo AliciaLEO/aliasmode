@@ -53,6 +53,11 @@ function assertCookie(value: unknown, index: number): asserts value is CookieRec
   }
 }
 
+/** A Windows display scale: 1 (100%) to 5 (500%). */
+export function isDisplayScale(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 5;
+}
+
 /** Runtime validation for every full-profile persistence boundary. */
 export function assertValidProfile(value: unknown): asserts value is Profile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profile must be an object");
@@ -60,6 +65,7 @@ export function assertValidProfile(value: unknown): asserts value is Profile {
   normalizeProfileEngine(profile.engine, profile.firefox);
   normalizeProfileHardware(profile.hardware);
   if (profile.timezoneManual !== undefined && profile.timezoneManual !== true) throw new Error("profile timezoneManual must be true when present");
+  if (profile.displayScale !== undefined && !isDisplayScale(profile.displayScale)) throw new Error("profile displayScale must be a number from 1 to 5");
   assertSafeProfileId(profile.id);
 
   for (const field of REQUIRED_STRING_FIELDS) {

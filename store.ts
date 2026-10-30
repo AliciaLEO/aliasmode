@@ -54,6 +54,7 @@ export class ProfileStore {
         ua TEXT NOT NULL DEFAULT '',
         timezone TEXT NOT NULL DEFAULT '',
         timezone_manual INTEGER NOT NULL DEFAULT 0,
+        display_scale REAL NOT NULL DEFAULT 0,
         locale TEXT NOT NULL DEFAULT '',
         screen_width INTEGER NOT NULL DEFAULT 1920,
         screen_height INTEGER NOT NULL DEFAULT 1080,
@@ -171,6 +172,7 @@ export class ProfileStore {
       "chromium_runtime TEXT NOT NULL DEFAULT ''",
       "hardware_json TEXT NOT NULL DEFAULT ''",
       "timezone_manual INTEGER NOT NULL DEFAULT 0",
+      "display_scale REAL NOT NULL DEFAULT 0",
     ]) {
       try {
         this.db.exec(`ALTER TABLE profiles ADD COLUMN ${col}`);
@@ -425,8 +427,15 @@ export class ProfileStore {
         // before this column stay 0 (creation time was never recorded then).
         $created: Date.now(),
       });
+    // An edit or re-import that omits the display scale keeps it; a Cloud copy that carries one sets it.
+    if (p.displayScale !== undefined) this.setDisplayScale(p.id, p.displayScale);
     if (p.group) this.registerGroup(p.group);
     this.onProfileSaved?.(p);
+  }
+
+  /** Pins the display scale a Chromium 155 profile's pages draw at. */
+  setDisplayScale(id: string, scale: number): void {
+    this.db.query("UPDATE profiles SET display_scale = ? WHERE id = ?").run(scale, id);
   }
 
   /** Explicit edits and authoritative restores may clear stored hardware; the engine then chooses. */
@@ -1037,6 +1046,7 @@ function rowToProfile(row: any): Profile {
     ua: row.ua ?? "",
     timezone: row.timezone ?? "",
     ...(row.timezone_manual ? { timezoneManual: true } : {}),
+    ...(row.display_scale >= 1 ? { displayScale: row.display_scale } : {}),
     ...(row.locale ? { locale: row.locale } : {}),
     screenWidth: row.screen_width ?? 1920,
     screenHeight: row.screen_height ?? 1080,
